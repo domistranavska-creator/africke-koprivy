@@ -1,0 +1,40 @@
+{
+  "id": "/mobile.html",
+  "name": "Africké kopřivy",
+  "short_name": "Kopřivy",
+  "description": "Mobilní evidence afrických kopřiv, objednávek, zákazníků a křížení.",
+  "lang": "cs",
+  "start_url": "./mobile.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#092417",
+  "theme_color": "#092417",
+  "categories": ["productivity", "business"],
+  "icons": [
+    {
+      "src": "assets/app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nová objednávka",
+      "url": "./mobile.html?action=new-order",
+      "icons": [{ "src": "assets/app-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Nová fotka odrůdy",
+      "url": "./mobile.html?action=new-variety",
+      "icons": [{ "src": "assets/app-icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

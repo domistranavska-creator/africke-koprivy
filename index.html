@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#092417" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Africké kopřivy" />
+    <title>Africké kopřivy</title>
+    <link rel="icon" href="assets/brand-africke-koprivy.ico" />
+    <link rel="apple-touch-icon" href="assets/brand-africke-koprivy.jpg" />
+    <link rel="manifest" href="manifest-desktop.webmanifest" />
+    <script>
+      (() => {
+        const params = new URLSearchParams(window.location.search);
+        const wantsDesktop = params.has("desktop");
+        const isMobileLike =
+          window.matchMedia?.("(max-width: 760px), (pointer: coarse)")?.matches ||
+          /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (isMobileLike && !wantsDesktop && !location.pathname.endsWith("/mobile.html")) {
+          const target = new URL("mobile.html", window.location.href);
+          target.search = window.location.search;
+          target.searchParams.delete("desktop");
+          target.hash = window.location.hash;
+          window.location.replace(target.href);
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css?v=20260526-5" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-logo" src="assets/brand-africke-koprivy.jpg" alt="" aria-hidden="true" />
+          <div>
+            <h1>Africké kopřivy</h1>
+            <p id="todayLine"></p>
+            <div class="sync-float" id="syncFloat" role="status" aria-live="polite" hidden>Syncnuto</div>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="button ghost" type="button" id="commandPaletteTopBtn">⌘ Hledat</button>
+          <button class="button primary" type="button" id="addOfferTopBtn">Nová nabídka</button>
+          <button class="button secondary" type="button" id="addOrderTopBtn">Nová objednávka</button>
+          <button class="button secondary" type="button" id="addCustomerBtn">Nový zákazník</button>
+          <button class="button secondary" type="button" id="addVarietyTopBtn">Nová odrůda</button>
+          <button class="button secondary" type="button" id="addCrossTopBtn">🧬 Nové křížení</button>
+          <button class="button ghost install-app-button" type="button" id="installAppBtn" hidden>Instalovat appku</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="Hlavní sekce">
+        <button class="tab active" type="button" data-view="offers">Nabídky</button>
+        <button class="tab" type="button" data-view="orders">Objednávky</button>
+        <button class="tab" type="button" data-view="customers">Zákazníci</button>
+        <button class="tab" type="button" data-view="varieties">Odrůdy</button>
+        <button class="tab" type="button" data-view="crosses">🧬 Křížení</button>
+        <button class="tab" type="button" data-view="dashboard">Zisk</button>
+        <button class="tab settings-tab" type="button" data-view="settings" title="Nastavení">
+          <span class="gear-icon" aria-hidden="true">&#9881;</span>
+          <span>Nástroje</span>
+        </button>
+      </nav>
+
+      <section class="studio-strip" id="studioStrip">
+        <div class="studio-strip-copy">
+          <span class="studio-kicker">Garden studio</span>
+          <strong id="studioHeadline">Sezóna pod kontrolou.</strong>
+          <small id="studioSubline">Přehled, rychlé akce a chytré zkratky na jednom místě.</small>
+        </div>
+        <div class="studio-strip-actions">
+          <button class="button secondary" type="button" id="commandPaletteBtn">Příkazová paleta</button>
+          <button class="button ghost" type="button" data-view-jump="dashboard">Přehled sezóny</button>
+        </div>
+        <div class="studio-strip-stats" id="studioMiniStats"></div>
+      </section>
+
+      <aside class="floating-dock" aria-label="Rychlé akce">
+        <button class="dock-button dock-button-primary" type="button" id="dockCommandBtn" title="Příkazová paleta">⌘</button>
+        <button class="dock-button" type="button" id="dockOrderBtn" title="Nová objednávka">+</button>
+        <button class="dock-button" type="button" id="dockCustomerBtn" title="Nový zákazník">☺</button>
+        <button class="dock-button" type="button" id="dockVarietyBtn" title="Přidat odrůdu">🌿</button>
+        <button class="dock-button" type="button" id="dockCrossBtn" title="Nové křížení">🧬</button>
+        <button class="dock-button" type="button" id="dockOfferBtn" title="Nová nabídka">✦</button>
+      </aside>
+
+      <main>
+        <section class="view" id="dashboardView">
+          <div class="metrics profit-metrics" id="metrics"></div>
+          <section class="panel profit-panel">
+            <div class="panel-heading">
+              <h2>Zisk po měsících</h2>
+              <label class="panel-filter">
+                <span>Rok</span>
+                <select id="profitYearFilter"></select>
+              </label>
+            </div>
+            <p class="profit-summary" id="profitChartSummary"></p>
+            <div class="profit-chart" id="profitChart"></div>
+          </section>
+        </section>
+
+        <section class="view" id="customersView">
+          <div class="toolbar">
+            <label class="search-field">
+              <span>Hledat</span>
+              <input id="customerSearch" type="search" placeholder="Jméno, email, telefon, země" />
+            </label>
+            <label>
+              <span>Země</span>
+              <select id="countryFilter"></select>
+            </label>
+            <label>
+              <span>Štítek</span>
+              <select id="tagFilter">
+                <option value="">Vše</option>
+                <option value="pozor">Pozor</option>
+                <option value="VIP">VIP</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="scene-grid" id="customersScene"></div>
+
+          <div class="split-layout">
+            <section class="table-panel">
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Jméno</th>
+                      <th>Kontakt</th>
+                      <th>Země</th>
+                      <th>Poslední objednávka</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="customersTable"></tbody>
+                </table>
+              </div>
+            </section>
+            <aside class="details-panel" id="customerDetail"></aside>
+          </div>
+        </section>
+
+        <section class="view" id="ordersView">
+          <div class="toolbar order-toolbar">
+            <label class="search-field">
+              <span>Hledat</span>
+              <input id="orderSearch" type="search" placeholder="Zákazník, odrůdy, doprava, poznámka" />
+            </label>
+            <details class="filter-drawer">
+              <summary>Filtry</summary>
+              <div class="filter-grid">
+                <label>
+                  <span>Platba</span>
+                  <select id="paymentFilter">
+                    <option value="">Vše</option>
+                    <option value="čeká">Čeká</option>
+                    <option value="zaplaceno">Zaplaceno</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Stav</span>
+                  <select id="shippingFilter">
+                    <option value="">Vše</option>
+                    <option value="nová">Nová</option>
+                    <option value="připraveno">Připravená</option>
+                    <option value="odesláno">Odeslaná</option>
+                    <option value="zaplaceno">Vyřízená</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Doprava</span>
+                  <select id="deliveryFilter">
+                    <option value="">Vše</option>
+                    <option value="ship">Odeslat</option>
+                    <option value="personal_pickup">Osobní odběr</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Odrůda</span>
+                  <select id="orderVarietyFilter"></select>
+                </label>
+                <label>
+                  <span>Sezóna</span>
+                  <select id="seasonFilter"></select>
+                </label>
+              </div>
+            </details>
+          </div>
+          <div class="scene-grid" id="ordersScene"></div>
+          <details class="bulk-actions-panel">
+            <summary>Hromadné změny</summary>
+            <div class="bulk-actions">
+              <label class="check"><input id="selectVisibleOrders" type="checkbox" /> Označit zobrazené</label>
+              <span id="bulkOrderSummary">0 označeno</span>
+              <button class="button ghost" type="button" id="bulkPaidBtn">Hromadně zaplaceno</button>
+              <button class="button ghost" type="button" id="bulkSentBtn">Hromadně odesláno</button>
+            </div>
+          </details>
+
+          <section class="table-panel">
+            <div class="table-scroll">
+              <table class="orders-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Datum</th>
+                    <th>Zákazník</th>
+                    <th>Odrůdy</th>
+                    <th>Cena</th>
+                    <th>Stav</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="ordersTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="varietiesView">
+          <div class="toolbar compact-toolbar">
+            <label class="search-field">
+              <span>Hledat</span>
+              <input id="varietySearch" type="search" placeholder="Název odrůdy nebo poznámka" />
+            </label>
+            <label>
+              <span>Filtr</span>
+              <select id="varietyUsageFilter">
+                <option value="">Vše</option>
+                <option value="used">V objednávkách</option>
+                <option value="unused">Bez objednávek</option>
+                <option value="active">Aktivní</option>
+                <option value="inactive">Neaktivní</option>
+              </select>
+            </label>
+            <label>
+              <span>Řazení</span>
+              <select id="varietySort">
+                <option value="popular">Nejžádanější</option>
+                <option value="name">Název</option>
+                <option value="price-asc">Od nejlevnějších</option>
+                <option value="price-desc">Od nejdražších</option>
+                <option value="updated">Naposledy upravené</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="scene-grid" id="varietiesScene"></div>
+
+          <section class="table-panel">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Odrůda</th>
+                    <th>Prodejní cena</th>
+                    <th>Poznámka</th>
+                    <th>V objednávkách</th>
+                    <th>Stav</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="varietiesTable"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="crossesView">
+          <div class="toolbar compact-toolbar crosses-toolbar">
+            <label class="search-field">
+              <span>Hledat</span>
+              <input id="crossSearch" type="search" placeholder="Matka, pyl, semenáč nebo poznámka" />
+            </label>
+            <label>
+              <span>Fáze</span>
+              <select id="crossStageFilter">
+                <option value="">Vše</option>
+                <option value="opyleno">Opyleno</option>
+                <option value="vyseto">Vyseto</option>
+                <option value="roste">Roste</option>
+                <option value="hotovo">Hotovo</option>
+              </select>
+            </label>
+            <label>
+              <span>Výsledek</span>
+              <select id="crossResultFilter">
+                <option value="">Vše</option>
+                <option value="krasna">Krásná</option>
+                <option value="hnusna">Hnusná</option>
+                <option value="nejista">Nejistá</option>
+              </select>
+            </label>
+            <button class="button primary" type="button" id="addCrossBtn">🧬 Nové křížení</button>
+          </div>
+
+          <div class="scene-grid" id="crossesScene"></div>
+
+          <div class="split-layout">
+            <section class="table-panel">
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Křížení</th>
+                      <th>Fáze</th>
+                      <th>Výsledek</th>
+                      <th>Nová odrůda</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="crossesTable"></tbody>
+                </table>
+              </div>
+            </section>
+            <aside class="details-panel" id="crossDetail"></aside>
+          </div>
+        </section>
+
+        <section class="view active" id="offersView">
+          <div class="toolbar offers-toolbar-simple">
+            <button class="button primary" type="button" id="addOfferBtn">Nová nabídka</button>
+          </div>
+
+          <div class="scene-grid" id="offersScene"></div>
+
+          <div class="split-layout offers-layout">
+            <section class="table-panel">
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Nabídka</th>
+                      <th>Stav</th>
+                      <th>Položky</th>
+                      <th>Rezervace</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="offersTable"></tbody>
+                </table>
+              </div>
+            </section>
+            <aside class="details-panel" id="offerDetail"></aside>
+          </div>
+        </section>
+
+        <section class="view" id="settingsView">
+          <div class="scene-grid" id="settingsScene"></div>
+          <div class="settings-layout">
+            <section class="panel sync-panel">
+              <div class="panel-heading">
+                <h2>Soukromý sync</h2>
+                <span class="pill paid">Supabase</span>
+              </div>
+              <p class="panel-note">Synchronizuje celou appku. Zákazníci a objednávky jsou před odesláním zašifrované, fotky jsou v privátním úložišti.</p>
+              <div class="fee-settings sync-settings">
+                <input id="syncSupabaseUrl" type="hidden" />
+                <input id="syncSupabaseAnonKey" type="hidden" />
+                <label class="sync-login-field">
+                  <span>Email</span>
+                  <input id="syncEmail" type="email" autocomplete="email" />
+                </label>
+                <label>
+                  <span>Heslo k účtu</span>
+                  <input id="syncPassword" type="password" autocomplete="current-password" />
+                </label>
+                <label class="wide">
+                  <span>Šifrovací heslo</span>
+                  <input id="syncEncryptionKey" type="password" autocomplete="off" placeholder="nesmí se ztratit" />
+                </label>
+                <label class="check wide sync-auto-check sync-advanced">
+                  <input id="syncAutoEnabled" type="checkbox" />
+                  <span>Automaticky syncovat po změnách</span>
+                </label>
+              </div>
+              <div class="inline-actions export-actions">
+                <button class="button ghost" type="button" id="saveSyncConfigBtn">Uložit nastavení</button>
+                <button class="button secondary" type="button" id="syncSignUpBtn">Vytvořit účet</button>
+                <button class="button secondary" type="button" id="syncLoginBtn">Přihlásit</button>
+                <button class="button ghost" type="button" id="syncLogoutBtn">Odhlásit</button>
+                <button class="button primary sync-advanced" type="button" id="syncPushBtn">Odeslat do cloudu</button>
+                <button class="button secondary" type="button" id="syncPullBtn">Stáhnout z cloudu</button>
+              </div>
+              <p class="panel-note" id="syncStatus">Sync zatím není nastavený.</p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>Záloha</h2>
+              </div>
+              <div class="inline-actions export-actions">
+                <button class="button primary" type="button" id="backupDataBtn">Stáhnout zálohu</button>
+              </div>
+              <p class="panel-note">Ruční záloha je jen pojistka. Běžně stačí používat soukromý sync.</p>
+              <div class="hidden-tools" hidden>
+                <button type="button" id="exportOrdersBtn">Objednávky CSV</button>
+                <button type="button" id="exportCustomersBtn">Zákazníci CSV</button>
+                <button type="button" id="exportVarietiesBtn">Odrůdy CSV</button>
+                <button type="button" id="exportMobilePhotoCatalogBtn">Katalog pro mobil</button>
+                <button type="button" id="exportMobilePhotosBtn">Fotky pro PC</button>
+                <button type="button" id="importMobilePhotosBtn">Import fotek z mobilu</button>
+                <input type="file" id="mobilePhotoImportFile" accept="application/json,.json" />
+                <button type="button" id="choosePhotoFolderBtn">Vybrat složku</button>
+                <span id="photoFolderStatus"></span>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>Nastavení poplatků</h2>
+                <button class="text-button" type="button" id="saveFeeSettingsBtn">Uložit</button>
+              </div>
+              <div class="fee-settings">
+                <label>
+                  <span>Zásilkovna ČR</span>
+                  <input id="defaultShippingFeeCz" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Zásilkovna Slovensko</span>
+                  <input id="defaultShippingFeeSk" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Balné</span>
+                  <input id="defaultPackingFee" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Měna</span>
+                  <select id="defaultFeeCurrency">
+                    <option value="CZK">Kč</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                </label>
+                <div class="wide fee-extra-settings">
+                  <div class="fee-extra-settings-head">
+                    <span>Extra poplatky</span>
+                    <button class="button ghost" type="button" id="addExtraFeeSettingBtn">Přidat extra poplatek</button>
+                  </div>
+                  <div class="fee-extra-list" id="feeExtrasSettings"></div>
+                </div>
+                <small id="feeSettingsHint"></small>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>Platební údaje</h2>
+                <button class="text-button" type="button" id="savePaymentSettingsBtn">Uložit</button>
+              </div>
+              <div class="fee-settings">
+                <label class="wide">
+                  <span>Jméno a příjmení</span>
+                  <input id="paymentAccountName" placeholder="např. Jana Nováková" />
+                </label>
+                <label>
+                  <span>Číslo účtu (CZ tvar)</span>
+                  <input id="paymentAccountNumber" placeholder="123456789/0800" />
+                </label>
+                <label>
+                  <span>IBAN</span>
+                  <input id="paymentIban" placeholder="CZ00 0000 0000 0000 0000 0000" />
+                </label>
+                <label>
+                  <span>SWIFT / BIC</span>
+                  <input id="paymentSwift" placeholder="GIBACZPX" />
+                </label>
+              </div>
+              <div class="panel-inline-actions">
+                <button class="button primary panel-save-button" type="button" id="savePaymentSettingsBottomBtn">
+                  Uložit platební údaje
+                </button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="commandPaletteDialog" class="command-palette-dialog">
+      <div class="dialog-heading">
+        <div>
+          <h2>Příkazová paleta</h2>
+          <p>Ctrl+K pro rychlé spuštění akcí, přechody a chytré filtry.</p>
+        </div>
+        <button class="mini-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+      </div>
+      <div class="command-palette-shell">
+        <label class="command-search">
+          <span>Hledat akci</span>
+          <input id="commandPaletteInput" type="search" placeholder="Např. nová objednávka, Slovensko, odrůda..." autocomplete="off" />
+        </label>
+        <div class="command-palette-list" id="commandPaletteList"></div>
+      </div>
+    </dialog>
+
+    <dialog id="customerDialog">
+      <form method="dialog" id="customerForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="customerDialogTitle">Zákazník</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="id" />
+        <label>
+          <span>Jméno a příjmení</span>
+          <input name="fullName" autocomplete="name" required />
+        </label>
+        <label>
+          <span>Telefon</span>
+          <input name="phone" autocomplete="tel" />
+        </label>
+        <label>
+          <span>Email</span>
+          <input name="email" type="email" autocomplete="email" />
+        </label>
+        <label>
+          <span>FB jméno</span>
+          <input name="fbName" placeholder="volitelné" />
+        </label>
+        <div class="details-grid wide customer-details-grid">
+          <label class="wide">
+            <span>Ulice</span>
+            <input name="street" autocomplete="address-line1" />
+          </label>
+          <label>
+            <span>PSČ</span>
+            <input name="postalCode" autocomplete="postal-code" />
+          </label>
+          <label>
+            <span>Město</span>
+            <input name="city" autocomplete="address-level2" />
+          </label>
+          <label>
+            <span>Země</span>
+            <div class="country-combo">
+              <input name="country" placeholder="napiš libovolnou zemi" data-country-input />
+              <button class="country-toggle" type="button" data-country-toggle aria-label="Vybrat zemi">▾</button>
+              <div class="country-menu" data-country-menu hidden></div>
+            </div>
+          </label>
+          <label>
+            <span>Interně</span>
+            <select name="customerRating">
+              <option value="">Bez hodnocení</option>
+              <option value="spolehlivá">Spolehlivá</option>
+              <option value="platí pozdě">Platí pozdě</option>
+              <option value="pomalá komunikace">Pomalá komunikace</option>
+              <option value="neposílat bez platby">Neposílat bez platby</option>
+            </select>
+          </label>
+          <fieldset class="customer-tags-fieldset choice-toggle-fieldset">
+            <legend>Štítky</legend>
+            <label class="check toggle-choice"><input type="checkbox" name="tags" value="pozor" /> Pozor</label>
+            <label class="check toggle-choice"><input type="checkbox" name="tags" value="VIP" /> VIP</label>
+          </fieldset>
+          <label class="wide">
+            <span>Poznámka</span>
+            <textarea name="note" rows="2"></textarea>
+          </label>
+        </div>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveCustomerBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="orderDialog">
+      <form method="dialog" id="orderForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="orderDialogTitle">Objednávka</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="id" />
+        <input type="hidden" name="season" />
+        <label class="order-customer-field">
+          <span>Zákazník</span>
+          <select name="customerId" required></select>
+        </label>
+        <label class="order-date-field">
+          <span>Datum</span>
+          <input name="orderDate" type="date" required />
+        </label>
+        <div class="order-top-triplet wide">
+          <label class="order-payment-field">
+            <span>Platba</span>
+            <div class="order-payment-toggle" role="group" aria-label="Platba">
+              <button type="button" class="order-payment-toggle-btn" data-order-payment-option="čeká">Čeká</button>
+              <button type="button" class="order-payment-toggle-btn" data-order-payment-option="zaplaceno">Zaplaceno</button>
+            </div>
+            <select name="paymentStatus" hidden aria-hidden="true" tabindex="-1">
+              <option value="čeká">Čeká</option>
+              <option value="zaplaceno">Zaplaceno</option>
+            </select>
+          </label>
+          <label class="order-status-field">
+            <span>Objednávka</span>
+            <div class="order-status-toggle" role="group" aria-label="Stav objednávky">
+              <button type="button" class="order-status-step" data-order-shipping-option="nová">Nová</button>
+              <button type="button" class="order-status-step" data-order-shipping-option="připraveno">Připravená</button>
+              <button type="button" class="order-status-step" data-order-shipping-option="odesláno">Odeslaná</button>
+              <button type="button" class="order-status-step" data-order-shipping-option="zaplaceno">Vyřízená</button>
+            </div>
+            <select name="shippingStatus" hidden aria-hidden="true" tabindex="-1">
+              <option value="nová">Nová</option>
+              <option value="připraveno">Připravená</option>
+              <option value="odesláno">Odeslaná</option>
+              <option value="zaplaceno">Vyřízená</option>
+            </select>
+          </label>
+          <label class="order-delivery-field">
+            <span>Doprava</span>
+            <div class="order-delivery-logistics-row">
+              <div class="order-delivery-toggle" role="group" aria-label="Doprava">
+                <button type="button" class="order-delivery-toggle-btn" data-order-delivery-option="ship">Odeslat</button>
+                <button type="button" class="order-delivery-toggle-btn" data-order-delivery-option="personal_pickup">Osobní odběr</button>
+              </div>
+              <div class="order-fee-preset-strip order-fee-preset-strip-inline" role="group" aria-label="Dopravní poplatky">
+                <button class="button ghost" type="button" data-order-fee-preset="shipping-cz">Zásilkovna ČR</button>
+                <button class="button ghost" type="button" data-order-fee-preset="shipping-sk">Zásilkovna SK</button>
+                <button class="button ghost" type="button" data-order-fee-preset="packing">Balné</button>
+              </div>
+            </div>
+            <select name="deliveryMethod" hidden aria-hidden="true" tabindex="-1">
+              <option value="ship">Odeslat</option>
+              <option value="personal_pickup">Osobní odběr</option>
+            </select>
+          </label>
+        </div>
+        <div class="inline-actions wide order-copy-actions">
+          <button class="button secondary" type="button" id="copyCustomerOrderTextBtn">Kopírovat text pro zákazníka</button>
+        </div>
+        <div class="variety-picker wide">
+          <label class="picker-with-menu order-variety-name-field">
+            <span>Vybrat z ceníku nebo dopsat vlastní</span>
+            <input id="orderVarietyPicker" autocomplete="off" placeholder="Začni psát název nebo napiš vlastní odrůdu" />
+            <div class="country-menu" id="orderVarietySuggestions" hidden></div>
+          </label>
+          <label class="compact-inline-field order-quantity-field">
+            <span>Kusů</span>
+            <input id="orderVarietyQuantity" inputmode="numeric" value="1" placeholder="1" />
+          </label>
+          <label class="compact-inline-field order-catalog-price-field">
+            <span>Ceníková cena</span>
+            <input id="orderVarietyCatalogPrice" readonly placeholder="doplní se" />
+          </label>
+          <label class="compact-inline-field order-manual-price-field">
+            <span>Ruční cena za ks</span>
+            <input id="orderVarietyManualPrice" inputmode="decimal" placeholder="volitelné" />
+          </label>
+          <button class="button ghost" type="button" id="addOrderVarietyBtn">Přidat položku</button>
+        </div>
+        <label class="wide order-summary-field">
+          <span>Přehled objednávky</span>
+          <div class="order-summary-card">
+            <textarea name="varietiesText" rows="4" placeholder="Piňata Yellow 2x&#10;Kaleidoskop 1x" hidden aria-hidden="true" tabindex="-1"></textarea>
+            <div class="order-line-summary" id="orderLineSummary"></div>
+            <small class="order-fee-preview" id="orderFeePreview"></small>
+          </div>
+        </label>
+        <div class="order-total-row wide">
+          <div class="order-total-highlight" id="orderTotalHighlight"></div>
+          <small class="order-foreign-total-hint" id="orderForeignTotalHint" hidden></small>
+          <fieldset class="currency-switch order-currency-field" hidden aria-hidden="true">
+            <legend>Měna</legend>
+            <label><input type="radio" name="currency" value="CZK" checked /> Kč</label>
+            <label><input type="radio" name="currency" value="EUR" /> EUR</label>
+            <div class="currency-hint-row" hidden>
+              <small id="currencyRateHint">Kurz se načte podle data objednávky.</small>
+              <button class="mini-button" type="button" id="loadOrderRateBtn" title="Dočíst kurz" aria-label="Dočíst kurz">↻</button>
+            </div>
+          </fieldset>
+        </div>
+        <small class="order-price-preview wide" id="orderPricePreview"></small>
+        <input name="price" type="hidden" />
+        <section class="form-optional-block wide" id="orderAdvancedDetails">
+          <small id="orderAdvancedSummary" hidden></small>
+          <div class="details-grid">
+            <div class="fee-extra-list fee-extra-list-order fee-extra-button-list" id="orderExtraFeeFields" hidden></div>
+            <label class="wide order-note-only-field">
+              <span>Poznámka</span>
+              <textarea name="note" rows="2"></textarea>
+            </label>
+          </div>
+          <input name="shippingFee" type="hidden" />
+          <input name="packingFee" type="hidden" />
+          <input name="codFee" type="hidden" />
+          <input name="codAmount" type="hidden" />
+        </section>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveOrderBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="orderCountryPromptDialog" class="compact-prompt-dialog">
+      <form method="dialog" class="compact-prompt-shell">
+        <header class="dialog-heading">
+          <h2>Země pro platbu</h2>
+          <button class="icon-button" type="button" id="closeOrderCountryPromptBtn" aria-label="Zavřít">×</button>
+        </header>
+        <div class="compact-prompt-copy">
+          <p>Zákazník nemá vyplněnou zemi. Pro tuto platbu vyber:</p>
+        </div>
+        <div class="inline-actions wide compact-prompt-actions">
+          <button class="button secondary" type="button" id="orderCountryPromptCzBtn">Česko</button>
+          <button class="button primary" type="button" id="orderCountryPromptForeignBtn">Zahraničí</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="varietyDialog">
+      <form method="dialog" id="varietyForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="varietyDialogTitle">Odrůda</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="id" />
+        <input type="hidden" name="stockAvailable" />
+        <input type="hidden" name="stockReserved" />
+        <input type="hidden" name="mainPhoto" />
+        <input type="hidden" name="removedPhotos" />
+        <label class="wide">
+          <span>Název</span>
+          <input name="name" list="varietyList" required />
+        </label>
+        <label>
+          <span>Prodejní cena</span>
+          <input name="salePrice" inputmode="decimal" placeholder="0" />
+        </label>
+        <input type="hidden" name="saleCurrency" value="CZK" />
+        <fieldset class="choice-toggle-fieldset variety-active-toggle">
+          <legend>Stav</legend>
+          <label class="check toggle-choice toggle-choice-single"><input type="checkbox" name="active" value="1" checked /> Aktivní v nabídce</label>
+        </fieldset>
+        <label class="wide">
+          <span>Přidat fotky z PC</span>
+          <input name="photoFiles" type="file" accept="image/*" multiple />
+        </label>
+        <div class="wide main-photo-picker" id="mainPhotoPicker" hidden></div>
+        <label class="wide">
+          <span>Poznámka</span>
+          <textarea name="note" rows="2"></textarea>
+        </label>
+        <input type="hidden" name="photoUrl" />
+        <textarea name="gallery" hidden></textarea>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveVarietyBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="crossDialog">
+      <form method="dialog" id="crossForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="crossDialogTitle">Křížení</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="id" />
+        <input type="hidden" name="linkedVarietyId" />
+        <input type="hidden" name="seedlingPhotoUrl" />
+        <input type="hidden" name="seedlingGallery" />
+        <input type="hidden" name="seedlingMainPhoto" />
+        <input type="hidden" name="seedlingRemovedPhotos" />
+        <div class="details-grid wide cross-parent-grid">
+          <label>
+            <span>Matka</span>
+            <select name="motherVarietyId" required></select>
+          </label>
+          <label>
+            <span>Pyl</span>
+            <select name="pollenVarietyId" required></select>
+          </label>
+          <label>
+            <span>Datum opylení</span>
+            <input name="pollinatedAt" type="date" required />
+          </label>
+          <label class="cross-stage-field">
+            <span>Fáze</span>
+            <div class="cross-stage-toggle" role="group" aria-label="Fáze křížení">
+              <button type="button" class="cross-stage-step" data-cross-stage-option="opyleno">Opyleno</button>
+              <button type="button" class="cross-stage-step" data-cross-stage-option="vyseto">Vyseto</button>
+              <button type="button" class="cross-stage-step" data-cross-stage-option="roste">Roste</button>
+              <button type="button" class="cross-stage-step" data-cross-stage-option="hotovo">Hotovo</button>
+            </div>
+            <select name="stage" hidden aria-hidden="true" tabindex="-1">
+              <option value="opyleno">Opyleno</option>
+              <option value="vyseto">Vyseto</option>
+              <option value="roste">Roste</option>
+              <option value="hotovo">Hotovo</option>
+            </select>
+          </label>
+        </div>
+        <div class="cross-preview wide" id="crossPreview"></div>
+        <div class="details-grid wide cross-seedling-grid">
+          <label>
+            <span>Název semenáče</span>
+            <input name="seedlingName" placeholder="doplníš až bude hotový" />
+          </label>
+          <label class="cross-rating-field">
+            <span>Výsledek</span>
+            <div class="cross-rating-toggle" role="group" aria-label="Hodnocení křížení">
+              <button type="button" class="cross-rating-btn" data-cross-rating-option="krasna">Krásná</button>
+              <button type="button" class="cross-rating-btn" data-cross-rating-option="hnusna">Hnusná</button>
+              <button type="button" class="cross-rating-btn" data-cross-rating-option="nejista">Nejistá</button>
+            </div>
+            <select name="resultRating" hidden aria-hidden="true" tabindex="-1">
+              <option value="">Bez hodnocení</option>
+              <option value="krasna">Krásná</option>
+              <option value="hnusna">Hnusná</option>
+              <option value="nejista">Nejistá</option>
+            </select>
+          </label>
+          <label class="wide">
+            <span>Fotky semenáče</span>
+            <input name="seedlingPhotoFiles" type="file" accept="image/*" multiple />
+          </label>
+          <div class="wide cross-photo-picker" id="crossSeedlingPhotoPicker" hidden></div>
+          <label class="wide">
+            <span>Poznámka</span>
+            <textarea name="note" rows="2"></textarea>
+          </label>
+        </div>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveCrossBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="offerDialog">
+      <form method="dialog" id="offerForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="offerDialogTitle">Nabídka</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="id" />
+        <label>
+          <span>Název</span>
+          <input name="title" required placeholder="Nabídka 28. 4. 2026" />
+        </label>
+        <label>
+          <span>Datum</span>
+          <input name="date" type="date" required />
+        </label>
+        <label class="offer-status-field">
+          <span>Stav</span>
+          <div class="offer-status-toggle" role="group" aria-label="Stav nabídky">
+            <button type="button" class="offer-status-step" data-offer-status-option="připravená">Připravená</button>
+            <button type="button" class="offer-status-step" data-offer-status-option="zveřejněná">Zveřejněná</button>
+            <button type="button" class="offer-status-step" data-offer-status-option="uzavřená">Uzavřená</button>
+          </div>
+          <select name="status" hidden aria-hidden="true" tabindex="-1">
+            <option value="připravená">Připravená</option>
+            <option value="zveřejněná">Zveřejněná</option>
+            <option value="uzavřená">Uzavřená</option>
+          </select>
+        </label>
+        <div class="form-divider wide">Nepovinné</div>
+        <label class="wide">
+          <span>Poznámka</span>
+          <textarea name="note" rows="3"></textarea>
+        </label>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveOfferBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="offerItemDialog">
+      <form method="dialog" id="offerItemForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="offerItemDialogTitle">Položka nabídky</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="offerId" />
+        <input type="hidden" name="itemId" />
+        <label class="wide">
+          <span>Odrůda</span>
+          <input name="varietyName" list="varietyList" required placeholder="Začni psát název odrůdy" />
+        </label>
+        <div class="wide offer-item-variety-helper" id="offerItemVarietyHelper" hidden>
+          <small id="offerItemVarietyHint"></small>
+          <label class="check" id="offerItemCreateVarietyWrap" hidden>
+            <input type="checkbox" name="createVariety" />
+            Založit rovnou jako novou odrůdu v katalogu
+          </label>
+        </div>
+        <label>
+          <span>Počet ks</span>
+          <input name="quantity" inputmode="numeric" required placeholder="1" />
+        </label>
+        <label>
+          <span>Cena za ks</span>
+          <input name="price" inputmode="decimal" placeholder="0" />
+        </label>
+        <fieldset class="currency-switch">
+          <legend>Měna</legend>
+          <label><input type="radio" name="currency" value="CZK" checked /> Kč</label>
+          <label><input type="radio" name="currency" value="EUR" /> EUR</label>
+        </fieldset>
+        <div class="form-divider wide">Nepovinné</div>
+        <label class="wide">
+          <span>Fotka odřezku</span>
+          <input name="photoFile" type="file" accept="image/*" />
+        </label>
+        <label class="wide">
+          <span>Poznámka</span>
+          <textarea name="note" rows="3" placeholder="např. zakořeněný, menší kus"></textarea>
+        </label>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveOfferItemBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="reservationDialog">
+      <form method="dialog" id="reservationForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="reservationDialogTitle">Rezervace</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="offerId" />
+        <input type="hidden" name="itemId" />
+        <input type="hidden" name="reservationId" />
+        <div class="wide reservation-customer-row">
+          <label>
+            <span>Zákazník</span>
+            <select name="customerId" required></select>
+          </label>
+          <button class="button ghost" type="button" id="newReservationCustomerBtn">Nový zákazník</button>
+        </div>
+        <div class="wide reservation-new-customer" id="reservationNewCustomerFields" hidden>
+          <label>
+            <span>Jméno a příjmení</span>
+            <input name="newCustomerName" autocomplete="name" />
+          </label>
+          <label>
+            <span>FB jméno</span>
+            <input name="newCustomerFbName" placeholder="volitelné" />
+          </label>
+          <label>
+            <span>Telefon</span>
+            <input name="newCustomerPhone" autocomplete="tel" />
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="newCustomerEmail" type="email" autocomplete="email" />
+          </label>
+          <label class="wide">
+            <span>Ulice</span>
+            <input name="newCustomerStreet" autocomplete="address-line1" />
+          </label>
+          <label>
+            <span>PSČ</span>
+            <input name="newCustomerPostalCode" autocomplete="postal-code" />
+          </label>
+          <label>
+            <span>Město</span>
+            <input name="newCustomerCity" autocomplete="address-level2" />
+          </label>
+          <label>
+            <span>Země</span>
+            <div class="country-combo">
+              <input name="newCustomerCountry" autocomplete="country-name" placeholder="napiš libovolnou zemi" data-country-input />
+              <button class="country-toggle" type="button" data-country-toggle aria-label="Vybrat zemi">▾</button>
+              <div class="country-menu" data-country-menu hidden></div>
+            </div>
+          </label>
+          <label class="wide">
+            <span>Poznámka k zákazníkovi</span>
+            <textarea name="newCustomerNote" rows="2"></textarea>
+          </label>
+        </div>
+        <label>
+          <span>Počet ks</span>
+          <input name="quantity" inputmode="numeric" required placeholder="1" />
+        </label>
+        <label>
+          <span>Stav</span>
+          <select name="status">
+            <option value="confirmed">Potvrzeno</option>
+            <option value="alternate">Náhradník</option>
+          </select>
+        </label>
+        <div class="form-divider wide">Nepovinné</div>
+        <label class="wide">
+          <span>Poznámka</span>
+          <textarea name="note" rows="3"></textarea>
+        </label>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
+          <button class="button primary" value="default" type="button" id="saveReservationBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="galleryDialog">
+      <form method="dialog" class="gallery-dialog">
+        <header class="dialog-heading">
+          <h2 id="galleryTitle">Odrůda</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <div id="galleryContent" class="gallery-content"></div>
+      </form>
+    </dialog>
+
+    <datalist id="countryList"></datalist>
+    <datalist id="varietyList"></datalist>
+    <datalist id="seasonList"></datalist>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="vendor/lzma1-browser-setup.js?v=20260526-5" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260526-5" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260526-5" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260526-5" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260526-5" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260526-5" charset="utf-8"></script>
+    <script src="app.js?v=20260526-5" charset="utf-8"></script>
+    <script>
+      if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+        let refreshedByNewWorker = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (refreshedByNewWorker) return;
+          refreshedByNewWorker = true;
+          window.location.reload();
+        });
+        navigator.serviceWorker.register("./service-worker.js").then((registration) => {
+          registration.update?.();
+        }).catch(() => {});
+      }
+    </script>
+  </body>
+</html>

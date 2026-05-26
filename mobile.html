@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#092417" />
+    <meta name="app-build" content="20260526-5" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Africké kopřivy" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Africké kopřivy mobil</title>
+    <link rel="icon" href="assets/brand-africke-koprivy.ico" />
+    <link rel="apple-touch-icon" href="assets/brand-africke-koprivy.jpg" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="mobile-app.css?v=20260526-5" />
+  </head>
+  <body>
+    <div class="mobile-app">
+      <header class="mobile-hero">
+        <img class="mobile-logo" src="assets/brand-africke-koprivy.jpg" alt="" />
+        <div>
+          <p class="eyebrow" id="todayLine">Mobilní appka</p>
+          <h1>Africké kopřivy</h1>
+        </div>
+        <div class="mobile-sync-indicator" id="syncIndicator" role="status" aria-live="polite">Sync vypnutý</div>
+      </header>
+
+      <section class="quick-actions" aria-label="Rychlé akce">
+        <button class="action primary" type="button" data-action="new-offer">🌿 Nová nabídka</button>
+        <button class="action" type="button" data-action="new-order">📦 Nová objednávka</button>
+        <button class="action" type="button" data-action="new-customer">💬 Nový zákazník</button>
+        <button class="action" type="button" data-action="new-variety">🌱 Nová odrůda</button>
+        <button class="action" type="button" data-action="new-cross">🧬 Nové křížení</button>
+        <button class="action install-app-button" type="button" id="installAppBtn" hidden>Instalovat appku</button>
+      </section>
+
+      <main class="mobile-main">
+        <section class="mobile-toolbar">
+          <label class="search">
+            <span>Hledat</span>
+            <input id="searchInput" type="search" placeholder="Jméno, odrůda, poznámka..." autocomplete="off" />
+          </label>
+          <div class="filter-row" id="filterRow"></div>
+        </section>
+
+        <section class="view-summary" id="viewSummary"></section>
+        <section class="card-list" id="cardList" aria-live="polite"></section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Sekce">
+        <button class="active" type="button" data-view="offers">🌿<span>Nabídky</span></button>
+        <button type="button" data-view="orders">📦<span>Objednávky</span></button>
+        <button type="button" data-view="customers">💬<span>Zákazníci</span></button>
+        <button type="button" data-view="varieties">🌱<span>Odrůdy</span></button>
+        <button type="button" data-view="crosses">🧬<span>Křížení</span></button>
+        <button type="button" data-view="sync">⚙️<span>Nastavení</span></button>
+      </nav>
+    </div>
+
+    <div class="sheet-host" id="sheetHost" hidden></div>
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="brand-logo-data.js?v=20260526-5" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260526-5" charset="utf-8"></script>
+    <script src="mobile-app.js?v=20260526-5" charset="utf-8"></script>
+    <script>
+      if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+        let refreshedByNewWorker = false;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (refreshedByNewWorker) return;
+          refreshedByNewWorker = true;
+          window.location.reload();
+        });
+        navigator.serviceWorker.register("./service-worker.js").then((registration) => {
+          registration.update?.();
+        }).catch(() => {});
+      }
+    </script>
+  </body>
+</html>
