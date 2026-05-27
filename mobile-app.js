@@ -1397,15 +1397,34 @@ async function resolvePhotos(root) {
       const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
       if (!fallbackUrl) return;
       image.src = fallbackUrl;
-      image.classList.remove("photo-missing");
+      clearPhotoMissing(image);
     };
     let url = await resolvePhotoUrl(ref);
     if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
     if (url) {
       image.src = url;
-      image.classList.remove("photo-missing");
-    } else image.classList.add("photo-missing");
+      clearPhotoMissing(image);
+    } else markPhotoMissing(image);
   }));
+}
+
+function markPhotoMissing(image) {
+  if (!image) return;
+  image.classList.add("photo-missing");
+  image.hidden = true;
+  const parent = image.parentElement;
+  if (!parent || parent.querySelector(".photo-missing-label")) return;
+  const label = document.createElement("span");
+  label.className = "photo-missing-label";
+  label.textContent = initials(image.getAttribute("alt") || "AK");
+  parent.append(label);
+}
+
+function clearPhotoMissing(image) {
+  if (!image) return;
+  image.hidden = false;
+  image.classList.remove("photo-missing");
+  image.parentElement?.querySelector(".photo-missing-label")?.remove();
 }
 
 async function resolvePhotoUrl(ref) {

@@ -10057,24 +10057,24 @@ function hydrateLocalPhotoImages(root = document) {
     const ref = image.dataset.localPhotoRef;
     const url = await resolveLocalPhotoUrl(ref);
     if (!url) {
-      image.classList.add("photo-missing");
+      markPhotoMissing(image);
       return;
     }
     image.src = url;
     image.dataset.photoLoaded = "1";
-    image.classList.remove("photo-missing");
+    clearPhotoMissing(image);
   });
   root.querySelectorAll("[data-indexed-photo-ref]").forEach(async (image) => {
     if (image.dataset.photoLoaded === "1") return;
     const ref = image.dataset.indexedPhotoRef;
     const url = await resolveIndexedPhotoUrl(ref);
     if (!url) {
-      image.classList.add("photo-missing");
+      markPhotoMissing(image);
       return;
     }
     image.src = url;
     image.dataset.photoLoaded = "1";
-    image.classList.remove("photo-missing");
+    clearPhotoMissing(image);
   });
   root.querySelectorAll("[data-supabase-photo-ref]").forEach(async (image) => {
     if (image.dataset.photoLoaded === "1") return;
@@ -10082,13 +10082,18 @@ function hydrateLocalPhotoImages(root = document) {
     const fallbackRef = image.dataset.supabasePhotoFallback || "";
     const fallbackAllowed = image.dataset.supabasePhotoAllowFallback === "1";
     image.onerror = async () => {
-      if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") return;
+      if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") {
+        markPhotoMissing(image);
+        return;
+      }
       image.dataset.photoFallbackLoaded = "1";
       const fallbackUrl = await resolveSupabasePhotoUrl(fallbackRef);
       if (fallbackUrl) {
         image.src = fallbackUrl;
         image.dataset.photoLoaded = "1";
-        image.classList.remove("photo-missing");
+        clearPhotoMissing(image);
+      } else {
+        markPhotoMissing(image);
       }
     };
     try {
@@ -10097,16 +10102,35 @@ function hydrateLocalPhotoImages(root = document) {
         url = await resolveSupabasePhotoUrl(fallbackRef);
       }
       if (!url) {
-        image.classList.add("photo-missing");
+        markPhotoMissing(image);
         return;
       }
       image.src = url;
       image.dataset.photoLoaded = "1";
-      image.classList.remove("photo-missing");
+      clearPhotoMissing(image);
     } catch {
-      image.classList.add("photo-missing");
+      markPhotoMissing(image);
     }
   });
+}
+
+function markPhotoMissing(image) {
+  if (!image) return;
+  image.classList.add("photo-missing");
+  image.hidden = true;
+  const parent = image.parentElement;
+  if (!parent || parent.querySelector(".photo-missing-label")) return;
+  const label = document.createElement("span");
+  label.className = "photo-missing-label";
+  label.textContent = varietyInitials(image.getAttribute("alt") || "AK");
+  parent.append(label);
+}
+
+function clearPhotoMissing(image) {
+  if (!image) return;
+  image.hidden = false;
+  image.classList.remove("photo-missing");
+  image.parentElement?.querySelector(".photo-missing-label")?.remove();
 }
 
 function safeFileName(value, fallback = "odruda") {
