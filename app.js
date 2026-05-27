@@ -9,14 +9,18 @@ const PHOTO_VARIETIES_DIR = "odrudy";
 const LOCAL_PHOTO_PREFIX = "local-photo:";
 const INDEXED_PHOTO_PREFIX = "indexed-photo:";
 const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
+const SUPABASE_THUMB_DIR = "_nahledy";
+const SUPABASE_THUMB_MAX_SIZE = 520;
+const SUPABASE_THUMB_QUALITY = 0.82;
 const MOBILE_PHOTO_CATALOG_TYPE = "africke-koprivy-mobile-photo-catalog-v1";
 const MOBILE_PHOTO_EXPORT_TYPE = "africke-koprivy-mobile-photo-export-v1";
 const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
-const DEFAULT_SUPABASE_URL = "https://nexthiehxcksrnydepnv.supabase.co";
-const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_-qU64us5vPkxYQoPD-bt9g_Uv5ZtPc2";
+const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
+const LEGACY_MANAGED_SUPABASE_URLS = ["https://nexthiehxcksrnydepnv.supabase.co"];
 const SEED_SIGNATURE = typeof window !== "undefined" ? String(window.AFRICKE_KOPRIVY_SEED_SIGNATURE || "").trim() : "";
 const SEED_SIGNATURE_KEY = `${STORE_KEY}:seed-signature`;
 const ORDER_PAYMENT_QR_SIZE = 240;
@@ -357,9 +361,11 @@ const els = {
 init();
 
 function init() {
+  migrateSupabaseSyncClientConfig();
   els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", {
     dateStyle: "full",
   }).format(new Date());
+  if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
 
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => openMainView(button.dataset.view));
@@ -768,6 +774,23 @@ function normalizeLoadedData(parsed) {
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
 
   return data;
+}
+
+function syncFinishedCrossVarieties(data = state.data) {
+  const previousData = state.data;
+  let changed = false;
+  if (data && data !== state.data) state.data = data;
+  try {
+    (data.crosses || []).forEach((cross) => {
+      if (clean(cross.seedlingName) && !findVariety(clean(cross.linkedVarietyId))) {
+        cross.linkedVarietyId = ensureVarietyFromCross(cross);
+        changed = true;
+      }
+    });
+  } finally {
+    if (previousData && data !== previousData) state.data = previousData;
+  }
+  return changed;
 }
 
 function fallbackData() {
@@ -2259,7 +2282,7 @@ function crossRowToneClass(cross) {
 }
 
 function crossActorThumb(image, label) {
-  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", 'loading="lazy"')}</span>`;
+  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}</span>`;
   return `<span class="cross-actor-thumb empty">${escapeHtml(varietyInitials(label || "K"))}</span>`;
 }
 
@@ -2345,6 +2368,7 @@ function renderCrosses() {
             <td><span class="cell-main">${escapeHtml(createdVariety?.name || "—")}</span></td>
             <td>
               <span class="row-actions">
+                <button class="mini-button" type="button" title="Stáhnout obrázek" data-download-cross-card="${escapeHtml(cross.id)}">▣</button>
                 <button class="mini-button" type="button" title="Upravit" data-edit-cross="${escapeHtml(cross.id)}">✎</button>
                 <button class="mini-button" type="button" title="Smazat" data-delete-cross="${escapeHtml(cross.id)}">×</button>
               </span>
@@ -2366,6 +2390,12 @@ function renderCrosses() {
   });
   els.crossesTable.querySelectorAll("[data-edit-cross]").forEach((button) => {
     button.addEventListener("click", () => openCrossDialog(button.dataset.editCross));
+  });
+  els.crossesTable.querySelectorAll("[data-download-cross-card]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      downloadCrossCard(button.dataset.downloadCrossCard);
+    });
   });
   els.crossesTable.querySelectorAll("[data-delete-cross]").forEach((button) => {
     button.addEventListener("click", () => deleteCross(button.dataset.deleteCross));
@@ -2393,6 +2423,7 @@ function renderCrossDetail() {
         ${cross.note ? `<p class="detail-note-text">${escapeHtml(cross.note)}</p>` : ""}
       </div>
       <div class="detail-actions">
+        <button class="button ghost" type="button" data-download-cross-detail="${escapeHtml(cross.id)}">Stáhnout obrázek</button>
         <button class="button primary" type="button" data-edit-cross-detail="${escapeHtml(cross.id)}">Upravit</button>
         ${createdVariety ? `<button class="button ghost" type="button" data-open-cross-variety="${escapeHtml(createdVariety.id)}">Odrůda</button>` : ""}
       </div>
@@ -2417,6 +2448,7 @@ function renderCrossDetail() {
     </section>
   `;
 
+  els.crossDetail.querySelector("[data-download-cross-detail]")?.addEventListener("click", () => downloadCrossCard(cross.id));
   els.crossDetail.querySelector("[data-edit-cross-detail]")?.addEventListener("click", () => openCrossDialog(cross.id));
   els.crossDetail.querySelector("[data-open-cross-variety]")?.addEventListener("click", () => {
     openVarietyDetailDialog(els.crossDetail.querySelector("[data-open-cross-variety]").dataset.openCrossVariety);
@@ -4658,6 +4690,165 @@ function renderCurrentOrderCustomerImageCanvas(text, qrState = null, contextData
   return canvas;
 }
 
+async function downloadCrossCard(id) {
+  const cross = findCross(id);
+  if (!cross) return;
+  try {
+    const canvas = await renderCrossCardCanvas(cross);
+    downloadCanvasAsPng(canvas, `${safeFileName(`krizeni-${crossLineageLabel(cross)}`, "krizeni")}.png`);
+    toast("Obrázek křížení stažen.");
+  } catch {
+    toast("Obrázek křížení se nepodařilo vytvořit.");
+  }
+}
+
+async function renderCrossCardCanvas(cross) {
+  const mother = findVariety(cross.motherVarietyId);
+  const pollen = findVariety(cross.pollenVarietyId);
+  const seedlingName = clean(cross.seedlingName) || "Semenáč";
+  const cards = [
+    { role: "MATKA", name: mother?.name || "Matka", image: varietyImages(mother)[0] },
+    { role: "PYL", name: pollen?.name || "Pyl", image: varietyImages(pollen)[0] },
+    { role: "SEMENÁČ", name: seedlingName, image: crossSeedlingMainPhoto(cross), accent: true },
+  ];
+  const loaded = await Promise.all(cards.map(async (card) => ({ ...card, imageNode: await loadCanvasPhoto(card.image) })));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1500;
+  const context = canvas.getContext("2d");
+  if (!context) return canvas;
+
+  const background = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  background.addColorStop(0, "#fffdf6");
+  background.addColorStop(0.55, "#eef8ee");
+  background.addColorStop(1, "#d7f3df");
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const logo = CUSTOMER_IMAGE_BRAND_LOGO;
+  const hasLogo = Boolean(logo?.complete && logo.naturalWidth && logo.naturalHeight);
+  drawCrossCardActor(context, loaded[0], 70, 70, 395, 405, { imageHeight: 280, nameFont: 26, padding: 16, compact: true });
+  drawCrossCardActor(context, loaded[1], 615, 70, 395, 405, { imageHeight: 280, nameFont: 26, padding: 16, compact: true });
+  drawHeroSeedling(context, loaded[2], 70, 520, 940, 875);
+
+  context.fillStyle = "#15563d";
+  context.font = "800 58px 'Segoe UI', Arial, sans-serif";
+  context.textAlign = "center";
+  context.fillText("×", 540, 275);
+  context.fillText("=", 540, 505);
+  context.textAlign = "left";
+  return canvas;
+}
+
+function drawCrossCardActor(context, card, x, y, width, height, options = {}) {
+  context.save();
+  const actorGradient = context.createLinearGradient(x, y, x + width, y + height);
+  actorGradient.addColorStop(0, card.accent ? "#eefbf1" : "#fffefa");
+  actorGradient.addColorStop(1, card.accent ? "#d9f4e5" : "#fbf5e8");
+  context.fillStyle = actorGradient;
+  roundRect(context, x, y, width, height, 34);
+  context.fill();
+  context.strokeStyle = card.accent ? "#80c49b" : "#d9c99f";
+  context.lineWidth = 2;
+  context.stroke();
+
+  const padding = options.padding ?? 24;
+  const imageX = x + padding;
+  const imageY = y + padding;
+  const imageW = width - padding * 2;
+  const imageH = options.imageHeight || (card.accent ? 475 : 265);
+  context.fillStyle = "#edf2e8";
+  roundRect(context, imageX, imageY, imageW, imageH, 24);
+  context.fill();
+  if (card.imageNode) {
+    context.save();
+    roundRect(context, imageX, imageY, imageW, imageH, 24);
+    context.clip();
+    drawContainedImage(context, card.imageNode, imageX, imageY, imageW, imageH);
+    context.restore();
+  } else {
+    context.fillStyle = "#15563d";
+    context.font = "800 70px 'Segoe UI', Arial, sans-serif";
+    context.textAlign = "center";
+    context.fillText(varietyInitials(card.name), imageX + imageW / 2, imageY + imageH / 2 + 22);
+    context.textAlign = "left";
+  }
+
+  context.fillStyle = "#647360";
+  context.font = "800 19px 'Segoe UI', Arial, sans-serif";
+  const labelY = imageY + imageH + 46;
+  const textX = x + padding + 2;
+  context.fillText(card.role, textX, labelY);
+  context.fillStyle = "#123629";
+  const nameFontSize = options.nameFont || (card.accent ? 44 : 28);
+  context.font = `${card.accent ? "900" : "800"} ${nameFontSize}px 'Segoe UI', Arial, sans-serif`;
+  wrapCanvasText(context, card.name, width - padding * 2, context.font).slice(0, options.compact ? 2 : 3).forEach((line, index) => {
+    context.fillText(line, textX, labelY + nameFontSize + 8 + index * (card.accent ? 54 : 34));
+  });
+  context.restore();
+}
+
+function drawHeroSeedling(context, card, x, y, width, height) {
+  context.save();
+  const imageH = height - 18;
+  const imageW = width;
+  if (card.imageNode) {
+    context.save();
+    roundRect(context, x, y, imageW, imageH, 36);
+    context.clip();
+    drawContainedImage(context, card.imageNode, x, y, imageW, imageH);
+    context.restore();
+  } else {
+    context.fillStyle = "#e3f3e8";
+    roundRect(context, x, y, imageW, imageH, 36);
+    context.fill();
+    context.fillStyle = "#15563d";
+    context.font = "900 120px 'Segoe UI', Arial, sans-serif";
+    context.textAlign = "center";
+    context.fillText(varietyInitials(card.name), x + imageW / 2, y + imageH / 2 + 40);
+    context.textAlign = "left";
+  }
+  context.textAlign = "center";
+  const hasCustomName = normalize(card.name) !== "semenac";
+  context.fillStyle = "#123629";
+  context.font = "900 58px 'Segoe UI', Arial, sans-serif";
+  wrapCanvasText(context, hasCustomName ? card.name : "Semenáč", width - 80, context.font).slice(0, 2).forEach((line, index) => {
+    context.fillText(line, x + width / 2, y + imageH + 58 + index * 64);
+  });
+  context.textAlign = "left";
+  context.restore();
+}
+
+function drawContainedImage(context, image, x, y, width, height) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const targetWidth = image.naturalWidth * scale;
+  const targetHeight = image.naturalHeight * scale;
+  const targetX = x + (width - targetWidth) / 2;
+  const targetY = y + (height - targetHeight) / 2;
+  context.drawImage(image, targetX, targetY, targetWidth, targetHeight);
+}
+
+async function loadCanvasPhoto(ref) {
+  const value = clean(ref);
+  if (!value) return null;
+  let url = value;
+  if (isLocalPhotoRef(value)) url = await resolveLocalPhotoUrl(value);
+  else if (isIndexedPhotoRef(value)) url = await resolveIndexedPhotoUrl(value, { original: true });
+  else if (isSupabasePhotoRef(value)) url = await resolveSupabasePhotoUrl(value);
+  if (!url) return null;
+  return loadCanvasImage(url);
+}
+
+function loadCanvasImage(url) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
 function drawCustomerImageBrandLogo(context, image, x, y, size) {
   context.save();
   roundRect(context, x, y, size, size, 22);
@@ -4901,7 +5092,7 @@ function renderMainPhotoPicker(variety) {
         .map(
           (image, index) => `<div class="main-photo-option-wrap" data-photo-option="${escapeHtml(image)}">
             <button class="main-photo-option ${image === mainPhoto || (!mainPhoto && index === 0) ? "active" : ""}" type="button" data-main-photo="${escapeHtml(image)}" title="Nastavit jako hlavní">
-              ${photoImageMarkup(image, `${variety?.name || "Odrůda"} ${index + 1}`, "", 'loading="lazy"')}
+              ${photoImageMarkup(image, `${variety?.name || "Odrůda"} ${index + 1}`, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}
             </button>
             <button class="main-photo-remove" type="button" data-remove-photo="${escapeHtml(image)}" aria-label="Odstranit fotku">×</button>
           </div>`,
@@ -5095,7 +5286,7 @@ function renderCrossSeedlingPhotoPicker() {
       ${items
         .map((item, index) => `<span class="cross-photo-option ${item.key === activeMain || (!activeMain && index === 0) ? "active" : ""}">
           <button class="cross-photo-main-button" type="button" data-cross-main-photo="${escapeHtml(item.key)}" title="Nastavit jako hlavní">
-            ${photoImageMarkup(item.image, `${form.elements.seedlingName.value || "Semenáč"} ${index + 1}`, "", 'loading="lazy"')}
+            ${photoImageMarkup(item.image, `${form.elements.seedlingName.value || "Semenáč"} ${index + 1}`, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}
             <small>${escapeHtml(item.label)}</small>
           </button>
           <button class="cross-photo-remove-button" type="button" data-cross-remove-photo="${escapeHtml(item.key)}" title="Smazat fotku" aria-label="Smazat fotku">×</button>
@@ -5210,7 +5401,7 @@ async function saveCrossFromForm() {
     updatedAt: now,
   });
 
-  if (cross.stage === "hotovo" && cross.seedlingName) {
+  if (cross.seedlingName) {
     cross.linkedVarietyId = ensureVarietyFromCross(cross);
     const linkedVariety = findVariety(cross.linkedVarietyId);
     if (linkedVariety && removedPhotos.size) {
@@ -6222,17 +6413,45 @@ function mergeImagesIntoCross(cross, images) {
 
 function loadSupabaseSyncConfig() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}");
-    return {
-      url: clean(parsed.url) || DEFAULT_SUPABASE_URL,
-      anonKey: clean(parsed.anonKey) || DEFAULT_SUPABASE_ANON_KEY,
-      email: clean(parsed.email),
-      autoSync: Boolean(parsed.autoSync),
-      lastPulledAt: clean(parsed.lastPulledAt),
-      lastPushedAt: clean(parsed.lastPushedAt),
-    };
+    return normalizeSupabaseSyncConfig(JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}"));
   } catch {
-    return { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY, email: "", autoSync: false, lastPulledAt: "", lastPushedAt: "" };
+    return normalizeSupabaseSyncConfig();
+  }
+}
+
+function normalizeSupabaseSyncConfig(parsed = {}) {
+  const storedUrl = clean(parsed.url);
+  const storedAnonKey = clean(parsed.anonKey);
+  const useManagedDefaults = !storedUrl || LEGACY_MANAGED_SUPABASE_URLS.includes(storedUrl);
+  return {
+    url: useManagedDefaults ? DEFAULT_SUPABASE_URL : storedUrl,
+    anonKey: useManagedDefaults ? DEFAULT_SUPABASE_ANON_KEY : (storedAnonKey || DEFAULT_SUPABASE_ANON_KEY),
+    email: clean(parsed.email),
+    autoSync: Boolean(parsed.autoSync),
+    lastPulledAt: clean(parsed.lastPulledAt),
+    lastPushedAt: clean(parsed.lastPushedAt),
+  };
+}
+
+function migrateSupabaseSyncClientConfig() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}");
+    const normalized = normalizeSupabaseSyncConfig(parsed);
+    const storedUrl = clean(parsed.url);
+    const storedAnonKey = clean(parsed.anonKey);
+    const changed = storedUrl !== normalized.url
+      || storedAnonKey !== normalized.anonKey
+      || clean(parsed.email) !== normalized.email
+      || Boolean(parsed.autoSync) !== normalized.autoSync
+      || clean(parsed.lastPulledAt) !== normalized.lastPulledAt
+      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt;
+    if (!changed) return;
+    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
+    if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
+      localStorage.removeItem(SUPABASE_SYNC_SESSION_KEY);
+    }
+  } catch {
+    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSupabaseSyncConfig()));
   }
 }
 
@@ -6290,14 +6509,14 @@ function loadSupabaseSyncConfigIntoPanel() {
 
 function saveSupabaseSyncConfigFromPanel(options = {}) {
   const previous = loadSupabaseSyncConfig();
-  const config = {
+  const config = normalizeSupabaseSyncConfig({
     url: clean(els.syncSupabaseUrl?.value) || DEFAULT_SUPABASE_URL,
     anonKey: clean(els.syncSupabaseAnonKey?.value) || DEFAULT_SUPABASE_ANON_KEY,
     email: clean(els.syncEmail?.value),
     autoSync: true,
     lastPulledAt: previous.lastPulledAt || "",
     lastPushedAt: previous.lastPushedAt || "",
-  };
+  });
   localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = true;
   updateSupabaseSyncStatus("Nastavení syncu uložené.");
@@ -6359,7 +6578,7 @@ function updateSupabaseSyncPanelMode() {
 }
 
 function updateSupabaseSyncConfig(patch) {
-  const config = { ...loadSupabaseSyncConfig(), ...(patch || {}) };
+  const config = normalizeSupabaseSyncConfig({ ...loadSupabaseSyncConfig(), ...(patch || {}) });
   localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = Boolean(config.autoSync);
 }
@@ -6564,6 +6783,7 @@ async function pullSupabaseSync(options = {}) {
     const decrypted = await decryptSyncPayload(encrypted, encryptionPassword);
     state.syncEncryptionVerifiedPassword = encryptionPassword;
     state.data = normalizeLoadedData(decrypted);
+    syncFinishedCrossVarieties();
     saveData({ skipAutoSync: true });
     renderAll();
     updateSupabaseSyncConfig({ lastPulledAt: cloudUpdatedAt });
@@ -6682,7 +6902,12 @@ function collectSupabasePhotoPaths(data) {
   const paths = new Set();
   const add = (value) => {
     const ref = clean(value);
-    if (isSupabasePhotoRef(ref)) paths.add(parseSupabasePhotoRef(ref));
+    if (isSupabasePhotoRef(ref)) {
+      const path = parseSupabasePhotoRef(ref);
+      paths.add(path);
+      const thumbPath = supabaseThumbnailPath(path);
+      if (thumbPath) paths.add(thumbPath);
+    }
   };
   for (const variety of data?.varieties || []) {
     add(variety.photoUrl);
@@ -6751,7 +6976,31 @@ async function uploadPhotoForSync(userId, ownerName, image) {
   if (!file) return value;
   const path = await supabaseStoragePathForPhoto(userId, ownerName, file);
   await uploadSupabaseStorageFile(path, file);
+  const thumb = await createPhotoThumbnailFile(file);
+  if (thumb) await uploadSupabaseStorageFile(supabaseThumbnailPath(path), thumb);
   return supabasePhotoRef(path);
+}
+
+async function createPhotoThumbnailFile(file) {
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    URL.revokeObjectURL(objectUrl);
+    if (!image) return null;
+    const scale = Math.min(1, SUPABASE_THUMB_MAX_SIZE / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", SUPABASE_THUMB_QUALITY));
+    return blob ? new File([blob], `${safeFileName(file.name || "nahled", "nahled")}.jpg`, { type: "image/jpeg" }) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function supabaseStoragePathForPhoto(userId, ownerName, file) {
@@ -6787,6 +7036,7 @@ async function resolveSupabasePhotoUrl(ref) {
     photoRuntime.supabaseSignedUrls.set(ref, url);
     return url;
   }
+  if (isSupabaseThumbnailPath(path)) return "";
   const signed = await createSupabaseSignedPhotoUrl(path);
   if (!signed) return "";
   photoRuntime.supabaseSignedUrls.set(ref, signed);
@@ -6796,6 +7046,8 @@ async function resolveSupabasePhotoUrl(ref) {
 async function resolveSupabasePhotoFile(ref) {
   const path = parseSupabasePhotoRef(ref);
   if (!path) return null;
+  const cached = await getCachedSupabasePhotoFile(ref);
+  if (cached) return cached;
   const session = await ensureSupabaseSession();
   const response = await fetch(`${supabaseBaseUrl()}/storage/v1/object/${SUPABASE_SYNC_BUCKET}/${encodeStoragePath(path)}`, {
     headers: {
@@ -6805,7 +7057,63 @@ async function resolveSupabasePhotoFile(ref) {
   });
   if (!response.ok) return null;
   const blob = await response.blob();
-  return new File([blob], path.split("/").pop() || "fotka.jpg", { type: blob.type || "image/jpeg" });
+  const file = new File([blob], path.split("/").pop() || "fotka.jpg", { type: blob.type || "image/jpeg" });
+  cacheSupabasePhotoFile(ref, file).catch(() => {});
+  return file;
+}
+
+async function getCachedSupabasePhotoFile(ref) {
+  const key = supabasePhotoCacheKey(ref);
+  if (!key) return null;
+  try {
+    const db = await openPhotoDb();
+    if (!db) return null;
+    return await new Promise((resolve) => {
+      const transaction = db.transaction(PHOTO_BLOB_STORE, "readonly");
+      const request = transaction.objectStore(PHOTO_BLOB_STORE).get(key);
+      request.addEventListener("success", () => {
+        const record = request.result;
+        const blob = record?.file || record?.blob;
+        resolve(blob ? new File([blob], record.name || "fotka.jpg", { type: record.type || blob.type || "image/jpeg" }) : null);
+      });
+      request.addEventListener("error", () => resolve(null));
+      transaction.addEventListener("complete", () => db.close());
+      transaction.addEventListener("abort", () => db.close());
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSupabasePhotoFile(ref, file) {
+  const key = supabasePhotoCacheKey(ref);
+  if (!key || !file) return;
+  const db = await openPhotoDb();
+  if (!db) return;
+  await new Promise((resolve, reject) => {
+    const transaction = db.transaction(PHOTO_BLOB_STORE, "readwrite");
+    transaction.objectStore(PHOTO_BLOB_STORE).put(
+      { file, blob: file, name: file.name, type: file.type, cachedAt: new Date().toISOString() },
+      key
+    );
+    transaction.addEventListener("complete", () => {
+      db.close();
+      resolve();
+    });
+    transaction.addEventListener("error", () => {
+      db.close();
+      reject(transaction.error);
+    });
+    transaction.addEventListener("abort", () => {
+      db.close();
+      reject(transaction.error);
+    });
+  });
+}
+
+function supabasePhotoCacheKey(ref) {
+  const value = clean(ref);
+  return value && isSupabasePhotoRef(value) ? `supabase-cache:${value}` : "";
 }
 
 async function createSupabaseSignedPhotoUrl(path) {
@@ -6927,6 +7235,26 @@ function supabasePhotoRef(path) {
 
 function parseSupabasePhotoRef(ref) {
   return decodeURIComponent(clean(ref).slice(SUPABASE_PHOTO_PREFIX.length));
+}
+
+function supabaseThumbnailRef(ref) {
+  const path = parseSupabasePhotoRef(ref);
+  const thumbPath = supabaseThumbnailPath(path);
+  return thumbPath ? supabasePhotoRef(thumbPath) : ref;
+}
+
+function supabaseThumbnailPath(path) {
+  const cleanPath = clean(path);
+  if (!cleanPath || cleanPath.includes(`/${SUPABASE_THUMB_DIR}/`)) return cleanPath;
+  const parts = cleanPath.split("/");
+  const fileName = parts.pop();
+  if (!fileName) return cleanPath;
+  parts.push(SUPABASE_THUMB_DIR, fileName.replace(/\.[a-z0-9]+$/i, ".jpg"));
+  return parts.join("/");
+}
+
+function isSupabaseThumbnailPath(path) {
+  return clean(path).includes(`/${SUPABASE_THUMB_DIR}/`);
 }
 
 function encodeStoragePath(path) {
@@ -7062,6 +7390,7 @@ function filteredVarieties() {
       if (state.varietyUsageFilter === "used" && used === 0) return false;
       if (state.varietyUsageFilter === "unused" && used > 0) return false;
       if (state.varietyUsageFilter === "active" && variety.active === false) return false;
+      if (state.varietyUsageFilter === "photo" && !varietyImages(variety).length) return false;
       if (state.varietyUsageFilter === "inactive" && variety.active !== false) return false;
       if (!query) return true;
       return normalize([variety.name, variety.note, variety.salePrice, variety.saleCurrency, varietyPriceText(variety)].join(" ")).includes(query);
@@ -7592,7 +7921,10 @@ function photoImageMarkup(image, alt, extraClass = "", extraAttrs = "") {
     return `<img${classAttr} data-indexed-photo-ref="${escapeHtml(image)}" alt="${escapeHtml(alt)}"${attrs} />`;
   }
   if (isSupabasePhotoRef(image)) {
-    return `<img${classAttr} data-supabase-photo-ref="${escapeHtml(image)}" alt="${escapeHtml(alt)}"${attrs} />`;
+    const previewRef = clean(extraAttrs).includes("data-photo-full") ? image : supabaseThumbnailRef(image);
+    const allowFallback = clean(extraAttrs).includes("data-supabase-photo-allow-fallback");
+    const fallbackAttr = allowFallback && previewRef !== image ? ` data-supabase-photo-fallback="${escapeHtml(image)}"` : "";
+    return `<img${classAttr} data-supabase-photo-ref="${escapeHtml(previewRef)}"${fallbackAttr} alt="${escapeHtml(alt)}"${attrs} />`;
   }
   return `<img${classAttr} src="${escapeHtml(image)}" alt="${escapeHtml(alt)}"${attrs} />`;
 }
@@ -7762,7 +8094,7 @@ function galleryMainContent(images, varietyName, index) {
   const arrows = images.length > 1;
   return `
     ${arrows ? '<button class="gallery-arrow gallery-arrow-prev" type="button" data-gallery-step="-1" aria-label="Předchozí fotka">‹</button>' : ""}
-    ${photoImageMarkup(images[index], varietyName)}
+    ${photoImageMarkup(images[index], varietyName, "", "data-photo-full")}
     ${arrows ? '<button class="gallery-arrow gallery-arrow-next" type="button" data-gallery-step="1" aria-label="Další fotka">›</button>' : ""}
   `;
 }
@@ -9747,8 +10079,23 @@ function hydrateLocalPhotoImages(root = document) {
   root.querySelectorAll("[data-supabase-photo-ref]").forEach(async (image) => {
     if (image.dataset.photoLoaded === "1") return;
     const ref = image.dataset.supabasePhotoRef;
+    const fallbackRef = image.dataset.supabasePhotoFallback || "";
+    const fallbackAllowed = image.dataset.supabasePhotoAllowFallback === "1";
+    image.onerror = async () => {
+      if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") return;
+      image.dataset.photoFallbackLoaded = "1";
+      const fallbackUrl = await resolveSupabasePhotoUrl(fallbackRef);
+      if (fallbackUrl) {
+        image.src = fallbackUrl;
+        image.dataset.photoLoaded = "1";
+        image.classList.remove("photo-missing");
+      }
+    };
     try {
-      const url = await resolveSupabasePhotoUrl(ref);
+      let url = await resolveSupabasePhotoUrl(ref);
+      if (!url && fallbackAllowed && fallbackRef) {
+        url = await resolveSupabasePhotoUrl(fallbackRef);
+      }
       if (!url) {
         image.classList.add("photo-missing");
         return;

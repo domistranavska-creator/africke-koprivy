@@ -8,10 +8,15 @@ const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
-const DEFAULT_SUPABASE_URL = "https://nexthiehxcksrnydepnv.supabase.co";
-const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_-qU64us5vPkxYQoPD-bt9g_Uv5ZtPc2";
+const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
+const LEGACY_MANAGED_SUPABASE_URLS = ["https://nexthiehxcksrnydepnv.supabase.co"];
 const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
+const SUPABASE_THUMB_DIR = "_nahledy";
+const SUPABASE_THUMB_MAX_SIZE = 520;
+const SUPABASE_THUMB_QUALITY = 0.82;
 const INDEXED_PHOTO_PREFIX = "indexed-photo:";
+const BRAND_LOGO_IMAGE_DATA_URI = clean(window.AFRICKE_KOPRIVY_BRAND_LOGO_DATA_URI || "");
 
 const stageLabels = { opyleno: "Opyleno", vyseto: "Vyseto", roste: "Roste", hotovo: "Hotovo" };
 const ratingLabels = { krasna: "Krásná", hnusna: "Hnusná", nejista: "Nejistá" };
@@ -46,7 +51,9 @@ const els = {
 init();
 
 function init() {
+  migrateSyncConfig();
   els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
+  if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
   document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runAction(button.dataset.action)));
   els.search.addEventListener("input", () => {
@@ -245,7 +252,7 @@ function renderCrosses() {
       thumb: crossSeedlingImages(cross)[0],
       thumbText: initials(crossLineage(cross)),
       pills: [`🚚 ${stageLabels[cross.stage] || "Opyleno"}`, ratingLabels[cross.resultRating] ? `✅ ${ratingLabels[cross.resultRating]}` : "Bez hodnocení", cross.seedlingName || "—"],
-      actions: [["edit-cross", "✎"], ["delete-cross", "×"]],
+      actions: [["download-cross", "▣"], ["edit-cross", "✎"], ["delete-cross", "×"]],
     });
   }).join("");
 }
@@ -288,7 +295,8 @@ function renderSync() {
 }
 
 function card({ id, type, tone = "", title, sub = "", price = "", pills = [], badges = [], actions = [], thumb = "", thumbText = "" }) {
-  const thumbHtml = thumb || thumbText ? `<span class="thumb">${thumb ? `<img data-photo-ref="${escapeHtml(thumb)}" alt="">` : escapeHtml(thumbText)}</span>` : "";
+  const thumbRef = thumbPreviewRef(thumb);
+  const thumbHtml = thumb || thumbText ? `<span class="thumb">${thumb ? `<img data-photo-ref="${escapeHtml(thumbRef)}" alt="">` : escapeHtml(thumbText)}</span>` : "";
   return `<article class="card card-${escapeHtml(type)} ${tone} ${badges.length ? "has-status" : ""}" data-card="${type}" data-id="${escapeHtml(id)}">
     ${badges.length ? `<div class="status-badges">${badges.filter(Boolean).map((badge) => `<span class="pill">${escapeHtml(badge)}</span>`).join("")}</div>` : ""}
     <div class="card-row">
@@ -337,6 +345,7 @@ function handleRowAction(action, id) {
   if (action === "edit-variety") return openVarietySheet(id);
   if (action === "delete-variety") return deleteItem("varieties", id, "Odrůdu");
   if (action === "edit-cross") return openCrossSheet(id);
+  if (action === "download-cross") return downloadCrossCard(id);
   if (action === "delete-cross") return deleteItem("crosses", id, "Křížení");
   if (action === "edit-offer") return openOfferSheet(id);
   if (action === "delete-offer") return deleteItem("offers", id, "Nabídku");
@@ -501,7 +510,7 @@ function openCrossSheet(id = "") {
       createdAt: cross.createdAt || now,
       updatedAt: now,
     });
-    if (item.stage === "hotovo" && item.seedlingName) item.linkedVarietyId = ensureVarietyFromCross(item);
+    if (item.seedlingName) item.linkedVarietyId = ensureVarietyFromCross(item);
     upsert("crosses", item);
   });
   document.querySelector('[name="motherVarietyId"]').value = cross.motherVarietyId || state.data.varieties[0]?.id || "";
@@ -521,8 +530,9 @@ function openCrossDetailSheet(id) {
       <span class="pill">${ratingLabels[cross.resultRating] || "Bez hodnocení"}</span>
       ${cross.seedlingName ? `<span class="pill">${escapeHtml(cross.seedlingName)}</span>` : ""}
     </div>
-    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`);
+    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button" type="button" data-download-cross="${escapeHtml(id)}">Stáhnout obrázek</button><button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`);
   document.querySelector("[data-edit-cross]")?.addEventListener("click", () => openCrossSheet(id));
+  document.querySelector("[data-download-cross]")?.addEventListener("click", () => downloadCrossCard(id));
   resolvePhotos(els.sheet);
 }
 
@@ -690,7 +700,11 @@ function selectedPhotoFiles(form) {
 }
 
 function photoTiles(images) {
-  return images.map((image) => `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(image)}" alt=""><button type="button" data-remove-photo>×</button></span>`).join("");
+  return images.map((image) => {
+    const previewRef = thumbPreviewRef(image);
+    const fallback = previewRef !== image ? ` data-photo-full-ref="${escapeHtml(image)}" data-photo-allow-fallback="1"` : "";
+    return `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(previewRef)}"${fallback} alt=""><button type="button" data-remove-photo>×</button></span>`;
+  }).join("");
 }
 
 function renderCrossPreviewInSheet() {
@@ -719,7 +733,197 @@ function crossPreviewMarkup(cross) {
 }
 
 function crossFlowCard(label, title, image) {
-  return `<article class="cross-flow-card"><span class="thumb">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(title))}</span><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></article>`;
+  if (!image) return `<article class="cross-flow-card"><span class="thumb">${escapeHtml(initials(title))}</span><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></article>`;
+  const previewRef = thumbPreviewRef(image);
+  const fallback = previewRef !== image ? ` data-photo-full-ref="${escapeHtml(image)}" data-photo-allow-fallback="1"` : "";
+  return `<article class="cross-flow-card"><span class="thumb"><img data-photo-ref="${escapeHtml(previewRef)}"${fallback} alt=""></span><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></article>`;
+}
+
+async function downloadCrossCard(id) {
+  const cross = findById("crosses", id);
+  if (!cross) return;
+  try {
+    const canvas = await renderCrossCardCanvas(cross);
+    const link = document.createElement("a");
+    link.download = `${safeFileName(`krizeni-${crossLineage(cross)}`, "krizeni")}.png`;
+    link.href = canvas.toDataURL("image/png");
+    document.body.append(link);
+    link.click();
+    link.remove();
+    toast("Obrázek křížení stažen.");
+  } catch {
+    toast("Obrázek křížení se nepodařilo vytvořit.");
+  }
+}
+
+async function renderCrossCardCanvas(cross) {
+  const mother = findById("varieties", cross.motherVarietyId);
+  const pollen = findById("varieties", cross.pollenVarietyId);
+  const seedlingName = clean(cross.seedlingName) || "Semenáč";
+  const cards = [
+    { role: "MATKA", name: mother?.name || "Matka", image: varietyImages(mother)[0] },
+    { role: "PYL", name: pollen?.name || "Pyl", image: varietyImages(pollen)[0] },
+    { role: "SEMENÁČ", name: seedlingName, image: crossSeedlingImages(cross)[0], accent: true },
+  ];
+  const loadedCards = await Promise.all(cards.map(async (card) => ({ ...card, imageNode: await loadCanvasPhoto(card.image) })));
+  const logo = await loadCanvasImage(BRAND_LOGO_IMAGE_DATA_URI);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1500;
+  const context = canvas.getContext("2d");
+  if (!context) return canvas;
+
+  const background = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+  background.addColorStop(0, "#fffdf6");
+  background.addColorStop(0.55, "#eff9ee");
+  background.addColorStop(1, "#d9f4e2");
+  context.fillStyle = background;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  drawCrossCardActor(context, loadedCards[0], 70, 70, 395, 405, { imageHeight: 280, nameFont: 26, padding: 16, compact: true });
+  drawCrossCardActor(context, loadedCards[1], 615, 70, 395, 405, { imageHeight: 280, nameFont: 26, padding: 16, compact: true });
+  drawHeroSeedling(context, loadedCards[2], 70, 520, 940, 875);
+
+  context.fillStyle = "#15563d";
+  context.font = "800 58px 'Segoe UI', Arial, sans-serif";
+  context.textAlign = "center";
+  context.fillText("×", 540, 275);
+  context.fillText("=", 540, 505);
+  context.textAlign = "left";
+  return canvas;
+}
+
+function drawCrossCardActor(context, card, x, y, width, height, options = {}) {
+  const actorGradient = context.createLinearGradient(x, y, x + width, y + height);
+  actorGradient.addColorStop(0, card.accent ? "#eefbf1" : "#fffefa");
+  actorGradient.addColorStop(1, card.accent ? "#d9f4e5" : "#fbf5e8");
+  context.fillStyle = actorGradient;
+  roundRectPath(context, x, y, width, height, 34);
+  context.fill();
+  context.strokeStyle = card.accent ? "#80c49b" : "#d9c99f";
+  context.lineWidth = 2;
+  context.stroke();
+
+  const padding = options.padding ?? 24;
+  const imageX = x + padding;
+  const imageY = y + padding;
+  const imageW = width - padding * 2;
+  const imageH = options.imageHeight || (card.accent ? 475 : 265);
+  context.fillStyle = "#edf2e8";
+  roundRectPath(context, imageX, imageY, imageW, imageH, 24);
+  context.fill();
+  if (card.imageNode) {
+    context.save();
+    roundRectPath(context, imageX, imageY, imageW, imageH, 24);
+    context.clip();
+    drawContainedImage(context, card.imageNode, imageX, imageY, imageW, imageH);
+    context.restore();
+  } else {
+    context.fillStyle = "#15563d";
+    context.font = "800 70px 'Segoe UI', Arial, sans-serif";
+    context.textAlign = "center";
+    context.fillText(initials(card.name), imageX + imageW / 2, imageY + imageH / 2 + 22);
+    context.textAlign = "left";
+  }
+
+  context.fillStyle = "#647360";
+  context.font = "800 19px 'Segoe UI', Arial, sans-serif";
+  const labelY = imageY + imageH + 46;
+  const textX = x + padding + 2;
+  context.fillText(card.role, textX, labelY);
+  context.fillStyle = "#123629";
+  const nameFontSize = options.nameFont || (card.accent ? 44 : 28);
+  context.font = `${card.accent ? "900" : "800"} ${nameFontSize}px 'Segoe UI', Arial, sans-serif`;
+  wrapCanvasText(context, card.name, width - padding * 2).slice(0, options.compact ? 2 : 3).forEach((line, index) => {
+    context.fillText(line, textX, labelY + nameFontSize + 8 + index * (card.accent ? 54 : 34));
+  });
+}
+
+function drawHeroSeedling(context, card, x, y, width, height) {
+  const imageH = height - 18;
+  if (card.imageNode) {
+    context.save();
+    roundRectPath(context, x, y, width, imageH, 36);
+    context.clip();
+    drawContainedImage(context, card.imageNode, x, y, width, imageH);
+    context.restore();
+  } else {
+    context.fillStyle = "#e3f3e8";
+    roundRectPath(context, x, y, width, imageH, 36);
+    context.fill();
+    context.fillStyle = "#15563d";
+    context.font = "900 120px 'Segoe UI', Arial, sans-serif";
+    context.textAlign = "center";
+    context.fillText(initials(card.name), x + width / 2, y + imageH / 2 + 40);
+    context.textAlign = "left";
+  }
+  context.textAlign = "center";
+  const hasCustomName = normalize(card.name) !== "semenac";
+  context.fillStyle = "#123629";
+  context.font = "900 58px 'Segoe UI', Arial, sans-serif";
+  wrapCanvasText(context, hasCustomName ? card.name : "Semenáč", width - 80).slice(0, 2).forEach((line, index) => {
+    context.fillText(line, x + width / 2, y + imageH + 58 + index * 64);
+  });
+  context.textAlign = "left";
+}
+
+function drawContainedImage(context, image, x, y, width, height) {
+  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+  const targetWidth = image.naturalWidth * scale;
+  const targetHeight = image.naturalHeight * scale;
+  context.drawImage(image, x + (width - targetWidth) / 2, y + (height - targetHeight) / 2, targetWidth, targetHeight);
+}
+
+async function loadCanvasPhoto(ref) {
+  const url = await resolvePhotoUrl(ref);
+  return loadCanvasImage(url);
+}
+
+function loadCanvasImage(url) {
+  return new Promise((resolve) => {
+    if (!url) return resolve(null);
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = url;
+  });
+}
+
+function drawLogoOnCanvas(context, image, x, y, size) {
+  context.save();
+  roundRectPath(context, x, y, size, size, 22);
+  context.clip();
+  context.drawImage(image, x, y, size, size);
+  context.restore();
+}
+
+function wrapCanvasText(context, text, maxWidth) {
+  const words = clean(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  words.forEach((word) => {
+    const next = current ? `${current} ${word}` : word;
+    if (current && context.measureText(next).width > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  });
+  if (current) lines.push(current);
+  return lines.length ? lines : [clean(text)];
+}
+
+function roundRectPath(context, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.arcTo(x + width, y, x + width, y + height, safeRadius);
+  context.arcTo(x + width, y + height, x, y + height, safeRadius);
+  context.arcTo(x, y + height, x, y, safeRadius);
+  context.arcTo(x, y, x + width, y, safeRadius);
+  context.closePath();
 }
 
 function upsert(collection, item) {
@@ -1027,6 +1231,17 @@ function ensureVarietyFromCross(cross) {
   return variety.id;
 }
 
+function syncFinishedCrossVarieties() {
+  let changed = false;
+  (state.data.crosses || []).forEach((cross) => {
+    if (clean(cross.seedlingName) && !findById("varieties", clean(cross.linkedVarietyId))) {
+      cross.linkedVarietyId = ensureVarietyFromCross(cross);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
 function matchOffer(offer) {
   if (state.filter === "active" && offer.status === "uzavřená") return false;
   if (state.filter === "closed" && offer.status !== "uzavřená") return false;
@@ -1171,9 +1386,25 @@ function idbGet(db, storeName, key) {
 async function resolvePhotos(root) {
   const images = [...root.querySelectorAll("[data-photo-ref]")];
   await Promise.all(images.map(async (image) => {
-    const ref = image.dataset.photoRef;
-    const url = await resolvePhotoUrl(ref);
-    if (url) image.src = url;
+    const originalRef = clean(image.dataset.photoRef);
+    const fullRef = clean(image.dataset.photoFullRef);
+    const fallbackAllowed = image.dataset.photoAllowFallback === "1";
+    const ref = fullRef ? originalRef : thumbPreviewRef(originalRef);
+    if (ref !== originalRef && !image.dataset.photoFullRef) image.dataset.photoFullRef = originalRef;
+    image.onerror = async () => {
+      if (!fallbackAllowed || !image.dataset.photoFullRef || image.dataset.photoFallbackLoaded === "1") return;
+      image.dataset.photoFallbackLoaded = "1";
+      const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
+      if (!fallbackUrl) return;
+      image.src = fallbackUrl;
+      image.classList.remove("photo-missing");
+    };
+    let url = await resolvePhotoUrl(ref);
+    if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
+    if (url) {
+      image.src = url;
+      image.classList.remove("photo-missing");
+    } else image.classList.add("photo-missing");
   }));
 }
 
@@ -1190,14 +1421,20 @@ async function resolvePhotoUrl(ref) {
     return url;
   }
   if (value.startsWith(SUPABASE_PHOTO_PREFIX)) {
-    const url = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(value)) || await createSignedPhotoUrl(parseSupabasePhotoRef(value));
+    const cached = await getCachedSupabasePhotoBlob(value);
+    if (cached) {
+      const cachedUrl = URL.createObjectURL(cached);
+      state.photoUrls.set(value, cachedUrl);
+      return cachedUrl;
+    }
+    const url = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(value), value) || await createSignedPhotoUrl(parseSupabasePhotoRef(value));
     state.photoUrls.set(value, url);
     return url;
   }
   return "";
 }
 
-async function fetchSupabasePhotoObjectUrl(path) {
+async function fetchSupabasePhotoObjectUrl(path, ref = "") {
   const cleanPath = clean(path);
   if (!cleanPath) return "";
   try {
@@ -1211,10 +1448,39 @@ async function fetchSupabasePhotoObjectUrl(path) {
     });
     if (!response.ok) return "";
     const blob = await response.blob();
+    if (ref) cacheSupabasePhotoBlob(ref, blob, cleanPath).catch(() => {});
     return URL.createObjectURL(blob);
   } catch {
     return "";
   }
+}
+
+async function getCachedSupabasePhotoBlob(ref) {
+  const key = supabasePhotoCacheKey(ref);
+  if (!key) return null;
+  try {
+    const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, key);
+    return record?.blob || null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheSupabasePhotoBlob(ref, blob, path = "") {
+  const key = supabasePhotoCacheKey(ref);
+  if (!key || !blob) return;
+  await idbPut(await openPhotoDb(), PHOTO_BLOB_STORE, {
+    id: key,
+    blob,
+    name: clean(path).split("/").pop() || "fotka.jpg",
+    type: blob.type || "image/jpeg",
+    cachedAt: new Date().toISOString(),
+  });
+}
+
+function supabasePhotoCacheKey(ref) {
+  const value = clean(ref);
+  return value && value.startsWith(SUPABASE_PHOTO_PREFIX) ? `supabase-cache:${value}` : "";
 }
 
 async function photoToFile(ref, ownerName = "fotka") {
@@ -1231,15 +1497,50 @@ async function photoToFile(ref, ownerName = "fotka") {
 
 function loadSyncConfig() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}");
-    return { url: clean(parsed.url) || DEFAULT_SUPABASE_URL, anonKey: clean(parsed.anonKey) || DEFAULT_SUPABASE_ANON_KEY, email: clean(parsed.email), autoSync: Boolean(parsed.autoSync), lastPulledAt: clean(parsed.lastPulledAt), lastPushedAt: clean(parsed.lastPushedAt) };
+    return normalizeSyncConfig(JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}"));
   } catch {
-    return { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY, email: "", autoSync: false, lastPulledAt: "", lastPushedAt: "" };
+    return normalizeSyncConfig();
   }
 }
 
 function saveSyncConfig(config) {
-  localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify({ ...loadSyncConfig(), ...config }));
+  localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig({ ...loadSyncConfig(), ...config })));
+}
+
+function normalizeSyncConfig(parsed = {}) {
+  const storedUrl = clean(parsed.url);
+  const storedAnonKey = clean(parsed.anonKey);
+  const useManagedDefaults = !storedUrl || LEGACY_MANAGED_SUPABASE_URLS.includes(storedUrl);
+  return {
+    url: useManagedDefaults ? DEFAULT_SUPABASE_URL : storedUrl,
+    anonKey: useManagedDefaults ? DEFAULT_SUPABASE_ANON_KEY : (storedAnonKey || DEFAULT_SUPABASE_ANON_KEY),
+    email: clean(parsed.email),
+    autoSync: Boolean(parsed.autoSync),
+    lastPulledAt: clean(parsed.lastPulledAt),
+    lastPushedAt: clean(parsed.lastPushedAt),
+  };
+}
+
+function migrateSyncConfig() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SUPABASE_SYNC_CONFIG_KEY) || "{}");
+    const normalized = normalizeSyncConfig(parsed);
+    const storedUrl = clean(parsed.url);
+    const storedAnonKey = clean(parsed.anonKey);
+    const changed = storedUrl !== normalized.url
+      || storedAnonKey !== normalized.anonKey
+      || clean(parsed.email) !== normalized.email
+      || Boolean(parsed.autoSync) !== normalized.autoSync
+      || clean(parsed.lastPulledAt) !== normalized.lastPulledAt
+      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt;
+    if (!changed) return;
+    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
+    if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
+      localStorage.removeItem(SUPABASE_SYNC_SESSION_KEY);
+    }
+  } catch {
+    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig()));
+  }
 }
 
 function saveSyncConfigFromInputs() {
@@ -1372,6 +1673,7 @@ async function pullSync(options = {}) {
       return true;
     }
     state.data = normalizeLoadedData(await decryptPayload(rows[0].encrypted_data, state.syncPassword));
+    syncFinishedCrossVarieties();
     state.syncVerifiedPassword = state.syncPassword;
     saveData({ skipAutoSync: true });
     saveSyncConfig({ lastPulledAt: clean(rows[0].updated_at) });
@@ -1471,7 +1773,12 @@ function collectPhotoPaths(data) {
   const paths = new Set();
   const add = (value) => {
     const ref = clean(value);
-    if (ref.startsWith(SUPABASE_PHOTO_PREFIX)) paths.add(parseSupabasePhotoRef(ref));
+    if (ref.startsWith(SUPABASE_PHOTO_PREFIX)) {
+      const path = parseSupabasePhotoRef(ref);
+      paths.add(path);
+      const thumbPath = supabaseThumbnailPath(path);
+      if (thumbPath) paths.add(thumbPath);
+    }
   };
   for (const variety of data?.varieties || []) {
     add(variety.photoUrl);
@@ -1523,10 +1830,34 @@ async function uploadPhotoList(userId, ownerName, refs) {
       if (!file) continue;
       const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(file)}${photoExtension(file)}`;
       await uploadStorage(path, file);
+      const thumb = await createPhotoThumbnail(file);
+      if (thumb) await uploadStorage(supabaseThumbnailPath(path), thumb);
       uploaded.push(`${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`);
     }
   }
   return unique(uploaded);
+}
+
+async function createPhotoThumbnail(file) {
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    URL.revokeObjectURL(objectUrl);
+    if (!image) return null;
+    const scale = Math.min(1, SUPABASE_THUMB_MAX_SIZE / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    const width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    const height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", SUPABASE_THUMB_QUALITY));
+    return blob ? new File([blob], "nahled.jpg", { type: "image/jpeg" }) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function authRequest(path, body) {
@@ -1624,6 +1955,23 @@ function base64ToBytes(value) {
 
 function parseSupabasePhotoRef(ref) {
   return decodeURIComponent(clean(ref).slice(SUPABASE_PHOTO_PREFIX.length));
+}
+
+function thumbPreviewRef(ref) {
+  const value = clean(ref);
+  if (!value.startsWith(SUPABASE_PHOTO_PREFIX)) return value;
+  const thumbPath = supabaseThumbnailPath(parseSupabasePhotoRef(value));
+  return thumbPath ? `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(thumbPath)}` : value;
+}
+
+function supabaseThumbnailPath(path) {
+  const cleanPath = clean(path);
+  if (!cleanPath || cleanPath.includes(`/${SUPABASE_THUMB_DIR}/`)) return cleanPath;
+  const parts = cleanPath.split("/");
+  const fileName = parts.pop();
+  if (!fileName) return cleanPath;
+  parts.push(SUPABASE_THUMB_DIR, fileName.replace(/\.[a-z0-9]+$/i, ".jpg"));
+  return parts.join("/");
 }
 
 function encodeStoragePath(path) {
