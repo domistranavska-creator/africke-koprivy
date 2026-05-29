@@ -445,6 +445,9 @@ function init() {
     button.addEventListener("click", () => setOfferStatus(button.dataset.offerStatusOption));
   });
   els.offerItemForm.elements.varietyName.addEventListener("input", () => {
+    const exact = findExactVarietyByName(els.offerItemForm.elements.varietyName.value);
+    if (exact) applyOfferItemVarietyToForm(exact, { forcePrice: false });
+    else els.offerItemForm.elements.varietyId.value = "";
     refreshOfferItemVarietyHelper(true);
     renderOfferItemVarietyPicker();
   });
@@ -800,6 +803,7 @@ function normalizeLoadedData(parsed) {
 
   data.crosses = data.crosses.map(normalizeCross);
   data.offers = data.offers.map(normalizeOffer);
+  reconcileOfferItemVarietyLinks(data);
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
 
   return data;
@@ -2650,11 +2654,12 @@ function renderOfferItem(offer, item) {
   const soldOut = Number(item.quantity || 0) > 0 && available === 0;
   const reservations = sortedReservationsForItem(item);
   const image = offerItemImage(item);
+  const displayName = offerItemNameSafe(item);
   return `<article class="offer-item ${soldOut ? "sold-out" : ""}">
     <div class="offer-item-main">
-      <div class="offer-thumb">${image ? photoImageMarkup(image, item.varietyName, "", 'loading="lazy"') : varietyInitials(item.varietyName)}</div>
+      <div class="offer-thumb">${image ? photoImageMarkup(image, displayName, "", 'loading="lazy"') : varietyInitials(displayName)}</div>
       <div>
-        <strong>${escapeHtml(item.varietyName)}</strong>
+        <strong>${escapeHtml(displayName)}</strong>
         <small>${escapeHtml([`${item.quantity} ks`, `${formatMoney(item.price, item.currency)}/ks`, item.note].filter(Boolean).join(" · "))}</small>
         <div class="pills offer-stock">
           <span class="pill ${soldOut ? "warning" : "paid"}">Volné ${available}</span>
@@ -5211,6 +5216,8 @@ async function saveVarietyFromForm() {
   const form = new FormData(els.varietyForm);
   const id = form.get("id") || uid();
   const existing = findVariety(id);
+  const previousName = existing?.name || "";
+  const previousImages = varietyImages(existing);
   const now = new Date().toISOString();
   const name = clean(form.get("name"));
   const uploadedImages = await saveVarietyPhotoFiles(name, els.varietyForm.elements.photoFiles.files);
@@ -5246,6 +5253,7 @@ async function saveVarietyFromForm() {
   }
 
   state.data.varieties = mergeVarieties(state.data.varieties);
+  syncOfferItemsForVariety(variety, { previousName, previousImages });
   saveData();
   renderAll();
   els.varietyDialog.close();
@@ -5650,7 +5658,9 @@ function openOfferItemDialog(offerId, itemId = null) {
   els.offerItemForm.reset();
   els.offerItemForm.elements.offerId.value = offerId;
   els.offerItemForm.elements.itemId.value = item?.id || "";
-  els.offerItemForm.elements.varietyName.value = item?.varietyName || "";
+  const matchedVariety = findVariety(clean(item?.varietyId)) || findExactVarietyByName(item?.varietyName);
+  els.offerItemForm.elements.varietyName.value = matchedVariety?.name || item?.varietyName || "";
+  els.offerItemForm.elements.varietyId.value = matchedVariety?.id || item?.varietyId || "";
   els.offerItemForm.elements.quantity.value = item?.quantity || "1";
   els.offerItemForm.elements.price.value = item?.price || "";
   delete els.offerItemForm.elements.price.dataset.autoFilledFor;
@@ -5683,7 +5693,7 @@ function renderOfferItemVarietyPicker() {
   }
   picker.innerHTML = matches.map((variety) => {
     const key = varietyNameMatchKey(variety.name);
-    const used = usedKeys.has(key);
+    const used = usedKeys.has(clean(variety.id)) || usedKeys.has(key);
     const selected = selectedKey && key === selectedKey;
     const price = clean(variety.salePrice) ? formatMoney(variety.salePrice, variety.saleCurrency || "CZK") : "";
     const meta = [used ? "Už v nabídce" : "", price].filter(Boolean).join(" · ");
@@ -5708,6 +5718,7 @@ function applyOfferItemVarietyToForm(variety, options = {}) {
   const form = els.offerItemForm;
   if (!form || !variety) return;
   const priceInput = form.elements.price;
+  form.elements.varietyId.value = variety.id || "";
   form.elements.varietyName.value = variety.name || "";
   if (priceInput && clean(variety.salePrice) && (options.forcePrice || !clean(priceInput.value) || priceInput.dataset.autoFilledFor)) {
     priceInput.value = variety.salePrice;
@@ -5721,8 +5732,47 @@ function applyOfferItemVarietyToForm(variety, options = {}) {
 function offerUsedVarietyKeys(offer, excludeItemId = "") {
   return new Set((offer?.items || [])
     .filter((item) => !excludeItemId || item.id !== excludeItemId)
-    .map((item) => varietyNameMatchKey(item.varietyName || item.name))
+    .flatMap((item) => [clean(item.varietyId), varietyNameMatchKey(item.varietyName || item.name)])
     .filter(Boolean));
+}
+
+function syncOfferItemsForVariety(variety, options = {}) {
+  const varietyId = clean(variety?.id);
+  const varietyName = clean(variety?.name);
+  if (!varietyId || !varietyName) return;
+  const previousKeys = new Set([options.previousName, varietyName].map(varietyNameMatchKey).filter(Boolean));
+  const previousImages = new Set((options.previousImages || []).map(clean).filter(Boolean));
+  state.data.offers.forEach((offer) => {
+    (offer.items || []).forEach((item) => {
+      const linkedById = clean(item.varietyId) === varietyId;
+      const linkedByOldName = previousKeys.has(varietyNameMatchKey(item.varietyName || item.name));
+      if (!linkedById && !linkedByOldName) return;
+      item.varietyId = varietyId;
+      item.varietyName = varietyName;
+      if (clean(item.photoUrl) && previousImages.has(clean(item.photoUrl))) item.photoUrl = "";
+      item.updatedAt = new Date().toISOString();
+    });
+    sortOfferItemsInPlace(offer);
+  });
+}
+
+function reconcileOfferItemVarietyLinks(data = state.data) {
+  const varieties = Array.isArray(data?.varieties) ? data.varieties : [];
+  const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]));
+  const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
+  (data?.offers || []).forEach((offer) => {
+    (offer.items || []).forEach((item) => {
+      const exactByName = byName.get(varietyNameMatchKey(item.varietyName || item.name));
+      const linkedById = byId.get(clean(item.varietyId));
+      const variety = exactByName || linkedById;
+      if (!variety) return;
+      item.varietyId = variety.id;
+      item.varietyName = variety.name;
+      const varietyPhotos = new Set(varietyImages(variety));
+      if (clean(item.photoUrl) && varietyPhotos.has(clean(item.photoUrl))) item.photoUrl = "";
+    });
+    sortOfferItemsInPlace(offer);
+  });
 }
 
 function refreshOfferItemVarietyHelper(autofillPrice = false) {
@@ -5808,7 +5858,9 @@ async function saveOfferItemFromForm() {
   const varietyName = clean(form.get("varietyName"));
   const uploaded = await saveIndexedPhotoFiles(els.offerItemForm.elements.photoFile.files);
   const shouldCreateVariety = Boolean(form.get("createVariety"));
-  const variety = findVarietyByName(varietyName)
+  const exactVariety = findExactVarietyByName(varietyName);
+  const variety = exactVariety
+    || findVariety(clean(form.get("varietyId")))
     || (shouldCreateVariety ? ensureVarietyFromOfferItem(varietyName, form.get("price"), form.get("currency")) : null);
   const item = normalizeOfferItem({
     id,
@@ -5837,7 +5889,7 @@ function deleteOfferItem(offerId, itemId) {
   const offer = findOffer(offerId);
   if (!offer) return;
   const item = offer.items.find((entry) => entry.id === itemId);
-  if (!item || !confirm(`Smazat položku ${item.varietyName}?`)) return;
+  if (!item || !confirm(`Smazat položku ${offerItemNameSafe(item)}?`)) return;
   offer.items = offer.items.filter((entry) => entry.id !== itemId);
   offer.updatedAt = new Date().toISOString();
   saveData();
@@ -6077,7 +6129,7 @@ function facebookOfferAvailableItems(offer) {
 }
 
 function offerItemNameSafe(item = {}) {
-  return clean(item.varietyName || item.name || "Odřezek");
+  return clean(findVariety(clean(item.varietyId))?.name || item.varietyName || item.name || "Odřezek");
 }
 
 function offerItemImageSafe(item = {}) {
@@ -7456,7 +7508,7 @@ async function buildSupabaseSyncData(userId) {
   }
   for (const offer of data.offers || []) {
     for (const item of offer.items || []) {
-      item.photoUrl = await uploadPhotoForSync(userId, item.varietyName || "nabidka", item.photoUrl);
+      item.photoUrl = await uploadPhotoForSync(userId, offerItemNameSafe(item) || "nabidka", item.photoUrl);
     }
   }
   return data;
@@ -8044,7 +8096,7 @@ function filteredOffers() {
         offer.title,
         offer.status,
         offer.note,
-        ...items.map((item) => item.varietyName),
+        ...items.map((item) => offerItemNameSafe(item)),
         ...reservationNames,
       ].join(" "), query);
     })
@@ -9798,8 +9850,8 @@ async function createOrdersFromOffer(id) {
     const price = parseDecimal(item.price);
     group.lines.push(
       Number.isFinite(price)
-        ? buildOrderLineText(item.varietyName, quantity, item.price, currency)
-        : `${item.varietyName} ${quantity}x`,
+        ? buildOrderLineText(offerItemNameSafe(item), quantity, item.price, currency)
+        : `${offerItemNameSafe(item)} ${quantity}x`,
     );
     if (Number.isFinite(price)) group.total += price * quantity;
   });

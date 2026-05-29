@@ -549,6 +549,8 @@ function openVarietySheet(id = "") {
     const uploaded = await saveIndexedPhotos(files);
     const existing = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
     const now = new Date().toISOString();
+    const previousName = variety.name || "";
+    const previousImages = varietyImages(variety);
     const item = {
       ...variety,
       id: variety.id || uid(),
@@ -563,6 +565,7 @@ function openVarietySheet(id = "") {
       updatedAt: now,
     };
     upsert("varieties", item);
+    syncOfferItemsForVariety(item, { previousName, previousImages });
   });
   bindPhotoGrid();
   document.querySelector("[data-toggle-active]").addEventListener("click", (buttonEvent) => {
@@ -570,6 +573,26 @@ function openVarietySheet(id = "") {
     button.classList.toggle("active");
     button.classList.toggle("is-off");
     button.textContent = button.classList.contains("is-off") ? "Neaktivní" : "✅ Aktivní";
+  });
+}
+
+function syncOfferItemsForVariety(variety, options = {}) {
+  const varietyId = clean(variety?.id);
+  const varietyName = clean(variety?.name);
+  if (!varietyId || !varietyName) return;
+  const previousKeys = new Set([options.previousName, varietyName].map(varietyNameMatchKey).filter(Boolean));
+  const previousImages = new Set((options.previousImages || []).map(clean).filter(Boolean));
+  state.data.offers.forEach((offer) => {
+    (offer.items || []).forEach((item) => {
+      const linkedById = clean(item.varietyId) === varietyId;
+      const linkedByOldName = previousKeys.has(varietyNameMatchKey(item.varietyName || item.name));
+      if (!linkedById && !linkedByOldName) return;
+      item.varietyId = varietyId;
+      item.varietyName = varietyName;
+      if (clean(item.photoUrl) && previousImages.has(clean(item.photoUrl))) item.photoUrl = "";
+      item.updatedAt = new Date().toISOString();
+    });
+    sortOfferItemsInPlace(offer);
   });
 }
 
@@ -798,9 +821,11 @@ function openOfferItemSheet(offerId, itemId = "") {
   if (!offer) return;
   const item = itemId ? offer.items.find((entry) => entry.id === itemId) : null;
   const matchedVariety = findById("varieties", item?.varietyId) || findVarietyByName(item?.varietyName);
+  const visibleVarietyName = matchedVariety?.name || item?.varietyName || "";
   const selectedCurrency = clean(item?.currency || matchedVariety?.saleCurrency || "CZK");
   openSheet(item ? "Upravit odřezek" : "Přidat odřezek", `<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Odrůda</span><input name="varietyName" data-offer-variety-input required autocomplete="off" value="${escapeHtml(item?.varietyName || "")}" placeholder="Název odrůdy"></label>
+    <input type="hidden" name="varietyId" value="${escapeHtml(matchedVariety?.id || item?.varietyId || "")}">
+    <label class="field"><span>Odrůda</span><input name="varietyName" data-offer-variety-input required autocomplete="off" value="${escapeHtml(visibleVarietyName)}" placeholder="Název odrůdy"></label>
     <div class="offer-variety-picker" data-offer-variety-picker></div>
     <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(item?.quantity || "1")}"></label>
     <label class="field"><span>Cena za ks</span><input name="price" inputmode="decimal" value="${escapeHtml(item?.price || matchedVariety?.salePrice || "")}"></label>
@@ -815,7 +840,8 @@ function openOfferItemSheet(offerId, itemId = "") {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
     const varietyName = clean(data.get("varietyName"));
-    const variety = findVarietyByName(varietyName);
+    const exactVariety = findVarietyByName(varietyName);
+    const variety = exactVariety || findById("varieties", data.get("varietyId"));
     const files = selectedPhotoFiles(form);
     const uploaded = await saveIndexedPhotos(files);
     const existingPhotos = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
@@ -853,6 +879,7 @@ function bindOfferItemVarietyPicker(offer, currentItem = null) {
   input.addEventListener("input", () => {
     const exact = findVarietyByName(input.value);
     if (exact) applyOfferItemVarietyToForm(exact, form, { forcePrice: false });
+    else form.elements.varietyId.value = "";
     render();
   });
   input.addEventListener("focus", render);
@@ -875,7 +902,7 @@ function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
   const picker = form?.querySelector("[data-offer-variety-picker]");
   if (!input || !picker) return;
   const query = normalize(input.value);
-  const selectedKey = normalize(input.value);
+  const selectedKey = varietyNameMatchKey(input.value);
   const usedKeys = offerUsedVarietyKeys(offer, currentItem?.id);
   const varieties = [...state.data.varieties]
     .filter((variety) => clean(variety.name))
@@ -887,8 +914,8 @@ function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
     return;
   }
   picker.innerHTML = matches.map((variety) => {
-    const key = normalize(variety.name);
-    const used = usedKeys.has(key);
+    const key = varietyNameMatchKey(variety.name);
+    const used = usedKeys.has(clean(variety.id)) || usedKeys.has(key);
     const selected = selectedKey && key === selectedKey;
     const price = clean(variety.salePrice) ? formatMoney(variety.salePrice, variety.saleCurrency || "CZK") : "";
     const meta = [used ? "Už v nabídce" : "", price].filter(Boolean).join(" · ");
@@ -904,6 +931,7 @@ function applyOfferItemVarietyToForm(variety, form, options = {}) {
   const input = form.elements.varietyName;
   const priceInput = form.elements.price;
   const currencyInput = form.elements.currency;
+  form.elements.varietyId.value = variety.id || "";
   input.value = variety.name || "";
   if (priceInput && clean(variety.salePrice) && (options.forcePrice || !clean(priceInput.value) || priceInput.dataset.autoFilledFor)) {
     priceInput.value = variety.salePrice;
@@ -915,7 +943,7 @@ function applyOfferItemVarietyToForm(variety, form, options = {}) {
 function offerUsedVarietyKeys(offer, excludeItemId = "") {
   return new Set((offer?.items || [])
     .filter((item) => !excludeItemId || item.id !== excludeItemId)
-    .map((item) => normalize(offerItemName(item)))
+    .flatMap((item) => [clean(item.varietyId), varietyNameMatchKey(offerItemName(item))])
     .filter(Boolean));
 }
 
@@ -1044,7 +1072,7 @@ function createOrdersFromOffer(id) {
     const group = grouped.get(key);
     const quantity = wholeNumber(reservation.quantity, 1);
     const price = number(item.price);
-    group.lines.push(Number.isFinite(price) ? offerOrderLineText(item.varietyName, quantity, price) : `${offerItemName(item)} ${quantity}x`);
+    group.lines.push(Number.isFinite(price) ? offerOrderLineText(offerItemName(item), quantity, price) : `${offerItemName(item)} ${quantity}x`);
     if (Number.isFinite(price)) group.total += price * quantity;
   });
 
@@ -2236,7 +2264,7 @@ function saveData(options = {}) {
 }
 
 function normalizeLoadedData(data = {}) {
-  return {
+  const result = {
     customers: Array.isArray(data.customers) ? data.customers.map(normalizeCustomer) : [],
     orders: Array.isArray(data.orders) ? data.orders.map(normalizeOrder) : [],
     varieties: Array.isArray(data.varieties) ? data.varieties.map(normalizeVariety) : [],
@@ -2245,6 +2273,8 @@ function normalizeLoadedData(data = {}) {
     exchangeRates: Array.isArray(data.exchangeRates) ? data.exchangeRates : [],
     settings: data.settings || {},
   };
+  reconcileOfferItemVarietyLinks(result);
+  return result;
 }
 
 function appSettings() {
@@ -2333,6 +2363,25 @@ function normalizeReservation(reservation = {}) {
   };
 }
 
+function reconcileOfferItemVarietyLinks(data = state.data) {
+  const varieties = Array.isArray(data?.varieties) ? data.varieties : [];
+  const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]));
+  const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
+  (data?.offers || []).forEach((offer) => {
+    (offer.items || []).forEach((item) => {
+      const exactByName = byName.get(varietyNameMatchKey(item.varietyName || item.name));
+      const linkedById = byId.get(clean(item.varietyId));
+      const variety = exactByName || linkedById;
+      if (!variety) return;
+      item.varietyId = clean(variety.id);
+      item.varietyName = clean(variety.name);
+      const varietyPhotos = new Set(varietyImages(variety));
+      if (clean(item.photoUrl) && varietyPhotos.has(clean(item.photoUrl))) item.photoUrl = "";
+    });
+    sortOfferItemsInPlace(offer);
+  });
+}
+
 function findById(collection, id) {
   return state.data[collection]?.find((item) => item.id === id) || null;
 }
@@ -2342,12 +2391,16 @@ function findCustomer(id) {
 }
 
 function findVarietyByName(name) {
-  const key = normalize(name);
-  return state.data.varieties.find((variety) => normalize(variety.name) === key) || null;
+  const key = varietyNameMatchKey(name);
+  return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
+}
+
+function varietyNameMatchKey(name) {
+  return normalize(name).replace(/[^a-z0-9]+/g, "");
 }
 
 function offerItemName(item = {}) {
-  return clean(item.varietyName || findById("varieties", item.varietyId)?.name || item.name || "Odřezek");
+  return clean(findById("varieties", item.varietyId)?.name || item.varietyName || item.name || "Odřezek");
 }
 
 function offerItemImage(item = {}) {
@@ -2432,7 +2485,7 @@ function matchOffer(offer) {
   if (state.filter === "active" && isClosed) return false;
   if (state.filter === "closed" && !isClosed) return false;
   const items = Array.isArray(offer.items) ? offer.items : [];
-  return matches([offer.title, offer.note, offer.status, ...items.map((item) => item.varietyName)]);
+  return matches([offer.title, offer.note, offer.status, ...items.map((item) => offerItemName(item))]);
 }
 
 function matchOrder(order) {
