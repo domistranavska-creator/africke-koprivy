@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260527-29" />
+    <link rel="stylesheet" href="styles.css?v=20260527-41" />
   </head>
   <body>
     <div class="app-shell">
@@ -850,6 +850,14 @@
           <span>Datum</span>
           <input name="date" type="date" required />
         </label>
+        <label>
+          <span>Datum na Facebooku</span>
+          <input name="facebookPublishDate" type="date" />
+        </label>
+        <label>
+          <span>Čas na Facebooku</span>
+          <input name="facebookPublishTime" type="time" />
+        </label>
         <label class="offer-status-field">
           <span>Stav</span>
           <div class="offer-status-toggle" role="group" aria-label="Stav nabídky">
@@ -919,6 +927,30 @@
         <footer class="dialog-actions">
           <button class="button ghost" type="button" data-close-dialog>Zrušit</button>
           <button class="button primary" value="default" type="button" id="saveOfferItemBtn">Uložit</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="facebookOfferDialog">
+      <form method="dialog" id="facebookOfferForm" class="form-grid">
+        <header class="dialog-heading">
+          <h2 id="facebookOfferDialogTitle">Facebook příspěvek</h2>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
+        </header>
+        <input type="hidden" name="offerId" />
+        <p class="wide muted" id="facebookOfferHint">
+          Text můžeš upravit. Appka si ho uloží jako šablonu; odřezky, kusy a ceny doplní příště automaticky.
+        </p>
+        <label class="wide">
+          <span>Text příspěvku</span>
+          <textarea name="text" rows="14"></textarea>
+        </label>
+        <div class="empty-state wide" id="facebookOfferPhotoStatus">Fotky se načtou až při stažení ZIPu.</div>
+        <footer class="dialog-actions">
+          <button class="button ghost" type="button" data-close-dialog>Zpět</button>
+          <button class="button ghost" type="button" id="saveFacebookOfferTextBtn">Uložit text</button>
+          <button class="button ghost" type="button" id="copyFacebookOfferTextBtn">Kopírovat text</button>
+          <button class="button primary" type="button" id="downloadFacebookOfferZipBtn">Stáhnout fotky ZIP</button>
         </footer>
       </form>
     </dialog>
@@ -1018,13 +1050,13 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260527-29" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260527-29" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260527-29" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260527-29" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260527-29" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260527-29" charset="utf-8"></script>
-    <script src="app.js?v=20260527-29" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-setup.js?v=20260527-41" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260527-41" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260527-41" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260527-41" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260527-41" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260527-41" charset="utf-8"></script>
+    <script src="app.js?v=20260527-41" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

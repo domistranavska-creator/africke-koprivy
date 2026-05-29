@@ -18,6 +18,14 @@ const SUPABASE_THUMB_QUALITY = 0.82;
 const PHOTO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const PHOTO_MAX_UPLOAD_EDGE = 3200;
 const PHOTO_UPLOAD_QUALITY_STEPS = [0.9, 0.86, 0.82, 0.78, 0.74];
+const FACEBOOK_PHOTO_BATCH_SIZE = 12;
+const SUPABASE_PHOTO_CACHE_PREFIX = "supabase-cache:";
+const SUPABASE_PREPARED_PHOTO_CACHE_PREFIX = "supabase-prepared-cache:";
+const SUPABASE_PHOTO_CACHE_MAX_BYTES = 300 * 1024 * 1024;
+const SUPABASE_PHOTO_CACHE_MAX_ITEMS = 1200;
+const SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES = 12 * 1024 * 1024;
+const FACEBOOK_ITEMS_TOKEN = "{{ODREZKY}}";
+const FACEBOOK_DATE_TOKEN = "{{DATUM}}";
 const INDEXED_PHOTO_PREFIX = "indexed-photo:";
 const BRAND_LOGO_IMAGE_DATA_URI = clean(window.AFRICKE_KOPRIVY_BRAND_LOGO_DATA_URI || "");
 
@@ -40,6 +48,9 @@ const state = {
   photoUrls: new Map(),
   sheetStack: [],
   currentSheetRestore: null,
+  activeOfferId: "",
+  facebookDraftTextByOffer: new Map(),
+  facebookPhotoOffsetByOffer: new Map(),
 };
 
 const els = {
@@ -58,8 +69,10 @@ init();
 
 function init() {
   migrateSyncConfig();
+  window.__akPrepareFacebookOffer = (id) => prepareFacebookOffer(id || state.activeOfferId);
   els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
+  document.addEventListener("click", handleGlobalClick, true);
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
   document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => runAction(button.dataset.action)));
   els.search.addEventListener("input", () => {
@@ -74,6 +87,51 @@ function init() {
   if (!isSyncLoggedIn()) state.view = "sync";
   render();
   maybeAutoPull();
+}
+
+function handleGlobalClick(event) {
+  const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+  const facebookButton = target?.closest("[data-prepare-facebook-offer]");
+  if (facebookButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    prepareFacebookOffer(facebookButton.dataset.prepareFacebookOffer || state.activeOfferId);
+    return;
+  }
+  const copyFacebookButton = target?.closest("[data-copy-facebook-offer]");
+  if (copyFacebookButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    copyPreparedFacebookText();
+    return;
+  }
+  const saveFacebookButton = target?.closest("[data-save-facebook-template]");
+  if (saveFacebookButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    savePreparedFacebookText();
+    return;
+  }
+  const shareFacebookButton = target?.closest("[data-share-facebook-offer]");
+  if (shareFacebookButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    shareFacebookOffer(shareFacebookButton.dataset.shareFacebookOffer, shareFacebookButton);
+    return;
+  }
+  const facebookZipButton = target?.closest("[data-download-facebook-zip]");
+  if (facebookZipButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    downloadFacebookOfferZip(facebookZipButton.dataset.downloadFacebookZip, facebookZipButton);
+    return;
+  }
+  const addOfferItemButton = target?.closest("[data-add-offer-item]");
+  if (addOfferItemButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openOfferItemSheet(addOfferItemButton.dataset.addOfferItem || state.activeOfferId);
+  }
 }
 
 function openView(view) {
@@ -179,7 +237,7 @@ function renderOffers() {
   const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
   if (!offers.length) return empty("Žádné nabídky.");
   return offers.map((offer) => {
-    const items = Array.isArray(offer.items) ? offer.items : [];
+    const items = sortedOfferItems(offer);
     const reserved = offerReservedCount(offer);
     const total = offerTotalCount(offer);
     const available = offerAvailableCount(offer);
@@ -195,7 +253,7 @@ function renderOffers() {
       pills: [...itemPills, `Volné ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `Náhradníci ${alternates}` : ""],
       thumb: coverImage,
       thumbText: initials(offer.title),
-      actions: [["edit-offer", "✎"], ["delete-offer", "×"]],
+      actions: [["facebook-offer", "FB"], ["edit-offer", "✎"], ["delete-offer", "×"]],
     });
   }).join("");
 }
@@ -362,6 +420,7 @@ function handleRowAction(action, id) {
   if (action === "edit-cross") return openCrossSheet(id);
   if (action === "download-cross") return downloadCrossCard(id);
   if (action === "delete-cross") return deleteItem("crosses", id, "Křížení");
+  if (action === "facebook-offer") return prepareFacebookOffer(id);
   if (action === "edit-offer") return openOfferSheet(id);
   if (action === "delete-offer") return deleteItem("offers", id, "Nabídku");
 }
@@ -610,6 +669,8 @@ function openOfferSheet(id = "") {
   openSheet(offer.id ? "Upravit nabídku" : "Nová nabídka", `<form class="form-grid" id="sheetForm">
     <label class="field"><span>Název</span><input name="title" required value="${escapeHtml(offer.title || `Nabídka ${formatDate(todayInput())}`)}"></label>
     <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(offer.date || todayInput())}"></label>
+    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || offer.date || todayInput())}"></label>
+    <label class="field"><span>Čas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
     ${toggle("status", [["připravená", "Připravená"], ["zveřejněná", "Zveřejněná"], ["uzavřená", "Uzavřená"]], offer.status || "připravená")}
     <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
   </form>`, () => {
@@ -621,6 +682,8 @@ function openOfferSheet(id = "") {
       id: offer.id || uid(),
       title: clean(data.get("title")),
       date: clean(data.get("date")),
+      facebookPublishDate: clean(data.get("facebookPublishDate")) || clean(data.get("date")),
+      facebookPublishTime: clean(data.get("facebookPublishTime")) || "20:00",
       status: form.querySelector('[name="status"]').value,
       note: clean(data.get("note")),
       items: offer.items || [],
@@ -634,20 +697,23 @@ function openOfferSheet(id = "") {
 function openOfferDetailSheet(id, options = {}) {
   const offer = findById("offers", id);
   if (!offer) return;
+  state.activeOfferId = id;
+  const items = sortedOfferItems(offer);
   const reserved = offerReservedCount(offer);
   const total = offerTotalCount(offer);
   openSheet(offer.title, `<section class="offer-detail">
     <div class="offer-stats">
-      <span><strong>${offer.items.length}</strong><small>odřezků</small></span>
+      <span><strong>${items.length}</strong><small>odřezků</small></span>
       <span><strong>${total}</strong><small>kusů</small></span>
       <span><strong>${reserved}</strong><small>rezervací</small></span>
       <span><strong>${Math.max(0, total - reserved)}</strong><small>volné</small></span>
     </div>
     ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
+    <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Připravit Facebook příspěvek</button>
     <div class="offer-items">
-      ${offer.items.length ? offer.items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
+      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
     </div>
-  </section>`, null, `<button class="button" type="button" data-close-sheet>Zavřít</button><button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabídku</button><button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávky</button><button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">Přidat odřezek</button>`, {
+  </section>`, null, `<button class="button" type="button" data-close-sheet>Zavřít</button><button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button><button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabídku</button><button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávky</button><button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">Přidat odřezek</button>`, {
     ...options,
     restore: () => openOfferDetailSheet(id, { replace: true }),
   });
@@ -770,6 +836,7 @@ function openOfferItemSheet(offerId, itemId = "") {
     });
     if (item) Object.assign(item, nextItem);
     else offer.items.push(nextItem);
+    sortOfferItemsInPlace(offer);
     offer.updatedAt = now;
     setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
   });
@@ -880,7 +947,7 @@ function createOrdersFromOffer(id) {
   const offer = findById("offers", id);
   if (!offer) return;
   const reservations = [];
-  offer.items.forEach((item) => {
+  sortedOfferItems(offer).forEach((item) => {
     (item.reservations || []).forEach((reservation) => {
       if (!reservation.customerId) return;
       if (reservationStatusValue(reservation.status) !== "confirmed") return;
@@ -942,6 +1009,580 @@ function createOrdersFromOffer(id) {
 
 function offerOrderLineText(name, quantity, unitPrice) {
   return `${clean(name)} ${wholeNumber(quantity, 1)}x - ${normalizeAmount(unitPrice)} Kč`.trim();
+}
+
+async function prepareFacebookOffer(id) {
+  try {
+    const offerId = clean(id || state.activeOfferId);
+    const offer = findById("offers", offerId) || (state.data.offers.length === 1 ? state.data.offers[0] : null);
+    if (!offer) {
+      toast("Nabídku se nepodařilo najít.");
+      return;
+    }
+    state.activeOfferId = offer.id;
+    toast("Otevírám Facebook text...");
+    offer.facebookPublishDate = clean(offer.facebookPublishDate || offer.date || todayInput());
+    offer.facebookPublishTime = clean(offer.facebookPublishTime || "20:00");
+    offer.updatedAt = new Date().toISOString();
+    try {
+      saveData();
+    } catch {
+      // Text se má otevřít i pokud prohlížeč právě odmítne zápis do úložiště.
+    }
+    openFacebookOfferSheet(offer.id);
+  } catch (error) {
+    console.error(error);
+    toast(`Facebook chyba: ${clean(error?.message || error).slice(0, 80) || "neznámá chyba"}`);
+  }
+}
+
+function openFacebookOfferSheet(id, options = {}) {
+  const offer = findById("offers", id || state.activeOfferId);
+  if (!offer) {
+    toast("Nabídku se nepodařilo najít.");
+    return;
+  }
+  const text = state.facebookDraftTextByOffer.get(offer.id) || safeBuildFacebookOfferText(offer);
+  const photoCount = facebookOfferZipEntries(offer).length;
+  const photoStatus = photoCount ? `Fotky k uložení: ${photoCount}` : "Tahle nabídka zatím nemá volné fotky.";
+  openSheet("Facebook příspěvek", `<div class="form-grid">
+    <p class="sub">Text můžeš upravit. Appka si ho uloží jako šablonu; odřezky, kusy a ceny doplní příště automaticky.</p>
+    <label class="field"><span>Text příspěvku</span><textarea data-facebook-offer-text rows="14">${escapeHtml(text)}</textarea></label>
+    <div class="empty light">${escapeHtml(photoStatus)}</div>
+  </div>`, null, `<button class="button" type="button" data-close-sheet>Zpět</button><button class="button" type="button" data-save-facebook-template>Uložit text</button><button class="button" type="button" data-copy-facebook-offer>Kopírovat text</button><button class="button primary" type="button" data-download-facebook-zip="${escapeHtml(id)}">Stáhnout fotky ZIP</button>`, {
+    ...options,
+    restore: () => openFacebookOfferSheet(id, { replace: true }),
+  });
+  const textArea = els.sheet.querySelector("[data-facebook-offer-text]");
+  textArea?.addEventListener("focus", () => textArea.select());
+}
+
+async function downloadFacebookOfferZip(id, button) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  const text = clean(els.sheet.querySelector("[data-facebook-offer-text]")?.value) || safeBuildFacebookOfferText(offer);
+  rememberFacebookDraftText(id);
+  await copyTextToClipboard(text);
+  const previousLabel = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Připravuji ZIP...";
+  }
+  try {
+    const entries = [{ name: "facebook-text.txt", blob: new Blob([text], { type: "text/plain;charset=utf-8" }) }];
+    const photoEntries = facebookOfferZipEntries(offer);
+    for (const entry of photoEntries) {
+      const file = await photoRefToFacebookFile(entry.ref, entry.name);
+      if (!file) continue;
+      const labeledFile = await createFacebookLabeledPhotoFile(file, entry);
+      entries.push({ name: `${entry.name}${photoExtension(labeledFile)}`, blob: labeledFile });
+    }
+    const zip = await createZipBlob(entries);
+    downloadBlob(zip, `${safeFileName(offer.title || "nabidka", "nabidka")}-fotky.zip`);
+    toast(`ZIP hotový: ${Math.max(0, entries.length - 1)} fotek. Text je zkopírovaný.`);
+  } catch (error) {
+    console.error(error);
+    toast("ZIP se nepodařilo vytvořit.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousLabel || "Stáhnout fotky ZIP";
+    }
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function createFacebookLabeledPhotoFile(file, entry) {
+  if (!file?.type?.startsWith("image/")) return file;
+  let objectUrl = "";
+  try {
+    objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    if (!image) return file;
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return file;
+    const maxEdge = 1800;
+    const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+    const imageWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const imageHeight = Math.max(1, Math.round(sourceHeight * scale));
+    const padding = Math.max(26, Math.round(imageWidth * 0.035));
+    const fontSize = Math.max(34, Math.min(58, Math.round(imageWidth * 0.052)));
+    const lineHeight = Math.round(fontSize * 1.22);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    const lines = wrapCanvasText(context, entry.label, imageWidth - padding * 2).slice(0, 3);
+    const footerHeight = padding * 2 + lines.length * lineHeight;
+    canvas.width = imageWidth;
+    canvas.height = imageHeight + footerHeight;
+    context.fillStyle = "#fbf7e9";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, imageWidth, imageHeight);
+    const gradient = context.createLinearGradient(0, imageHeight, canvas.width, canvas.height);
+    gradient.addColorStop(0, "#f8f1da");
+    gradient.addColorStop(1, "#e0f3df");
+    context.fillStyle = gradient;
+    context.fillRect(0, imageHeight, canvas.width, footerHeight);
+    context.strokeStyle = "#9ac7ac";
+    context.lineWidth = Math.max(2, Math.round(imageWidth * 0.004));
+    context.beginPath();
+    context.moveTo(0, imageHeight + 1);
+    context.lineTo(canvas.width, imageHeight + 1);
+    context.stroke();
+    context.fillStyle = "#0d3b2d";
+    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    context.textAlign = "center";
+    lines.forEach((line, index) => {
+      context.fillText(line, canvas.width / 2, imageHeight + padding + fontSize + index * lineHeight);
+    });
+    context.textAlign = "left";
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+    if (!blob) return file;
+    return await preparePhotoFileForStorage(new File([blob], `${entry.name}.jpg`, { type: "image/jpeg" }));
+  } catch {
+    return file;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function createZipBlob(entries) {
+  const files = [];
+  for (const entry of entries) {
+    const blob = entry?.blob;
+    const name = safeFileName(clean(entry?.name).replace(/\.[^.]+$/, ""), "soubor") + (clean(entry?.name).match(/\.[a-z0-9]+$/i)?.[0] || "");
+    if (!blob || !name) continue;
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    files.push({ name, nameBytes: new TextEncoder().encode(name), bytes, crc: crc32(bytes) });
+  }
+  const parts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const file of files) {
+    const localHeader = zipLocalHeader(file);
+    parts.push(localHeader, file.nameBytes, file.bytes);
+    centralParts.push(zipCentralHeader(file, offset), file.nameBytes);
+    offset += localHeader.byteLength + file.nameBytes.byteLength + file.bytes.byteLength;
+  }
+  const centralSize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+  parts.push(...centralParts, zipEndRecord(files.length, centralSize, offset));
+  return new Blob(parts, { type: "application/zip" });
+}
+
+function zipLocalHeader(file) {
+  const header = new ArrayBuffer(30);
+  const view = new DataView(header);
+  const { time, date } = zipDosDateTime();
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, time, true);
+  view.setUint16(12, date, true);
+  view.setUint32(14, file.crc, true);
+  view.setUint32(18, file.bytes.byteLength, true);
+  view.setUint32(22, file.bytes.byteLength, true);
+  view.setUint16(26, file.nameBytes.byteLength, true);
+  view.setUint16(28, 0, true);
+  return header;
+}
+
+function zipCentralHeader(file, offset) {
+  const header = new ArrayBuffer(46);
+  const view = new DataView(header);
+  const { time, date } = zipDosDateTime();
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, time, true);
+  view.setUint16(14, date, true);
+  view.setUint32(16, file.crc, true);
+  view.setUint32(20, file.bytes.byteLength, true);
+  view.setUint32(24, file.bytes.byteLength, true);
+  view.setUint16(28, file.nameBytes.byteLength, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, offset, true);
+  return header;
+}
+
+function zipEndRecord(count, centralSize, centralOffset) {
+  const header = new ArrayBuffer(22);
+  const view = new DataView(header);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, count, true);
+  view.setUint16(10, count, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  view.setUint16(20, 0, true);
+  return header;
+}
+
+function zipDosDateTime(date = new Date()) {
+  const time = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const day = Math.max(1, date.getDate());
+  const dosDate = ((Math.max(1980, date.getFullYear()) - 1980) << 9) | ((date.getMonth() + 1) << 5) | day;
+  return { time, date: dosDate };
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = (crc >>> 8) ^ crc32.table[(crc ^ byte) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+crc32.table = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+  return value >>> 0;
+});
+
+async function shareFacebookOffer(id, button) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  const text = clean(els.sheet.querySelector("[data-facebook-offer-text]")?.value) || safeBuildFacebookOfferText(offer);
+  rememberFacebookDraftText(id);
+  await copyTextToClipboard(text);
+  const photoOffset = Math.max(0, Number(button?.dataset.facebookPhotoOffset ?? state.facebookPhotoOffsetByOffer.get(offer.id)) || 0);
+  const photoRefs = facebookPhotoRefs(offer, { offset: photoOffset, limit: FACEBOOK_PHOTO_BATCH_SIZE });
+  if (!photoRefs.length) {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: offer.title, text });
+      } catch {
+        toast("Text zkopírovaný. Sdílení zrušeno.");
+      }
+    } else {
+      toast("Text zkopírovaný. Fotky nejsou v nabídce.");
+    }
+    return;
+  }
+  if (!navigator.share) {
+    toast("Text zkopírovaný. Na počítači vlož text do Facebooku ručně.");
+    return;
+  }
+  const previousLabel = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Připravuji...";
+  }
+  toast("Připravuji fotky...");
+  const files = [];
+  try {
+    for (const [index, ref] of photoRefs.entries()) {
+      const file = await photoRefToFacebookFile(ref, `${offer.title}-${index + 1}`);
+      if (file) files.push(file);
+    }
+    if (files.length && (!navigator.canShare || navigator.canShare({ files }))) {
+      await navigator.share({ title: offer.title, text, files });
+      toast(`Text i fotky ${photoOffset + 1}-${photoOffset + files.length} připravené.`);
+      return;
+    }
+    await navigator.share({ title: offer.title, text });
+    toast("Text připravený, fotky vyber ručně.");
+  } catch (error) {
+    if (error?.name === "AbortError") toast("Text zkopírovaný, sdílení zrušeno.");
+    else toast("Text zkopírovaný. Sdílení fotek funguje hlavně na mobilu.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousLabel || "Sdílet";
+    }
+  }
+}
+
+async function copyPreparedFacebookText() {
+  const text = els.sheet.querySelector("[data-facebook-offer-text]")?.value;
+  if (!text) {
+    toast("Text se nepodařilo najít.");
+    return;
+  }
+  rememberFacebookDraftText();
+  await copyTextToClipboard(text);
+  toast("Text pro Facebook zkopírovaný.");
+}
+
+function savePreparedFacebookText() {
+  const text = els.sheet.querySelector("[data-facebook-offer-text]")?.value;
+  if (!text) {
+    toast("Text se nepodařilo najít.");
+    return;
+  }
+  rememberFacebookDraftText();
+  toast("Text uložený jako šablona.");
+}
+
+function rememberFacebookDraftText(id) {
+  const offerId = clean(id || state.activeOfferId);
+  const text = els.sheet.querySelector("[data-facebook-offer-text]")?.value;
+  if (text == null) return;
+  state.facebookDraftTextByOffer.set(offerId, text);
+  saveFacebookOfferTemplateFromText(offerId, text);
+}
+
+function safeBuildFacebookOfferText(offer) {
+  try {
+    return buildFacebookOfferText(offer);
+  } catch (error) {
+    console.error(error);
+    return fallbackFacebookOfferText(offer);
+  }
+}
+
+function fallbackFacebookOfferText(offer = {}) {
+  return [
+    "🌿 Nabídka afrických kopřiv (Coleus) 🌿",
+    "",
+    "📅 Kdy?",
+    facebookOfferDateLine(offer),
+    "",
+    "Fotky jednotlivých rostlin budu postupně přidávat do komentářů pod tento příspěvek.",
+    "",
+    FACEBOOK_ITEMS_TOKEN,
+    "",
+    "Pokud máte o některou rostlinu zájem, napište prosím pod konkrétní fotku: „zájem“ nebo „kupuji“.",
+    "",
+    "Přeji krásný rostlinný lov 🌿💚",
+  ].join("\n").trim();
+}
+
+function facebookPhotoRefs(offer, options = {}) {
+  const allRefs = unique(facebookOfferAvailableItems(offer).map(({ item }) => offerItemImageSafe(item)).filter(Boolean));
+  const offset = Math.max(0, Math.floor(Number(options.offset) || 0));
+  const limit = options.limit === Infinity ? allRefs.length : Math.max(1, Math.floor(Number(options.limit) || FACEBOOK_PHOTO_BATCH_SIZE));
+  return allRefs.slice(offset, offset + limit);
+}
+
+function facebookOfferZipEntries(offer) {
+  const usedNames = new Set();
+  return facebookOfferAvailableItems(offer)
+    .map(({ item, available }, index) => {
+      const ref = offerItemImageSafe(item);
+      if (!ref) return null;
+      const priceText = clean(item?.price) ? formatMoney(item.price, item.currency || "CZK") : "";
+      const price = priceText ? `${normalizeAmount(item.price)}-${normalizeCurrencyLabel(item.currency || "CZK")}` : "";
+      const label = `${offerItemNameSafe(item)} - ${quantityText(available)} ks${priceText ? ` - ${priceText}` : ""}`;
+      const base = safeFileName(`${String(index + 1).padStart(3, "0")}-${offerItemNameSafe(item)}-${quantityText(available)}ks-${price}`, `fotka-${index + 1}`);
+      let name = base;
+      let suffix = 2;
+      while (usedNames.has(name)) {
+        name = `${base}-${suffix}`;
+        suffix += 1;
+      }
+      usedNames.add(name);
+      return { ref, name, label };
+    })
+    .filter(Boolean);
+}
+
+function normalizeCurrencyLabel(currency) {
+  const value = clean(currency || "CZK").toUpperCase();
+  return value === "EUR" ? "eur" : "kc";
+}
+
+function safeOfferItems(offer) {
+  return sortedOfferItems(offer);
+}
+
+function offerItemImageSafe(item) {
+  try {
+    return offerItemImage(item);
+  } catch {
+    return clean(item?.photoUrl);
+  }
+}
+
+function compareOfferItems(a = {}, b = {}) {
+  const nameDelta = clean(a.varietyName || a.name).localeCompare(clean(b.varietyName || b.name), "cs", { sensitivity: "base" });
+  return nameDelta || clean(a.id).localeCompare(clean(b.id), "cs", { sensitivity: "base" });
+}
+
+function sortedOfferItems(offer) {
+  return Array.isArray(offer?.items) ? [...offer.items].sort(compareOfferItems) : [];
+}
+
+function sortOfferItemsInPlace(offer) {
+  if (Array.isArray(offer?.items)) offer.items.sort(compareOfferItems);
+  return offer;
+}
+
+function offerItemNameSafe(item) {
+  try {
+    return offerItemName(item);
+  } catch {
+    return clean(item?.varietyName || item?.name || "Odřezek");
+  }
+}
+
+function facebookOfferAvailableItems(offer) {
+  return safeOfferItems(offer)
+    .map((item) => ({ item, available: reservationAvailableQuantity(item) }))
+    .filter(({ available }) => available > 0);
+}
+
+function facebookOfferItemLines(offer) {
+  return facebookOfferAvailableItems(offer).map(({ item, available }) => {
+    const price = clean(item?.price) ? formatMoney(item.price, item.currency || "CZK") : "";
+    return `• ${offerItemNameSafe(item)} - ${quantityText(available)} ks${price ? ` - ${price}` : ""}`;
+  });
+}
+
+function buildFacebookOfferText(offer) {
+  const settings = appSettings();
+  return renderFacebookOfferTemplate(settings.facebookOfferTemplate || defaultFacebookOfferTemplate(settings), offer);
+}
+
+function defaultFacebookOfferTemplate(settings = appSettings()) {
+  return [
+    "🌿 Nabídka afrických kopřiv (Coleus) 🌿",
+    "Nabízím řízky afrických kopřiv, některé mají kořínky.",
+    "Řízky které mají kořínky, nejsou plně vybarvené, ostatní již chytají správné barvy ☀️",
+    "",
+    "📅 Kdy?",
+    FACEBOOK_DATE_TOKEN,
+    "",
+    "📸 Fotky jednotlivých rostlin budu postupně přidávat do komentářů pod tento příspěvek – vždy s názvem, cenou a počtem dostupných kusů.",
+    "",
+    FACEBOOK_ITEMS_TOKEN,
+    "",
+    "👉 Pokud máte o některou rostlinu zájem, napište prosím pod konkrétní fotku:",
+    "„zájem“ nebo „kupuji“.",
+    "",
+    "👍 Po zveřejnění všech volných řízků dám „lajk“ jako potvrzení vašeho nákupu. V neděli pošlu foto, co jste nakoupili a balím, odesílám pondělí, když bych nestihla vše, tak v úterý 🙂",
+    "",
+    "📩 Následně mi prosím pošlete do zprávy:",
+    "• sumarizaci vašeho nákupu",
+    "• pouze olajkované fotky",
+    "• adresu do Zásilkovny",
+    "",
+    "📦 Cena dopravy:",
+    `• balné: ${formatMoney(settings.packingFee || 20, "CZK")}`,
+    `• Zásilkovna ČR: ${formatMoney(settings.shippingFeeCz || 89, "CZK")}`,
+    `• Zásilkovna SK: ${formatMoney(settings.shippingFeeSk || 99, "CZK")}`,
+    "",
+    "🚚 Odesílám po celé ČR, Slovensku i do Evropy.",
+    "Přeji krásný rostlinný lov 🌿💚",
+  ].join("\n").trim();
+}
+
+function renderFacebookOfferTemplate(template, offer) {
+  const source = clean(template) || defaultFacebookOfferTemplate();
+  const withItems = source.includes(FACEBOOK_ITEMS_TOKEN) ? source : `${source}\n\n${FACEBOOK_ITEMS_TOKEN}`;
+  return withItems
+    .replaceAll(FACEBOOK_DATE_TOKEN, facebookOfferDateLine(offer))
+    .replaceAll(FACEBOOK_ITEMS_TOKEN, facebookOfferItemsBlock(offer))
+    .trim();
+}
+
+function facebookOfferItemsBlock(offer) {
+  const itemLines = facebookOfferItemLines(offer);
+  const lines = [
+    itemLines.length ? "Volné odřezky v nabídce:" : "Volné odřezky v nabídce doplním postupně.",
+    ...itemLines,
+  ];
+  return lines.filter((line, index) => line || lines[index - 1] !== "").join("\n").trim();
+}
+
+function saveFacebookOfferTemplateFromText(id, text) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  let template = clean(text);
+  const itemsBlock = facebookOfferItemsBlock(offer);
+  const dateLine = facebookOfferDateLine(offer);
+  if (itemsBlock && template.includes(itemsBlock)) template = template.replace(itemsBlock, FACEBOOK_ITEMS_TOKEN);
+  if (dateLine && template.includes(dateLine)) template = template.replace(dateLine, FACEBOOK_DATE_TOKEN);
+  if (!template.includes(FACEBOOK_ITEMS_TOKEN)) template = `${template}\n\n${FACEBOOK_ITEMS_TOKEN}`.trim();
+  state.data.settings = { ...appSettings(), facebookOfferTemplate: template };
+  saveData();
+}
+
+function facebookOfferDateLine(offer) {
+  const date = localDateFromInput(offer?.facebookPublishDate || offer?.date) || new Date();
+  const weekday = new Intl.DateTimeFormat("cs-CZ", { weekday: "long" }).format(date);
+  const isToday = toDateInput(date) === todayInput();
+  const time = clean(offer?.facebookPublishTime) || "20:00";
+  return isToday ? `Dnes, v ${weekday} od ${time} hod.` : `${formatDate(toDateInput(date))} od ${time} hod.`;
+}
+
+function localDateFromInput(value) {
+  const match = clean(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fallback níže funguje i ve starším webview.
+  }
+  fallbackCopyText(text);
+}
+
+async function photoRefToFacebookFile(ref, ownerName = "fotka") {
+  try {
+    const value = clean(ref);
+    let file = value.startsWith(SUPABASE_PHOTO_PREFIX)
+      ? await supabasePhotoRefToPreparedFile(value, ownerName)
+      : await photoToFile(value, ownerName);
+    return file ? await preparePhotoFileForStorage(file) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function supabasePhotoRefToPreparedFile(ref, ownerName = "fotka") {
+  const cached = await getCachedSupabasePhotoBlob(ref, { prepared: true });
+  if (cached) return new File([cached], `${safeFileName(ownerName)}${photoExtension(cached)}`, { type: cached.type || "image/jpeg" });
+  const source = await supabasePhotoRefToFile(ref, ownerName);
+  if (!source) return null;
+  const prepared = await preparePhotoFileForStorage(source);
+  cacheSupabasePhotoBlob(ref, prepared, parseSupabasePhotoRef(ref), { prepared: true, allowLarge: true }).catch(() => {});
+  return prepared;
+}
+
+async function supabasePhotoRefToFile(ref, ownerName = "fotka") {
+  const cached = await getCachedSupabasePhotoBlob(ref);
+  if (cached) return new File([cached], `${safeFileName(ownerName)}${photoExtension(cached)}`, { type: cached.type || "image/jpeg" });
+  const path = parseSupabasePhotoRef(ref);
+  if (!path) return null;
+  const session = await ensureSession();
+  const config = loadSyncConfig();
+  const response = await fetch(`${config.url.replace(/\/+$/, "")}/storage/v1/object/${SUPABASE_SYNC_BUCKET}/${encodeStoragePath(path)}`, {
+    headers: {
+      apikey: config.anonKey,
+      Authorization: `Bearer ${session.accessToken}`,
+    },
+  });
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  cacheSupabasePhotoBlob(ref, blob, path).catch(() => {});
+  return new File([blob], clean(path).split("/").pop() || `${safeFileName(ownerName)}.jpg`, { type: blob.type || "image/jpeg" });
 }
 
 function defaultOfferOrderFees(customerId) {
@@ -1542,6 +2183,7 @@ function appSettings() {
     paymentIban: clean(settings.paymentIban),
     paymentSwift: clean(settings.paymentSwift || settings.paymentBic || settings.paymentSwiftBic),
     extraFees: normalizeNamedFees(settings.extraFees),
+    facebookOfferTemplate: clean(settings.facebookOfferTemplate),
   };
   return state.data.settings;
 }
@@ -1586,7 +2228,7 @@ function normalizeCross(cross = {}) {
 }
 
 function normalizeOffer(offer = {}) {
-  return { ...offer, id: clean(offer.id) || uid(), title: clean(offer.title) || `Nabídka ${formatDate(offer.date || todayInput())}`, date: clean(offer.date) || todayInput(), status: clean(offer.status) || "připravená", items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [], note: clean(offer.note) };
+  return { ...offer, id: clean(offer.id) || uid(), title: clean(offer.title) || `Nabídka ${formatDate(offer.date || todayInput())}`, date: clean(offer.date) || todayInput(), facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || todayInput(), facebookPublishTime: clean(offer.facebookPublishTime) || "20:00", status: clean(offer.status) || "připravená", items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [], note: clean(offer.note) };
 }
 
 function normalizeOfferItem(item = {}) {
@@ -1896,6 +2538,24 @@ function idbGet(db, storeName, key) {
   });
 }
 
+function idbGetAll(db, storeName) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const request = tx.objectStore(storeName).getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function idbDelete(db, storeName, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).delete(key);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 async function resolvePhotos(root) {
   const images = [...root.querySelectorAll("[data-photo-ref]")];
   await Promise.all(images.map(async (image) => {
@@ -1987,32 +2647,63 @@ async function fetchSupabasePhotoObjectUrl(path, ref = "") {
   }
 }
 
-async function getCachedSupabasePhotoBlob(ref) {
-  const key = supabasePhotoCacheKey(ref);
+async function getCachedSupabasePhotoBlob(ref, options = {}) {
+  const key = supabasePhotoCacheKey(ref, options);
   if (!key) return null;
   try {
-    const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, key);
+    const db = await openPhotoDb();
+    const record = await idbGet(db, PHOTO_BLOB_STORE, key);
+    if (record?.blob) {
+      record.lastAccessedAt = new Date().toISOString();
+      idbPut(db, PHOTO_BLOB_STORE, record).catch(() => {});
+    }
     return record?.blob || null;
   } catch {
     return null;
   }
 }
 
-async function cacheSupabasePhotoBlob(ref, blob, path = "") {
-  const key = supabasePhotoCacheKey(ref);
+async function cacheSupabasePhotoBlob(ref, blob, path = "", options = {}) {
+  const key = supabasePhotoCacheKey(ref, options);
   if (!key || !blob) return;
+  const size = Number(blob.size) || 0;
+  const canCache = options.prepared || options.allowLarge || isSupabaseThumbnailPath(path) || size <= SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES;
+  if (!canCache) return;
   await idbPut(await openPhotoDb(), PHOTO_BLOB_STORE, {
     id: key,
     blob,
     name: clean(path).split("/").pop() || "fotka.jpg",
     type: blob.type || "image/jpeg",
+    size,
+    path: clean(path),
+    prepared: Boolean(options.prepared),
     cachedAt: new Date().toISOString(),
+    lastAccessedAt: new Date().toISOString(),
   });
+  pruneSupabasePhotoCache().catch(() => {});
 }
 
-function supabasePhotoCacheKey(ref) {
+function supabasePhotoCacheKey(ref, options = {}) {
   const value = clean(ref);
-  return value && value.startsWith(SUPABASE_PHOTO_PREFIX) ? `supabase-cache:${value}` : "";
+  const prefix = options.prepared ? SUPABASE_PREPARED_PHOTO_CACHE_PREFIX : SUPABASE_PHOTO_CACHE_PREFIX;
+  return value && value.startsWith(SUPABASE_PHOTO_PREFIX) ? `${prefix}${value}` : "";
+}
+
+async function pruneSupabasePhotoCache() {
+  const db = await openPhotoDb();
+  const records = (await idbGetAll(db, PHOTO_BLOB_STORE))
+    .filter((record) => clean(record?.id).startsWith(SUPABASE_PHOTO_CACHE_PREFIX) || clean(record?.id).startsWith(SUPABASE_PREPARED_PHOTO_CACHE_PREFIX))
+    .map((record) => ({ ...record, size: Number(record.size || record.blob?.size || record.file?.size) || 0 }));
+  let total = records.reduce((sum, record) => sum + record.size, 0);
+  let count = records.length;
+  if (total <= SUPABASE_PHOTO_CACHE_MAX_BYTES && count <= SUPABASE_PHOTO_CACHE_MAX_ITEMS) return;
+  records.sort((a, b) => clean(a.lastAccessedAt || a.cachedAt).localeCompare(clean(b.lastAccessedAt || b.cachedAt)));
+  for (const record of records) {
+    if (total <= SUPABASE_PHOTO_CACHE_MAX_BYTES && count <= SUPABASE_PHOTO_CACHE_MAX_ITEMS) break;
+    await idbDelete(db, PHOTO_BLOB_STORE, record.id);
+    total -= record.size;
+    count -= 1;
+  }
 }
 
 async function photoToFile(ref, ownerName = "fotka") {
@@ -2507,6 +3198,10 @@ function supabaseThumbnailPath(path) {
   return parts.join("/");
 }
 
+function isSupabaseThumbnailPath(path) {
+  return clean(path).includes(`/${SUPABASE_THUMB_DIR}/`);
+}
+
 function encodeStoragePath(path) {
   return clean(path).split("/").map(encodeURIComponent).join("/");
 }
@@ -2554,7 +3249,16 @@ function formatMoney(value, currency = "CZK") {
 }
 
 function todayInput() {
-  return new Date().toISOString().slice(0, 10);
+  return toDateInput(new Date());
+}
+
+function toDateInput(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeAmount(value) {
