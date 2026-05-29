@@ -238,7 +238,7 @@ function renderCustomers() {
 }
 
 function renderVarieties() {
-  const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => customerSortPrice(a) - customerSortPrice(b) || a.name.localeCompare(b.name, "cs"));
+  const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => a.name.localeCompare(b.name, "cs"));
   if (!varieties.length) return empty("Žádné odrůdy.");
   return varieties.map((variety) => card({
     id: variety.id,

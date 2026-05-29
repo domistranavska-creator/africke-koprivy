@@ -165,7 +165,7 @@ const state = {
   customerQuickFilter: "",
   orderQuickFilter: "",
   varietyUsageFilter: "",
-  varietySort: "popular",
+  varietySort: "name",
   selectedOrderIds: new Set(),
   orderDialogDirty: false,
   orderDialogInitializing: false,
