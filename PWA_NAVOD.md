@@ -27,4 +27,4 @@ Poznámka: instalace se nabídne jen z HTTPS odkazu, například z GitHub Pages.
 
 ## Sync a soukromí
 
-Obsah se zobrazí až po přihlášení. Zákazníci a objednávky jsou v Supabase uložené zašifrovaně. Fotky jsou v privátním úložišti a syncují se v plné kvalitě.
+Obsah se zobrazí až po přihlášení. Zákazníci a objednávky jsou v Supabase uložené zašifrovaně. Fotky jsou v privátním úložišti a appka je při nahrávání ukládá úsporně.

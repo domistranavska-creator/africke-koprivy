@@ -12,6 +12,9 @@ const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
 const SUPABASE_THUMB_DIR = "_nahledy_v2";
 const SUPABASE_THUMB_MAX_SIZE = 520;
 const SUPABASE_THUMB_QUALITY = 0.82;
+const PHOTO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const PHOTO_MAX_UPLOAD_EDGE = 3200;
+const PHOTO_UPLOAD_QUALITY_STEPS = [0.9, 0.86, 0.82, 0.78, 0.74];
 const MOBILE_PHOTO_CATALOG_TYPE = "africke-koprivy-mobile-photo-catalog-v1";
 const MOBILE_PHOTO_EXPORT_TYPE = "africke-koprivy-mobile-photo-export-v1";
 const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
@@ -71,6 +74,13 @@ const crossStageLabels = {
   vyseto: "Vyseto",
   roste: "Roste",
   hotovo: "Hotovo",
+};
+
+const crossStageIcons = {
+  opyleno: "✦",
+  vyseto: "🌱",
+  roste: "🌿",
+  hotovo: "✓",
 };
 
 const crossResultLabels = {
@@ -987,6 +997,7 @@ function renderAll() {
 }
 
 function renderShared() {
+  renderTabCounts();
   renderFilters();
   renderOrderCustomerOptions();
   renderCountryList();
@@ -998,6 +1009,25 @@ function renderShared() {
   updatePhotoFolderStatus();
   renderStudioShell();
   renderSettingsScene();
+}
+
+function renderTabCounts() {
+  const counts = {
+    offers: state.data.offers.length,
+    orders: state.data.orders.length,
+    customers: state.data.customers.length,
+    varieties: state.data.varieties.length,
+    crosses: state.data.crosses.length,
+    dashboard: paidVarietyProfitText(state.data.orders),
+  };
+  document.querySelectorAll(".tab[data-view]").forEach((button) => {
+    const view = button.dataset.view;
+    if (button.classList.contains("settings-tab")) return;
+    if (!button.dataset.tabLabel) button.dataset.tabLabel = button.textContent.trim();
+    const count = counts[view];
+    if (count === undefined) return;
+    button.innerHTML = `<span class="tab-label">${escapeHtml(button.dataset.tabLabel)}</span><span class="tab-count">${escapeHtml(String(count))}</span>`;
+  });
 }
 
 function renderView(view) {
@@ -1107,12 +1137,18 @@ function renderStudioShell() {
   els.studioHeadline.textContent = viewCopy.headline;
   els.studioSubline.textContent = viewCopy.subline;
   els.studioMiniStats.innerHTML = [
-    studioStatMarkup("Platby", String(paymentDue), "", 'data-action-order-filter="payment-due"'),
-    studioStatMarkup("Připraveno", String(ready), "", 'data-action-order-filter="ready"'),
-    studioStatMarkup("Zisk", paidVarietyProfitText(orders), "", 'data-action-view="dashboard"'),
-    studioStatMarkup("Top", topVariety ? topVariety.name : "—", topVariety ? `${topVariety.count}×` : "", topVariety ? `data-action-variety-name="${escapeHtml(topVariety.name)}"` : 'data-action-view="varieties"'),
+    studioStatMarkup("Nabídky", String(state.data.offers.length), activeOfferCountText(), 'data-action-view="offers"'),
+    studioStatMarkup("Objednávky", String(orders.length), paymentDue ? `${paymentDue} čeká` : "hotovo", 'data-action-view="orders"'),
+    studioStatMarkup("Zákazníci", String(customers.length), "", 'data-action-view="customers"'),
+    studioStatMarkup("Odrůdy", String(state.data.varieties.length), topVariety ? `top ${topVariety.name}` : "", 'data-action-view="varieties"'),
+    studioStatMarkup("Křížení", String(state.data.crosses.length), "", 'data-action-view="crosses"'),
   ].join("");
   wireActionSurface(els.studioMiniStats);
+}
+
+function activeOfferCountText() {
+  const active = state.data.offers.filter((offer) => offer.status !== "uzavřená").length;
+  return active ? `${active} aktivní` : "";
 }
 
 function studioStatMarkup(label, value, meta, attrs = "") {
@@ -1486,7 +1522,7 @@ function renderCustomers() {
             <td>${escapeHtml(customer.country || "")}</td>
             <td>
               <span class="cell-main">${lastOrder ? formatDate(lastOrder.orderDate) : ""}</span>
-              <span class="cell-sub">${lastOrder ? escapeHtml(lastOrder.varietiesText) : ""}</span>
+              <span class="cell-sub">${lastOrder ? escapeHtml(formatOrderPrice(lastOrder)) : ""}</span>
             </td>
             <td>
               <span class="row-actions">
@@ -1872,17 +1908,31 @@ function renderSettingsScene() {
   wireActionSurface(els.settingsScene);
 }
 
+function orderSavedTotal(order) {
+  const amount = parseDecimal(order?.price);
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+}
+
+function ordersTotalText(orders) {
+  const totals = new Map();
+  orders.forEach((order) => {
+    const amount = orderSavedTotal(order);
+    if (amount <= 0) return;
+    const currency = normalizeCurrency(order.currency);
+    totals.set(currency, (totals.get(currency) || 0) + amount);
+  });
+  return [...totals.entries()].map(([currency, amount]) => formatMoney(amount, currency)).join(" · ") || "0 Kč";
+}
+
 function customerOrderSummary(orders) {
-  const paid = orders.filter((order) => order.paymentStatus === "zaplaceno").length;
-  const waiting = orders.filter((order) => order.paymentStatus === "čeká" || order.paymentStatus === "nezaplaceno").length;
-  const ready = orders.filter((order) => order.shippingStatus === "připraveno").length;
-  const lastOrder = orders[0];
+  const paid = orders.filter((order) => parsePaymentStatus(order.paymentStatus) === "zaplaceno").length;
+  const waitingOrders = orders.filter((order) => parsePaymentStatus(order.paymentStatus) !== "zaplaceno");
+  const waitingText = waitingOrders.length ? `${waitingOrders.length} · ${ordersTotalText(waitingOrders)}` : "Ne";
   return `<div class="history-summary">
     <article><span>Objednávek</span><strong>${orders.length}</strong></article>
+    <article><span>Celkem koupil</span><strong>${escapeHtml(ordersTotalText(orders))}</strong></article>
+    <article><span>Čeká platba</span><strong>${escapeHtml(waitingText)}</strong></article>
     <article><span>Zaplaceno</span><strong>${paid}</strong></article>
-    <article><span>Čeká</span><strong>${waiting}</strong></article>
-    <article><span>Připraveno</span><strong>${ready}</strong></article>
-    <article><span>Naposledy</span><strong>${lastOrder ? formatDate(lastOrder.orderDate) : "—"}</strong></article>
   </div>`;
 }
 
@@ -2255,13 +2305,9 @@ function crossSeedlingVariety(cross) {
 }
 
 function crossStagePill(stage) {
-  const classes = {
-    opyleno: "pending",
-    vyseto: "ready",
-    roste: "sent",
-    hotovo: "paid",
-  };
-  return `<span class="pill ${classes[stage] || ""}">${escapeHtml(crossStageLabels[stage] || "—")}</span>`;
+  const safeStage = crossStages.includes(stage) ? stage : "opyleno";
+  const label = `${crossStageIcons[safeStage] || ""} ${crossStageLabels[safeStage] || "—"}`.trim();
+  return `<span class="pill cross-stage-pill cross-stage-${escapeHtml(safeStage)}">${escapeHtml(label)}</span>`;
 }
 
 function crossResultPill(rating) {
@@ -2282,7 +2328,7 @@ function crossRowToneClass(cross) {
 }
 
 function crossActorThumb(image, label) {
-  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}</span>`;
+  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", 'loading="lazy"')}</span>`;
   return `<span class="cross-actor-thumb empty">${escapeHtml(varietyInitials(label || "K"))}</span>`;
 }
 
@@ -2460,7 +2506,7 @@ function renderOffers() {
   const offers = filteredOffers();
   renderOffersScene();
   if (!state.selectedOfferId && offers[0]) state.selectedOfferId = offers[0].id;
-  if (state.selectedOfferId && !state.data.offers.some((offer) => offer.id === state.selectedOfferId)) {
+  if (state.selectedOfferId && !offers.some((offer) => offer.id === state.selectedOfferId)) {
     state.selectedOfferId = offers[0]?.id || null;
   }
 
@@ -2469,6 +2515,7 @@ function renderOffers() {
         .map((offer) => {
           const confirmed = offerConfirmedCount(offer);
           const alternates = offerAlternateCount(offer);
+          const available = offerAvailableCount(offer);
           return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
             <td class="offer-main-cell">
               <div class="offer-mobile-card">
@@ -2477,6 +2524,7 @@ function renderOffers() {
                 <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
                 <div class="offer-mobile-stats">
                   <span><small>Položky</small><b>${offer.items.length}</b></span>
+                  <span><small>Volné</small><b>${available}</b></span>
                   <span><small>Rezervace</small><b>${confirmed}</b></span>
                 </div>
               </div>
@@ -2487,7 +2535,7 @@ function renderOffers() {
             <td>${offer.items.length}</td>
             <td>
               <span class="cell-main">${confirmed}</span>
-              <span class="cell-sub">${alternates ? `Náhradníci ${alternates}` : ""}</span>
+              <span class="cell-sub">${[`Volné ${available}`, alternates ? `Náhradníci ${alternates}` : ""].filter(Boolean).join(" · ")}</span>
             </td>
             <td>
               <span class="row-actions">
@@ -2579,9 +2627,10 @@ function renderOfferItem(offer, item) {
   const available = Math.max(0, Number(item.quantity || 0) - confirmed);
   const soldOut = Number(item.quantity || 0) > 0 && available === 0;
   const reservations = sortedReservationsForItem(item);
+  const image = offerItemImage(item);
   return `<article class="offer-item ${soldOut ? "sold-out" : ""}">
     <div class="offer-item-main">
-      <div class="offer-thumb">${item.photoUrl ? photoImageMarkup(item.photoUrl, item.varietyName, "", 'loading="lazy"') : varietyInitials(item.varietyName)}</div>
+      <div class="offer-thumb">${image ? photoImageMarkup(image, item.varietyName, "", 'loading="lazy"') : varietyInitials(item.varietyName)}</div>
       <div>
         <strong>${escapeHtml(item.varietyName)}</strong>
         <small>${escapeHtml([`${item.quantity} ks`, `${formatMoney(item.price, item.currency)}/ks`, item.note].filter(Boolean).join(" · "))}</small>
@@ -5092,7 +5141,7 @@ function renderMainPhotoPicker(variety) {
         .map(
           (image, index) => `<div class="main-photo-option-wrap" data-photo-option="${escapeHtml(image)}">
             <button class="main-photo-option ${image === mainPhoto || (!mainPhoto && index === 0) ? "active" : ""}" type="button" data-main-photo="${escapeHtml(image)}" title="Nastavit jako hlavní">
-              ${photoImageMarkup(image, `${variety?.name || "Odrůda"} ${index + 1}`, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}
+              ${photoImageMarkup(image, `${variety?.name || "Odrůda"} ${index + 1}`, "", 'loading="lazy"')}
             </button>
             <button class="main-photo-remove" type="button" data-remove-photo="${escapeHtml(image)}" aria-label="Odstranit fotku">×</button>
           </div>`,
@@ -5286,7 +5335,7 @@ function renderCrossSeedlingPhotoPicker() {
       ${items
         .map((item, index) => `<span class="cross-photo-option ${item.key === activeMain || (!activeMain && index === 0) ? "active" : ""}">
           <button class="cross-photo-main-button" type="button" data-cross-main-photo="${escapeHtml(item.key)}" title="Nastavit jako hlavní">
-            ${photoImageMarkup(item.image, `${form.elements.seedlingName.value || "Semenáč"} ${index + 1}`, "", 'loading="lazy" data-supabase-photo-allow-fallback="1"')}
+            ${photoImageMarkup(item.image, `${form.elements.seedlingName.value || "Semenáč"} ${index + 1}`, "", 'loading="lazy"')}
             <small>${escapeHtml(item.label)}</small>
           </button>
           <button class="cross-photo-remove-button" type="button" data-cross-remove-photo="${escapeHtml(item.key)}" title="Smazat fotku" aria-label="Smazat fotku">×</button>
@@ -6080,7 +6129,7 @@ function parseDelimited(text) {
 }
 
 async function backupData() {
-  toast("Připravuji zálohu v plné kvalitě fotek...");
+  toast("Připravuji zálohu fotek...");
   const snapshot = {
     app: "Africké kopřivy",
     version: STORE_KEY,
@@ -6166,10 +6215,10 @@ async function exportMobilePhotoCatalog() {
 }
 
 async function exportMobilePhotos() {
-  toast("Připravuji fotky v plné kvalitě...");
+  toast("Připravuji fotky...");
   const payload = await buildMobilePhotoPayload(MOBILE_PHOTO_EXPORT_TYPE);
   downloadJson(`africke-koprivy-fotky-z-mobilu-${toDateInput(new Date())}.json`, payload);
-  toast("Foto balíček stažen v plné kvalitě.");
+  toast("Foto balíček stažen.");
 }
 
 async function importMobilePhotosFromFile(event) {
@@ -6974,11 +7023,56 @@ async function uploadPhotoForSync(userId, ownerName, image) {
   if (isSupabasePhotoRef(value)) return value;
   const file = await photoToOriginalFile(value, ownerName);
   if (!file) return value;
-  const path = await supabaseStoragePathForPhoto(userId, ownerName, file);
-  await uploadSupabaseStorageFile(path, file);
-  const thumb = await createPhotoThumbnailFile(file);
+  const uploadFile = await preparePhotoFileForStorage(file);
+  const path = await supabaseStoragePathForPhoto(userId, ownerName, uploadFile);
+  await uploadSupabaseStorageFile(path, uploadFile);
+  const thumb = await createPhotoThumbnailFile(uploadFile);
   if (thumb) await uploadSupabaseStorageFile(supabaseThumbnailPath(path), thumb);
   return supabasePhotoRef(path);
+}
+
+async function preparePhotoFileForStorage(file) {
+  if (!file || !file.type?.startsWith("image/")) return file;
+  if (file.size && file.size <= PHOTO_MAX_UPLOAD_BYTES) return file;
+  let objectUrl = "";
+  try {
+    objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    if (!image) return file;
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return file;
+
+    let scale = Math.min(1, PHOTO_MAX_UPLOAD_EDGE / Math.max(sourceWidth, sourceHeight));
+    let bestBlob = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const width = Math.max(1, Math.round(sourceWidth * scale));
+      const height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) return file;
+      context.drawImage(image, 0, 0, width, height);
+      for (const quality of PHOTO_UPLOAD_QUALITY_STEPS) {
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+        if (!blob) continue;
+        if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob;
+        if (blob.size <= PHOTO_MAX_UPLOAD_BYTES) return photoBlobToFile(blob, file);
+      }
+      scale *= 0.84;
+    }
+    return bestBlob && bestBlob.size < file.size ? photoBlobToFile(bestBlob, file) : file;
+  } catch {
+    return file;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function photoBlobToFile(blob, originalFile) {
+  const baseName = safeFileName(clean(originalFile?.name || "fotka").replace(/\.[^.]+$/, ""), "fotka");
+  return new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
 }
 
 async function createPhotoThumbnailFile(file) {
@@ -7421,14 +7515,15 @@ function filteredOffers() {
   return state.data.offers
     .filter((offer) => {
       if (!query) return true;
-      const reservationNames = offer.items.flatMap((item) =>
+      const items = Array.isArray(offer.items) ? offer.items : [];
+      const reservationNames = items.flatMap((item) =>
         item.reservations.map((reservation) => customerName(findCustomer(reservation.customerId))),
       );
       return matchesSearchText([
         offer.title,
         offer.status,
         offer.note,
-        ...offer.items.map((item) => item.varietyName),
+        ...items.map((item) => item.varietyName),
         ...reservationNames,
       ].join(" "), query);
     })
@@ -8094,7 +8189,7 @@ function galleryMainContent(images, varietyName, index) {
   const arrows = images.length > 1;
   return `
     ${arrows ? '<button class="gallery-arrow gallery-arrow-prev" type="button" data-gallery-step="-1" aria-label="Předchozí fotka">‹</button>' : ""}
-    ${photoImageMarkup(images[index], varietyName, "", "data-photo-full")}
+    ${photoImageMarkup(images[index], varietyName, "", 'loading="eager"')}
     ${arrows ? '<button class="gallery-arrow gallery-arrow-next" type="button" data-gallery-step="1" aria-label="Další fotka">›</button>' : ""}
   `;
 }
@@ -8725,6 +8820,11 @@ function normalizeOfferItem(item = {}) {
   };
 }
 
+function offerItemImage(item = {}) {
+  const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
+  return clean(item.photoUrl) || varietyImages(variety)[0] || "";
+}
+
 function normalizeReservation(reservation = {}) {
   return {
     id: clean(reservation.id) || uid(),
@@ -9101,6 +9201,10 @@ function offerConfirmedCount(offer) {
 
 function offerAlternateCount(offer) {
   return (offer.items || []).reduce((sum, item) => sum + offerItemAlternateCount(item), 0);
+}
+
+function offerAvailableCount(offer) {
+  return (offer.items || []).reduce((sum, item) => sum + reservationAvailableQuantity(item), 0);
 }
 
 function offerTotalText(offer) {
@@ -9874,9 +9978,11 @@ async function ensurePhotoRootHandle({ write = false, request = false } = {}) {
 async function saveVarietyPhotoFiles(varietyName, files) {
   const images = Array.from(files || []).filter((file) => file.type?.startsWith("image/"));
   if (!images.length) return [];
+  const preparedImages = [];
+  for (const file of images) preparedImages.push(await preparePhotoFileForStorage(file));
 
-  const saved = await saveOriginalPhotoFiles(varietyName, images);
-  const fallbackFiles = images.slice(saved.length);
+  const saved = await saveOriginalPhotoFiles(varietyName, preparedImages);
+  const fallbackFiles = preparedImages.slice(saved.length);
   const fallback = fallbackFiles.length ? await saveIndexedPhotoFiles(fallbackFiles) : [];
   return [...saved, ...fallback];
 }
@@ -9884,14 +9990,16 @@ async function saveVarietyPhotoFiles(varietyName, files) {
 async function saveIndexedPhotoFiles(files) {
   const images = Array.from(files || []).filter((file) => file.type?.startsWith("image/"));
   if (!images.length) return [];
+  const preparedImages = [];
+  for (const file of images) preparedImages.push(await preparePhotoFileForStorage(file));
   const saved = [];
-  for (const file of images) {
+  for (const file of preparedImages) {
     const ref = await saveIndexedPhotoFile(file);
     if (ref) saved.push(ref);
   }
-  if (saved.length === images.length) return saved;
+  if (saved.length === preparedImages.length) return saved;
 
-  const fallbackFiles = images.slice(saved.length);
+  const fallbackFiles = preparedImages.slice(saved.length);
   const fallback = fallbackFiles.length ? await readImageFiles(fallbackFiles, { original: true }) : [];
   return [...saved, ...fallback];
 }
@@ -9901,15 +10009,16 @@ async function saveIndexedPhotoFile(file) {
     const db = await openPhotoDb();
     if (!db) return "";
     const id = uid();
-    const preview = await imageFileToDataUrl(file, { maxSize: 1100, quality: 0.82 });
+    const storedFile = await preparePhotoFileForStorage(file);
+    const preview = await imageFileToDataUrl(storedFile, { maxSize: 1100, quality: 0.82 });
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(PHOTO_BLOB_STORE, "readwrite");
       transaction.objectStore(PHOTO_BLOB_STORE).put(
         {
           id,
-          name: clean(file.name) || `${id}${photoExtension(file)}`,
-          type: clean(file.type) || "image/jpeg",
-          file,
+          name: clean(storedFile.name) || `${id}${photoExtension(storedFile)}`,
+          type: clean(storedFile.type) || "image/jpeg",
+          file: storedFile,
           preview,
           createdAt: new Date().toISOString(),
         },

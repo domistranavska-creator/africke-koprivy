@@ -15,10 +15,14 @@ const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
 const SUPABASE_THUMB_DIR = "_nahledy_v2";
 const SUPABASE_THUMB_MAX_SIZE = 520;
 const SUPABASE_THUMB_QUALITY = 0.82;
+const PHOTO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const PHOTO_MAX_UPLOAD_EDGE = 3200;
+const PHOTO_UPLOAD_QUALITY_STEPS = [0.9, 0.86, 0.82, 0.78, 0.74];
 const INDEXED_PHOTO_PREFIX = "indexed-photo:";
 const BRAND_LOGO_IMAGE_DATA_URI = clean(window.AFRICKE_KOPRIVY_BRAND_LOGO_DATA_URI || "");
 
 const stageLabels = { opyleno: "Opyleno", vyseto: "Vyseto", roste: "Roste", hotovo: "Hotovo" };
+const stageIcons = { opyleno: "✦", vyseto: "🌱", roste: "🌿", hotovo: "✓" };
 const ratingLabels = { krasna: "Krásná", hnusna: "Hnusná", nejista: "Nejistá" };
 const statusLabels = { "nová": "Nová", "připraveno": "Připravená", "odesláno": "Odeslaná", zaplaceno: "Vyřízená" };
 
@@ -34,6 +38,8 @@ const state = {
   installPromptEvent: null,
   data: loadData(),
   photoUrls: new Map(),
+  sheetStack: [],
+  currentSheetRestore: null,
 };
 
 const els = {
@@ -82,6 +88,7 @@ function openView(view) {
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   els.search.value = "";
   state.query = "";
+  closeSheet({ all: true });
   render();
 }
 
@@ -120,6 +127,7 @@ async function installPwaApp() {
 function render() {
   if (!isSyncLoggedIn()) state.view = "sync";
   document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+  document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
   renderFilters();
   renderSummary();
   const viewRenderers = {
@@ -140,23 +148,24 @@ function renderSummary() {
   const summary = {
     offers: ["Nabídky", `${state.data.offers.length} nabídek`, "Rychle vytvoříš nabídku a rezervace."],
     orders: ["Objednávky", `${state.data.orders.length} objednávek`, "Platby, doprava a text zákazníkovi po ruce."],
-    customers: ["Zákazníci", `${state.data.customers.length} kontaktů`, "Čistý adresář bez prázdných řádků."],
-    varieties: ["Odrůdy", `${state.data.varieties.length} odrůd`, "Fotky v plné kvalitě, ceny v Kč."],
-    crosses: ["Křížení", `${state.data.crosses.length} záznamů`, "Matka × pyl = semenáč, přehledně v mobilu."],
+    customers: ["Zákazníci", `${state.data.customers.length} kontaktů`, ""],
+    varieties: ["Odrůdy", `${state.data.varieties.length} odrůd`, "Fotky a ceny v Kč."],
+    crosses: ["Křížení", `${state.data.crosses.length} záznamů`, ""],
     sync: ["Nastavení", loadSyncConfig().autoSync ? "Sync zapnutý" : "Sync vypnutý", "Soukromý cloud, fotky a základní nastavení aplikace."],
   }[state.view] || ["Přehled", "", ""];
-  els.summary.innerHTML = `<div><span>${escapeHtml(summary[0])}</span><strong>${escapeHtml(summary[1])}</strong></div><p>${escapeHtml(summary[2])}</p>`;
+  els.summary.innerHTML = `<div><span>${escapeHtml(summary[0])}</span><strong>${escapeHtml(summary[1])}</strong></div>${summary[2] ? `<p>${escapeHtml(summary[2])}</p>` : ""}`;
 }
 
 function renderFilters() {
   const filters = {
-    offers: [["all", "Vše"], ["active", "Aktivní"], ["closed", "Uzavřené"]],
+    offers: [],
     orders: [["all", "Vše"], ["todo", "K řešení"], ["done", "Hotovo"]],
     customers: [["all", "Vše"], ["cz", "Česko"], ["foreign", "Zahraničí"]],
     varieties: [["all", "Vše"], ["active", "Aktivní"], ["photo", "S fotkou"]],
-    crosses: [["all", "Vše"], ["active", "Rozpracované"], ["done", "Hotovo"], ["bad", "Hnusná"]],
+    crosses: [],
     sync: [],
   }[state.view] || [];
+  if (!filters.some(([value]) => value === state.filter)) state.filter = "all";
   els.filterRow.innerHTML = filters.map(([value, label]) => `<button class="chip-button ${state.filter === value ? "active" : ""}" type="button" data-filter="${value}">${label}</button>`).join("");
   els.filterRow.querySelectorAll("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -170,16 +179,22 @@ function renderOffers() {
   const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
   if (!offers.length) return empty("Žádné nabídky.");
   return offers.map((offer) => {
+    const items = Array.isArray(offer.items) ? offer.items : [];
     const reserved = offerReservedCount(offer);
     const total = offerTotalCount(offer);
-    const itemPills = offer.items.slice(0, 4).map((item) => `🌿 ${offerItemName(item)}`);
-    if (offer.items.length > 4) itemPills.push(`+${offer.items.length - 4} další`);
+    const available = offerAvailableCount(offer);
+    const alternates = offerAlternateCount(offer);
+    const coverImage = items.map((item) => offerItemImage(item)).find(Boolean) || "";
+    const itemPills = items.slice(0, 4).map((item) => `🌿 ${offerItemName(item)}`);
+    if (items.length > 4) itemPills.push(`+${items.length - 4} další`);
     return card({
       id: offer.id,
       type: "offer",
       title: offer.title,
       sub: `${formatDate(offer.date)} · ${offer.status}`,
-      pills: [...itemPills, `Rezervace ${reserved}/${total}`],
+      pills: [...itemPills, `Volné ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `Náhradníci ${alternates}` : ""],
+      thumb: coverImage,
+      thumbText: initials(offer.title),
       actions: [["edit-offer", "✎"], ["delete-offer", "×"]],
     });
   }).join("");
@@ -251,7 +266,7 @@ function renderCrosses() {
       sub: cross.seedlingName || "",
       thumb: crossSeedlingImages(cross)[0],
       thumbText: initials(crossLineage(cross)),
-      pills: [`🚚 ${stageLabels[cross.stage] || "Opyleno"}`, ratingLabels[cross.resultRating] ? `✅ ${ratingLabels[cross.resultRating]}` : "Bez hodnocení", cross.seedlingName || "—"],
+      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `✅ ${ratingLabels[cross.resultRating]}` : "Bez hodnocení", cross.seedlingName || "—"],
       actions: [["download-cross", "▣"], ["edit-cross", "✎"], ["delete-cross", "×"]],
     });
   }).join("");
@@ -269,7 +284,7 @@ function renderSync() {
     <label class="field"><span>Šifrovací heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmí se ztratit"></label>`;
   return `<section class="sync-card">
     <strong class="title">Soukromá appka</strong>
-    <p class="sub">${loggedIn ? "Přihlášeno. Sync běží automaticky na pozadí." : "Po přihlášení se ukáže obsah appky. Fotky zůstávají v plné kvalitě."}</p>
+    <p class="sub">${loggedIn ? "Přihlášeno. Sync běží automaticky na pozadí." : "Po přihlášení se ukáže obsah appky. Sync běží úsporně."}</p>
     <input id="syncUrl" type="hidden" value="${escapeHtml(config.url)}">
     <input id="syncAnon" type="hidden" value="${escapeHtml(config.anonKey)}">
     ${loginFields}
@@ -320,7 +335,7 @@ function bindListActions() {
       const id = cardEl.dataset.id;
       if (type === "customer") openCustomerSheet(id);
       if (type === "order") openOrderSheet(id);
-      if (type === "variety") openVarietySheet(id);
+      if (type === "variety") openVarietyDetailSheet(id);
       if (type === "cross") openCrossDetailSheet(id);
       if (type === "offer") openOfferDetailSheet(id);
     });
@@ -351,9 +366,33 @@ function handleRowAction(action, id) {
   if (action === "delete-offer") return deleteItem("offers", id, "Nabídku");
 }
 
+function crossStageText(stage) {
+  return `${stageIcons[stage] || stageIcons.opyleno} ${stageLabels[stage] || "Opyleno"}`;
+}
+
+function customerOverviewMarkup(customerId) {
+  const orders = state.data.orders
+    .filter((order) => order.customerId === customerId)
+    .sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
+  const waitingOrders = orders.filter((order) => order.paymentStatus !== "zaplaceno");
+  const waitingText = waitingOrders.length ? `${waitingOrders.length} · ${orderTotalsText(waitingOrders)}` : "Ne";
+  return `<section class="customer-overview">
+    <div class="offer-stats customer-overview-stats">
+      <span><small>Objednávky</small><strong>${orders.length}</strong></span>
+      <span><small>Celkem koupil</small><strong>${escapeHtml(orderTotalsText(orders))}</strong></span>
+      <span><small>Čeká platba</small><strong>${escapeHtml(waitingText)}</strong></span>
+    </div>
+  </section>`;
+}
+
+function orderTotalsText(orders = []) {
+  const total = orders.reduce((sum, order) => sum + orderFinalTotal(order), 0);
+  return total > 0 ? formatMoney(total, "CZK") : "0 Kč";
+}
+
 function openCustomerSheet(id = "") {
   const customer = findById("customers", id) || {};
-  openSheet(customer.id ? "Upravit zákazníka" : "Nový zákazník", `<form class="form-grid" id="sheetForm">
+  openSheet(customer.id ? "Upravit zákazníka" : "Nový zákazník", `${customer.id ? customerOverviewMarkup(customer.id) : ""}<form class="form-grid" id="sheetForm">
     <label class="field"><span>Jméno a příjmení</span><input name="fullName" required value="${escapeHtml(customerName(customer))}"></label>
     <label class="field"><span>Telefon</span><input name="phone" value="${escapeHtml(customer.phone)}"></label>
     <label class="field"><span>Email</span><input name="email" type="email" value="${escapeHtml(customer.email)}"></label>
@@ -441,7 +480,7 @@ function openVarietySheet(id = "") {
     <label class="field"><span>Název</span><input name="name" required value="${escapeHtml(variety.name)}"></label>
     <label class="field"><span>Prodejní cena Kč</span><input name="salePrice" inputmode="decimal" value="${escapeHtml(variety.salePrice)}"></label>
     <button class="chip-button ${variety.active === false ? "" : "active"}" type="button" data-toggle-active>${variety.active === false ? "Neaktivní" : "✅ Aktivní"}</button>
-    ${photoPickerFields("Fotky v plné kvalitě")}
+    ${photoPickerFields("Fotky")}
     <div class="photo-grid" id="photoGrid">${photoTiles(varietyImages(variety))}</div>
     <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(variety.note)}</textarea></label>
   </form>`, async () => {
@@ -475,6 +514,33 @@ function openVarietySheet(id = "") {
   });
 }
 
+function openVarietyDetailSheet(id, options = {}) {
+  const variety = findById("varieties", id);
+  if (!variety) return;
+  const images = varietyImages(variety);
+  const usage = varietyUsageCount(variety.name);
+  const mainImage = images[0] || "";
+  openSheet(variety.name, `<section class="variety-detail">
+    <div class="variety-detail-photo ${mainImage ? "" : "empty"}">
+      ${mainImage ? `<img data-photo-ref="${escapeHtml(thumbPreviewRef(mainImage))}" alt="${escapeHtml(variety.name)}">` : `<span>${escapeHtml(initials(variety.name))}</span>`}
+    </div>
+    <div class="offer-stats variety-detail-stats">
+      <span><strong>${escapeHtml(variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "-")}</strong><small>cena</small></span>
+      <span><strong>${images.length}</strong><small>fotek</small></span>
+      <span><strong>${usage}</strong><small>v objednávkách</small></span>
+      <span><strong>${variety.active === false ? "Ne" : "Ano"}</strong><small>aktivní</small></span>
+    </div>
+    ${variety.note ? `<p class="sub">${escapeHtml(variety.note)}</p>` : ""}
+    ${images.length > 1 ? `<div class="photo-grid variety-detail-gallery">${images.map((image) => `<span class="photo-tile"><img data-photo-ref="${escapeHtml(thumbPreviewRef(image))}" alt="${escapeHtml(variety.name)}"></span>`).join("")}</div>` : ""}
+  </section>`, null, `<button class="button" type="button" data-download-variety-photo="${escapeHtml(id)}" ${mainImage ? "" : "disabled"}>Stáhnout fotku</button><button class="button primary" type="button" data-edit-variety-detail="${escapeHtml(id)}">Upravit</button>`, {
+    ...options,
+    restore: () => openVarietyDetailSheet(id, { replace: true }),
+  });
+  els.sheet.querySelector("[data-edit-variety-detail]")?.addEventListener("click", () => openVarietySheet(id));
+  els.sheet.querySelector("[data-download-variety-photo]")?.addEventListener("click", () => downloadVarietyPhoto(id));
+  resolvePhotos(els.sheet);
+}
+
 function openCrossSheet(id = "") {
   const cross = findById("crosses", id) || {};
   const options = state.data.varieties.map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`).join("");
@@ -485,7 +551,7 @@ function openCrossSheet(id = "") {
     ${toggle("stage", [["opyleno", "Opyleno"], ["vyseto", "Vyseto"], ["roste", "Roste"], ["hotovo", "Hotovo"]], cross.stage || "opyleno")}
     ${toggle("resultRating", [["krasna", "Krásná"], ["hnusna", "Hnusná"], ["nejista", "Nejistá"]], cross.resultRating || "nejista")}
     <label class="field"><span>Název semenáče</span><input name="seedlingName" value="${escapeHtml(cross.seedlingName)}"></label>
-    ${photoPickerFields("Fotky semenáče v plné kvalitě")}
+    ${photoPickerFields("Fotky semenáče")}
     <div class="photo-grid" id="photoGrid">${photoTiles(crossSeedlingImages(cross))}</div>
     <div class="cross-flow" id="crossPreview"></div>
     <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(cross.note)}</textarea></label>
@@ -521,16 +587,19 @@ function openCrossSheet(id = "") {
   document.querySelector("#sheetForm").addEventListener("input", renderCrossPreviewInSheet);
 }
 
-function openCrossDetailSheet(id) {
+function openCrossDetailSheet(id, options = {}) {
   const cross = findById("crosses", id);
   if (!cross) return;
   openSheet(crossLineage(cross), `<div class="cross-flow">${crossPreviewMarkup(cross)}</div>
     <div class="pill-row">
-      <span class="pill">${stageLabels[cross.stage] || "Opyleno"}</span>
+      <span class="pill">${escapeHtml(crossStageText(cross.stage))}</span>
       <span class="pill">${ratingLabels[cross.resultRating] || "Bez hodnocení"}</span>
       ${cross.seedlingName ? `<span class="pill">${escapeHtml(cross.seedlingName)}</span>` : ""}
     </div>
-    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button" type="button" data-download-cross="${escapeHtml(id)}">Stáhnout obrázek</button><button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`);
+    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button" type="button" data-download-cross="${escapeHtml(id)}">Stáhnout obrázek</button><button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`, {
+    ...options,
+    restore: () => openCrossDetailSheet(id, { replace: true }),
+  });
   document.querySelector("[data-edit-cross]")?.addEventListener("click", () => openCrossSheet(id));
   document.querySelector("[data-download-cross]")?.addEventListener("click", () => downloadCrossCard(id));
   resolvePhotos(els.sheet);
@@ -562,7 +631,7 @@ function openOfferSheet(id = "") {
   bindToggles();
 }
 
-function openOfferDetailSheet(id) {
+function openOfferDetailSheet(id, options = {}) {
   const offer = findById("offers", id);
   if (!offer) return;
   const reserved = offerReservedCount(offer);
@@ -576,20 +645,45 @@ function openOfferDetailSheet(id) {
     </div>
     ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
     <div class="offer-items">
-      ${offer.items.length ? offer.items.map((item) => offerItemDetailMarkup(item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
+      ${offer.items.length ? offer.items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
     </div>
-  </section>`, null, `<button class="button" type="button" data-close-sheet>Zavřít</button><button class="button primary" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit</button>`);
+  </section>`, null, `<button class="button" type="button" data-close-sheet>Zavřít</button><button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabídku</button><button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávky</button><button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">Přidat odřezek</button>`, {
+    ...options,
+    restore: () => openOfferDetailSheet(id, { replace: true }),
+  });
   els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+  els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  els.sheet.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemSheet(id));
+  els.sheet.querySelectorAll("[data-reserve-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.reserveOfferItem, "", "confirmed"));
+  });
+  els.sheet.querySelectorAll("[data-alternate-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.alternateOfferItem, "", "alternate"));
+  });
+  els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.sheet.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(button.dataset.offerId, button.dataset.itemId, button.dataset.deleteReservation));
+  });
   resolvePhotos(els.sheet);
 }
 
-function offerItemDetailMarkup(item) {
+function offerItemDetailMarkup(offer, item) {
   const reserved = offerItemReservedCount(item);
   const alternate = offerItemAlternateCount(item);
   const confirmed = offerItemConfirmedCount(item);
   const total = number(item.quantity);
   const available = Math.max(0, total - confirmed);
   const image = offerItemImage(item);
+  const offerId = escapeHtml(offer.id);
+  const itemId = escapeHtml(item.id);
   return `<article class="offer-item ${available <= 0 ? "sold-out" : ""}">
     <div class="offer-item-head">
       <span class="thumb">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(offerItemName(item)))}</span>
@@ -603,24 +697,270 @@ function offerItemDetailMarkup(item) {
       <span class="pill">Potvrzeno ${confirmed}</span>
       ${alternate ? `<span class="pill">Náhradník ${alternate}</span>` : ""}
     </div>
+    <div class="offer-item-actions">
+      <button class="button primary" type="button" data-offer-id="${offerId}" data-reserve-offer-item="${itemId}" ${available <= 0 ? "disabled" : ""}>Rezervovat</button>
+      <button class="button" type="button" data-offer-id="${offerId}" data-alternate-offer-item="${itemId}">Náhradník</button>
+      <button class="button" type="button" data-offer-id="${offerId}" data-edit-offer-item="${itemId}">Upravit</button>
+      <button class="button danger" type="button" data-offer-id="${offerId}" data-delete-offer-item="${itemId}">Smazat</button>
+    </div>
     <div class="reservation-list">
-      ${(item.reservations || []).length ? sortedReservations(item).map((reservation) => reservationLineMarkup(reservation)).join("") : `<small class="sub">Zatím bez rezervací.</small>`}
+      ${(item.reservations || []).length ? sortedReservations(item).map((reservation) => reservationLineMarkup(offer, item, reservation)).join("") : `<small class="sub">Zatím bez rezervací.</small>`}
     </div>
   </article>`;
 }
 
-function reservationLineMarkup(reservation) {
+function reservationLineMarkup(offer, item, reservation) {
   const customer = findCustomer(reservation.customerId);
   const status = reservationStatusValue(reservation.status);
+  const offerId = escapeHtml(offer.id);
+  const itemId = escapeHtml(item.id);
+  const reservationId = escapeHtml(reservation.id);
   return `<div class="reservation-line">
     <strong>${escapeHtml(customerName(customer) || "Bez zákazníka")}</strong>
     <span>${number(reservation.quantity) || 1} ks</span>
     <span class="pill ${status === "alternate" ? "warn" : "ok"}">${status === "alternate" ? "Náhradník" : "Potvrzeno"}</span>
     ${reservation.note ? `<small>${escapeHtml(reservation.note)}</small>` : ""}
+    <span class="reservation-line-actions">
+      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-edit-reservation="${reservationId}" title="Upravit rezervaci">✎</button>
+      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-delete-reservation="${reservationId}" title="Smazat rezervaci">×</button>
+    </span>
   </div>`;
 }
 
-function openSheet(title, body, onSave, customFooter = "") {
+function openOfferItemSheet(offerId, itemId = "") {
+  const offer = findById("offers", offerId);
+  if (!offer) return;
+  const item = itemId ? offer.items.find((entry) => entry.id === itemId) : null;
+  const matchedVariety = findById("varieties", item?.varietyId) || findVarietyByName(item?.varietyName);
+  const selectedCurrency = clean(item?.currency || matchedVariety?.saleCurrency || "CZK");
+  openSheet(item ? "Upravit odřezek" : "Přidat odřezek", `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>Odrůda</span><input name="varietyName" list="offerVarietyOptions" required value="${escapeHtml(item?.varietyName || "")}" placeholder="Název odrůdy"></label>
+    <datalist id="offerVarietyOptions">${state.data.varieties.map((variety) => `<option value="${escapeHtml(variety.name)}"></option>`).join("")}</datalist>
+    <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(item?.quantity || "1")}"></label>
+    <label class="field"><span>Cena za ks</span><input name="price" inputmode="decimal" value="${escapeHtml(item?.price || matchedVariety?.salePrice || "")}"></label>
+    <label class="field"><span>Měna</span><select name="currency">
+      <option value="CZK" ${selectedCurrency === "CZK" ? "selected" : ""}>Kč</option>
+      <option value="EUR" ${selectedCurrency === "EUR" ? "selected" : ""}>EUR</option>
+    </select></label>
+    ${photoPickerFields("Fotka odřezku (volitelně)")}
+    <div class="photo-grid" id="photoGrid">${photoTiles(clean(item?.photoUrl) ? [item.photoUrl] : [])}</div>
+    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(item?.note || "")}</textarea></label>
+  </form>`, async () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const varietyName = clean(data.get("varietyName"));
+    const variety = findVarietyByName(varietyName);
+    const files = selectedPhotoFiles(form);
+    const uploaded = await saveIndexedPhotos(files);
+    const existingPhotos = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
+    const now = new Date().toISOString();
+    const nextItem = normalizeOfferItem({
+      ...item,
+      id: item?.id || uid(),
+      varietyId: variety?.id || "",
+      varietyName,
+      quantity: quantityText(data.get("quantity")),
+      price: clean(data.get("price")) || variety?.salePrice || "",
+      currency: clean(data.get("currency")) || variety?.saleCurrency || "CZK",
+      photoUrl: [...existingPhotos, ...uploaded][0] || "",
+      note: clean(data.get("note")),
+      reservations: item?.reservations || [],
+      createdAt: item?.createdAt || now,
+      updatedAt: now,
+    });
+    if (item) Object.assign(item, nextItem);
+    else offer.items.push(nextItem);
+    offer.updatedAt = now;
+    setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
+  });
+  bindPhotoGrid();
+}
+
+function openReservationSheet(offerId, itemId, reservationId = "", preferredStatus = "confirmed") {
+  const offer = findById("offers", offerId);
+  const item = offer?.items.find((entry) => entry.id === itemId);
+  if (!offer || !item) return;
+  item.reservations = Array.isArray(item.reservations) ? item.reservations : [];
+  const reservation = reservationId ? item.reservations.find((entry) => entry.id === reservationId) : null;
+  const status = reservationStatusValue(reservation?.status || preferredStatus);
+  const selectedCustomerId = reservation?.customerId || "";
+  openSheet(reservation ? "Upravit rezervaci" : (status === "alternate" ? "Přidat náhradníka" : "Nová rezervace"), `<form class="form-grid" id="sheetForm">
+    <div class="offer-reservation-context">
+      <strong>${escapeHtml(offerItemName(item))}</strong>
+      <small>${escapeHtml(offer.title)} · volné ${reservationAvailableQuantity(item, reservation?.id)} ks</small>
+    </div>
+    <label class="field"><span>Zákazník</span><select name="customerId">
+      <option value="">Vybrat zákazníka</option>
+      ${state.data.customers.slice().sort((a, b) => customerName(a).localeCompare(customerName(b), "cs")).map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`).join("")}
+    </select></label>
+    <label class="field"><span>Nebo nový zákazník</span><input name="newCustomerName" value="" placeholder="Jméno nebo FB jméno"></label>
+    <label class="field"><span>Telefon nového zákazníka</span><input name="newCustomerPhone" value="" inputmode="tel"></label>
+    <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(reservation?.quantity || "1")}"></label>
+    ${toggle("status", [["confirmed", "Potvrzeno"], ["alternate", "Náhradník"]], status)}
+    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(reservation?.note || "")}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const newCustomerName = clean(data.get("newCustomerName"));
+    let customerId = clean(data.get("customerId"));
+    if (!customerId) {
+      if (!newCustomerName) {
+        toast("Vyber zákazníka nebo napiš nového.");
+        return false;
+      }
+    }
+    const id = reservation?.id || uid();
+    const existing = item.reservations.find((entry) => entry.id === id);
+    let nextStatus = reservationStatusValue(form.querySelector('[name="status"]').value);
+    const requestedQuantity = wholeNumber(data.get("quantity"), 1);
+    const availableQuantity = reservationAvailableQuantity(item, existing?.id);
+    if (nextStatus === "confirmed" && availableQuantity <= 0) {
+      nextStatus = "alternate";
+      toast("Položka je plná, ukládám jako náhradníka.");
+    } else if (nextStatus === "confirmed" && requestedQuantity > availableQuantity) {
+      toast(`Volné jsou jen ${availableQuantity} ks. Zmenši počet nebo zvol náhradníka.`);
+      return false;
+    }
+    if (!customerId && newCustomerName) {
+      const customer = normalizeCustomer({
+        id: uid(),
+        fullName: newCustomerName,
+        phone: clean(data.get("newCustomerPhone")),
+        createdAt: now,
+        updatedAt: now,
+      });
+      state.data.customers.push(customer);
+      customerId = customer.id;
+    }
+    const nextReservation = normalizeReservation({
+      ...reservation,
+      id,
+      customerId,
+      quantity: String(requestedQuantity),
+      status: nextStatus,
+      note: clean(data.get("note")),
+      createdAt: reservation?.createdAt || now,
+      updatedAt: now,
+    });
+    if (existing) Object.assign(existing, nextReservation);
+    else item.reservations.push(nextReservation);
+    offer.updatedAt = now;
+    setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
+  });
+  bindToggles();
+}
+
+function deleteOfferItem(offerId, itemId) {
+  const offer = findById("offers", offerId);
+  if (!offer) return;
+  const item = offer.items.find((entry) => entry.id === itemId);
+  if (!item || !confirm(`Smazat odřezek ${offerItemName(item)}?`)) return;
+  offer.items = offer.items.filter((entry) => entry.id !== itemId);
+  offer.updatedAt = new Date().toISOString();
+  saveData();
+  render();
+  openOfferDetailSheet(offer.id, { replace: true });
+  toast("Odřezek smazán.");
+}
+
+function deleteReservation(offerId, itemId, reservationId) {
+  const offer = findById("offers", offerId);
+  const item = offer?.items.find((entry) => entry.id === itemId);
+  if (!offer || !item || !confirm("Smazat rezervaci?")) return;
+  item.reservations = (item.reservations || []).filter((entry) => entry.id !== reservationId);
+  offer.updatedAt = new Date().toISOString();
+  saveData();
+  render();
+  openOfferDetailSheet(offer.id, { replace: true });
+  toast("Rezervace smazána.");
+}
+
+function createOrdersFromOffer(id) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  const reservations = [];
+  offer.items.forEach((item) => {
+    (item.reservations || []).forEach((reservation) => {
+      if (!reservation.customerId) return;
+      if (reservationStatusValue(reservation.status) !== "confirmed") return;
+      reservations.push({ item, reservation });
+    });
+  });
+  if (!reservations.length) {
+    toast("Nabídka nemá žádné potvrzené rezervace.");
+    return;
+  }
+  if (state.data.orders.some((order) => order.offerId === offer.id) && !confirm("Z této nabídky už objednávky vznikly. Vytvořit další?")) return;
+  if (!confirm(`Vytvořit objednávky z nabídky ${offer.title}?`)) return;
+
+  const grouped = new Map();
+  reservations.forEach(({ item, reservation }) => {
+    const key = reservation.customerId;
+    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, lines: [], total: 0 });
+    const group = grouped.get(key);
+    const quantity = wholeNumber(reservation.quantity, 1);
+    const price = number(item.price);
+    group.lines.push(Number.isFinite(price) ? offerOrderLineText(item.varietyName, quantity, price) : `${offerItemName(item)} ${quantity}x`);
+    if (Number.isFinite(price)) group.total += price * quantity;
+  });
+
+  const now = new Date().toISOString();
+  let count = 0;
+  grouped.forEach((group) => {
+    const fees = defaultOfferOrderFees(group.customerId);
+    const shippingFee = number(fees.shippingFee);
+    const packingFee = number(fees.packingFee);
+    const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
+    state.data.orders.push(normalizeOrder({
+      id: uid(),
+      offerId: offer.id,
+      customerId: group.customerId,
+      orderDate: offer.date || todayInput(),
+      varietiesText: group.lines.join("\n"),
+      price: normalizeAmount(group.total + feeTotal),
+      paymentStatus: "čeká",
+      shippingStatus: "nová",
+      deliveryMethod: "ship",
+      shippingFee: Number.isFinite(shippingFee) ? fees.shippingFee : "",
+      packingFee: Number.isFinite(packingFee) ? fees.packingFee : "",
+      note: `Z nabídky: ${offer.title}`,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    count += 1;
+  });
+
+  offer.status = "uzavřená";
+  offer.updatedAt = now;
+  saveData();
+  closeSheet({ all: true });
+  state.view = "orders";
+  render();
+  toast(`Vytvořeno ${count} objednávek.`);
+}
+
+function offerOrderLineText(name, quantity, unitPrice) {
+  return `${clean(name)} ${wholeNumber(quantity, 1)}x - ${normalizeAmount(unitPrice)} Kč`.trim();
+}
+
+function defaultOfferOrderFees(customerId) {
+  const settings = appSettings();
+  const country = normalize(findCustomer(customerId)?.country);
+  const shippingFee = country.includes("slovensko")
+    ? settings.shippingFeeSk
+    : country.includes("cesko") || country.includes("česko")
+      ? settings.shippingFeeCz
+      : "";
+  return { shippingFee: shippingFee || "", packingFee: settings.packingFee || "" };
+}
+
+function openSheet(title, body, onSave, customFooter = "", options = {}) {
+  if (!els.sheet.hidden && !options.replace && typeof state.currentSheetRestore === "function") {
+    state.sheetStack.push(state.currentSheetRestore);
+  }
+  clearPendingPhotoPreviewUrls(els.sheet.querySelector("#sheetForm"));
+  state.currentSheetRestore = typeof options.restore === "function" ? options.restore : null;
   els.sheet.hidden = false;
   els.sheet.innerHTML = `<section class="sheet" role="dialog" aria-modal="true">
     <header class="sheet-header"><h2>${escapeHtml(title)}</h2><button class="round" type="button" data-close-sheet>×</button></header>
@@ -631,7 +971,8 @@ function openSheet(title, body, onSave, customFooter = "") {
   els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", async () => {
     const form = els.sheet.querySelector("form");
     if (form && !form.reportValidity()) return;
-    await onSave?.();
+    const result = await onSave?.();
+    if (result === false) return;
     saveData();
     closeSheet();
     render();
@@ -639,7 +980,18 @@ function openSheet(title, body, onSave, customFooter = "") {
   });
 }
 
-function closeSheet() {
+function closeSheet(options = {}) {
+  clearPendingPhotoPreviewUrls(els.sheet.querySelector("#sheetForm"));
+  if (!options.all && state.sheetStack.length) {
+    const restorePreviousSheet = state.sheetStack.pop();
+    els.sheet.hidden = true;
+    els.sheet.innerHTML = "";
+    state.currentSheetRestore = null;
+    restorePreviousSheet();
+    return;
+  }
+  state.sheetStack = [];
+  state.currentSheetRestore = null;
   els.sheet.hidden = true;
   els.sheet.innerHTML = "";
 }
@@ -680,8 +1032,67 @@ function bindFees() {
 function bindPhotoGrid() {
   els.sheet.querySelectorAll("[data-remove-photo]").forEach((button) => button.addEventListener("click", () => {
     button.closest("[data-photo-tile]")?.remove();
+    renderCrossPreviewInSheet();
   }));
+  els.sheet.querySelectorAll(".photo-pickers input[type='file']").forEach((input) => {
+    input.addEventListener("change", () => {
+      renderPendingPhotoPreviews(input.form);
+      renderCrossPreviewInSheet();
+    });
+  });
+  renderPendingPhotoPreviews(els.sheet.querySelector("#sheetForm"));
   resolvePhotos(els.sheet);
+}
+
+function clearPendingPhotoPreviewUrls(form) {
+  (form?.__pendingPhotoPreviewUrls || []).forEach((url) => URL.revokeObjectURL(url));
+  if (form) form.__pendingPhotoPreviewUrls = [];
+}
+
+function renderPendingPhotoPreviews(form) {
+  const grid = form?.querySelector("#photoGrid");
+  if (!grid) return;
+  clearPendingPhotoPreviewUrls(form);
+  grid.querySelectorAll("[data-pending-photo-tile]").forEach((node) => node.remove());
+  const entries = ["photos", "cameraPhotos"].flatMap((inputName) => {
+    const input = form.elements[inputName];
+    return [...(input?.files || [])]
+      .map((file, index) => ({ file, inputName, index }))
+      .filter(({ file }) => file.type?.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || ""));
+  });
+  if (!entries.length) return;
+  const fragment = document.createDocumentFragment();
+  entries.forEach(({ file, inputName, index }) => {
+    const url = URL.createObjectURL(file);
+    form.__pendingPhotoPreviewUrls.push(url);
+    const tile = document.createElement("span");
+    tile.className = "photo-tile pending";
+    tile.dataset.pendingPhotoTile = "1";
+    tile.innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(file.name || "Fotka")}"><button type="button" data-remove-pending-photo="${escapeHtml(inputName)}" data-pending-photo-index="${index}">&times;</button>`;
+    fragment.append(tile);
+  });
+  grid.append(fragment);
+  grid.querySelectorAll("[data-remove-pending-photo]").forEach((button) => {
+    button.addEventListener("click", () => {
+      removePendingPhotoFile(form, button.dataset.removePendingPhoto, Number(button.dataset.pendingPhotoIndex));
+    });
+  });
+}
+
+function removePendingPhotoFile(form, inputName, index) {
+  const input = form?.elements?.[inputName];
+  if (!input) return;
+  const files = [...(input.files || [])];
+  files.splice(index, 1);
+  try {
+    const transfer = new DataTransfer();
+    files.forEach((file) => transfer.items.add(file));
+    input.files = transfer.files;
+  } catch {
+    input.value = "";
+  }
+  renderPendingPhotoPreviews(form);
+  renderCrossPreviewInSheet();
 }
 
 function photoPickerFields(label) {
@@ -702,8 +1113,7 @@ function selectedPhotoFiles(form) {
 function photoTiles(images) {
   return images.map((image) => {
     const previewRef = thumbPreviewRef(image);
-    const fallback = previewRef !== image ? ` data-photo-full-ref="${escapeHtml(image)}" data-photo-allow-fallback="1"` : "";
-    return `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(previewRef)}"${fallback} alt=""><button type="button" data-remove-photo>×</button></span>`;
+    return `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(previewRef)}" alt=""><button type="button" data-remove-photo>×</button></span>`;
   }).join("");
 }
 
@@ -715,7 +1125,7 @@ function renderCrossPreviewInSheet() {
     motherVarietyId: form.elements.motherVarietyId?.value,
     pollenVarietyId: form.elements.pollenVarietyId?.value,
     seedlingName: form.elements.seedlingName?.value,
-    seedlingPhotoUrl: form.querySelector("[data-photo-tile]")?.dataset.photoTile || "",
+    seedlingPhotoUrl: form.querySelector("[data-photo-tile]")?.dataset.photoTile || form.querySelector("[data-pending-photo-tile] img")?.getAttribute("src") || "",
   };
   target.innerHTML = crossPreviewMarkup(cross);
   resolvePhotos(target);
@@ -725,18 +1135,26 @@ function crossPreviewMarkup(cross) {
   const mother = findById("varieties", cross.motherVarietyId);
   const pollen = findById("varieties", cross.pollenVarietyId);
   const seedlingName = clean(cross.seedlingName) || "Semenáč";
-  return `${crossFlowCard("Matka", mother?.name || "Matka", varietyImages(mother)[0])}
+  return `${crossFlowCard("Matka", mother?.name || "Matka", varietyImages(mother)[0], "parent")}
     <div class="cross-symbol">×</div>
-    ${crossFlowCard("Pyl", pollen?.name || "Pyl", varietyImages(pollen)[0])}
+    ${crossFlowCard("Pyl", pollen?.name || "Pyl", varietyImages(pollen)[0], "parent")}
     <div class="cross-symbol">=</div>
-    ${crossFlowCard("Semenáč", seedlingName, cross.seedlingPhotoUrl)}`;
+    ${crossFlowCard("Semenáč", seedlingName, cross.seedlingPhotoUrl, "seedling")}`;
 }
 
-function crossFlowCard(label, title, image) {
-  if (!image) return `<article class="cross-flow-card"><span class="thumb">${escapeHtml(initials(title))}</span><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></article>`;
+function crossFlowCard(label, title, image, role = "parent") {
+  const cardClass = `cross-flow-card cross-flow-${role} ${image ? "has-image" : "no-image"}`;
+  if (!image) {
+    return `<article class="${cardClass}">
+      <span class="cross-initials">${escapeHtml(initials(title))}</span>
+      <div><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></div>
+    </article>`;
+  }
   const previewRef = thumbPreviewRef(image);
-  const fallback = previewRef !== image ? ` data-photo-full-ref="${escapeHtml(image)}" data-photo-allow-fallback="1"` : "";
-  return `<article class="cross-flow-card"><span class="thumb"><img data-photo-ref="${escapeHtml(previewRef)}"${fallback} alt=""></span><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></article>`;
+  return `<article class="${cardClass}">
+    <span class="thumb"><img data-photo-ref="${escapeHtml(previewRef)}" alt=""></span>
+    <div><small class="sub">${escapeHtml(label)}</small><strong>${escapeHtml(title)}</strong></div>
+  </article>`;
 }
 
 async function downloadCrossCard(id) {
@@ -753,6 +1171,38 @@ async function downloadCrossCard(id) {
     toast("Obrázek křížení stažen.");
   } catch {
     toast("Obrázek křížení se nepodařilo vytvořit.");
+  }
+}
+
+async function downloadVarietyPhoto(id) {
+  const variety = findById("varieties", id);
+  const image = varietyImages(variety)[0];
+  if (!variety || !image) return;
+  let href = "";
+  let revokeAfterDownload = false;
+  try {
+    if (image.startsWith(SUPABASE_PHOTO_PREFIX)) {
+      toast("Stahuji fotku...");
+      href = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(image)) || await createSignedPhotoUrl(parseSupabasePhotoRef(image));
+    } else {
+      const file = await photoToFile(image, variety.name);
+      if (file) {
+        href = URL.createObjectURL(file);
+        revokeAfterDownload = true;
+      } else {
+        href = await resolvePhotoUrl(image);
+      }
+    }
+    if (!href) throw new Error("photo");
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `${safeFileName(variety.name, "fotka")}${photoExtension(href)}`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    if (revokeAfterDownload) window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+  } catch {
+    toast("Fotku se nepodařilo stáhnout.");
   }
 }
 
@@ -1202,6 +1652,15 @@ function offerItemConfirmedCount(item = {}) {
   return (item.reservations || []).reduce((sum, reservation) => reservationStatusValue(reservation.status) === "confirmed" ? sum + number(reservation.quantity) : sum, 0);
 }
 
+function reservationAvailableQuantity(item = {}, excludeReservationId = "") {
+  const total = wholeNumber(item.quantity, 0);
+  const confirmed = (item.reservations || []).reduce((sum, reservation) => {
+    if (excludeReservationId && reservation.id === excludeReservationId) return sum;
+    return reservationStatusValue(reservation.status) === "confirmed" ? sum + wholeNumber(reservation.quantity, 0) : sum;
+  }, 0);
+  return Math.max(0, total - confirmed);
+}
+
 function offerItemAlternateCount(item = {}) {
   return (item.reservations || []).reduce((sum, reservation) => reservationStatusValue(reservation.status) === "alternate" ? sum + number(reservation.quantity) : sum, 0);
 }
@@ -1216,6 +1675,14 @@ function offerReservedCount(offer = {}) {
 
 function offerTotalCount(offer = {}) {
   return (offer.items || []).reduce((sum, item) => sum + number(item.quantity), 0);
+}
+
+function offerAvailableCount(offer = {}) {
+  return (offer.items || []).reduce((sum, item) => sum + reservationAvailableQuantity(item), 0);
+}
+
+function offerAlternateCount(offer = {}) {
+  return (offer.items || []).reduce((sum, item) => sum + offerItemAlternateCount(item), 0);
 }
 
 function ensureVarietyFromCross(cross) {
@@ -1243,9 +1710,11 @@ function syncFinishedCrossVarieties() {
 }
 
 function matchOffer(offer) {
-  if (state.filter === "active" && offer.status === "uzavřená") return false;
-  if (state.filter === "closed" && offer.status !== "uzavřená") return false;
-  return matches([offer.title, offer.note, offer.status, ...offer.items.map((item) => item.varietyName)]);
+  const isClosed = offer.status === "uzavřená";
+  if (state.filter === "active" && isClosed) return false;
+  if (state.filter === "closed" && !isClosed) return false;
+  const items = Array.isArray(offer.items) ? offer.items : [];
+  return matches([offer.title, offer.note, offer.status, ...items.map((item) => item.varietyName)]);
 }
 
 function matchOrder(order) {
@@ -1349,9 +1818,53 @@ async function saveIndexedPhotos(files) {
 
 async function saveIndexedPhoto(file) {
   const id = uid();
+  const storedFile = await preparePhotoFileForStorage(file);
   const db = await openPhotoDb();
-  await idbPut(db, PHOTO_BLOB_STORE, { id, blob: file, name: file.name, type: file.type, createdAt: new Date().toISOString() });
+  await idbPut(db, PHOTO_BLOB_STORE, { id, blob: storedFile, name: storedFile.name, type: storedFile.type, createdAt: new Date().toISOString() });
   return `${INDEXED_PHOTO_PREFIX}${id}`;
+}
+
+async function preparePhotoFileForStorage(file) {
+  if (!file || !file.type?.startsWith("image/")) return file;
+  if (file.size && file.size <= PHOTO_MAX_UPLOAD_BYTES) return file;
+  let objectUrl = "";
+  try {
+    objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    if (!image) return file;
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return file;
+    let scale = Math.min(1, PHOTO_MAX_UPLOAD_EDGE / Math.max(sourceWidth, sourceHeight));
+    let bestBlob = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const width = Math.max(1, Math.round(sourceWidth * scale));
+      const height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) return file;
+      context.drawImage(image, 0, 0, width, height);
+      for (const quality of PHOTO_UPLOAD_QUALITY_STEPS) {
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+        if (!blob) continue;
+        if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob;
+        if (blob.size <= PHOTO_MAX_UPLOAD_BYTES) return photoBlobToFile(blob, file);
+      }
+      scale *= 0.84;
+    }
+    return bestBlob && bestBlob.size < file.size ? photoBlobToFile(bestBlob, file) : file;
+  } catch {
+    return file;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function photoBlobToFile(blob, originalFile) {
+  const baseName = clean(originalFile?.name || "fotka").replace(/\.[^.]+$/, "") || "fotka";
+  return new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
 }
 
 function openPhotoDb() {
@@ -1847,9 +2360,10 @@ async function uploadPhotoList(userId, ownerName, refs) {
     else {
       const file = await photoToFile(ref, ownerName);
       if (!file) continue;
-      const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(file)}${photoExtension(file)}`;
-      await uploadStorage(path, file);
-      const thumb = await createPhotoThumbnail(file);
+      const uploadFile = await preparePhotoFileForStorage(file);
+      const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(uploadFile)}${photoExtension(uploadFile)}`;
+      await uploadStorage(path, uploadFile);
+      const thumb = await createPhotoThumbnail(uploadFile);
       if (thumb) await uploadStorage(supabaseThumbnailPath(path), thumb);
       uploaded.push(`${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`);
     }
@@ -2046,6 +2560,15 @@ function todayInput() {
 function normalizeAmount(value) {
   const amount = number(value);
   return Number.isFinite(amount) ? String(Math.round(amount * 100) / 100).replace(".", ",") : "";
+}
+
+function wholeNumber(value, fallback = 1) {
+  const amount = number(value);
+  return Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : fallback;
+}
+
+function quantityText(value) {
+  return String(wholeNumber(value, 1));
 }
 
 function normalizeNamedFees(items) {

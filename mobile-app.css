@@ -223,6 +223,18 @@ body.private-locked .mobile-main {
   box-shadow: 0 14px 28px rgba(15, 89, 58, 0.3);
 }
 
+.button.danger {
+  border-color: rgba(160, 45, 45, 0.24);
+  background: linear-gradient(180deg, #fff8f2, #ffe4df);
+  color: #7f2525;
+}
+
+.button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  filter: grayscale(0.25);
+}
+
 .mobile-main {
   display: grid;
   gap: 12px;
@@ -703,12 +715,14 @@ textarea {
 }
 
 .sheet-footer {
+  flex-wrap: wrap;
   padding-bottom: calc(14px + env(safe-area-inset-bottom));
   box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.08);
 }
 
 .sheet-footer .button {
   flex: 1;
+  min-width: min(150px, 100%);
 }
 
 .form-grid {
@@ -801,7 +815,9 @@ textarea {
 
 .cross-flow-card {
   display: grid;
-  gap: 7px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 22px;
@@ -809,22 +825,72 @@ textarea {
 }
 
 .cross-flow-card .thumb {
-  width: 100%;
-  height: 188px;
+  width: 78px;
+  height: 78px;
   border-radius: 18px;
 }
 
 .cross-flow-card .thumb img {
-  object-fit: contain;
+  object-fit: cover;
   background: #edf3e8;
+}
+
+.cross-flow-card.no-image {
+  padding-block: 12px;
+}
+
+.cross-initials {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1px solid rgba(32, 108, 74, 0.18);
+  border-radius: 15px;
+  background: linear-gradient(145deg, #f2f8ef, #fffdf5);
+  color: var(--green);
+  font-size: 0.95rem;
+  font-weight: 950;
+}
+
+.cross-flow-seedling {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.cross-flow-seedling .thumb {
+  width: 100%;
+  height: auto;
+  min-height: 320px;
+  max-height: 560px;
+  aspect-ratio: 4 / 5;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #edf3e8, #fffdf5);
+}
+
+.cross-flow-card.cross-flow-seedling .thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: transparent;
+}
+
+.cross-flow-seedling.no-image {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.cross-flow-card strong {
+  display: block;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
 }
 
 .cross-symbol {
   display: grid;
   place-items: center;
-  min-height: 26px;
+  min-height: 18px;
   color: var(--green);
-  font-size: 1.28rem;
+  font-size: 1.12rem;
   font-weight: 950;
 }
 
@@ -838,6 +904,20 @@ textarea {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+}
+
+.customer-overview {
+  display: grid;
+  gap: 10px;
+}
+
+.customer-overview-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.customer-overview-stats strong {
+  font-size: 0.98rem;
+  line-height: 1.15;
 }
 
 .offer-stats span {
@@ -863,6 +943,38 @@ textarea {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.variety-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.variety-detail-photo {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  border: 1px solid rgba(36, 105, 70, 0.18);
+  border-radius: 26px;
+  overflow: hidden;
+  background: linear-gradient(145deg, #edf6ea, #fff9ea);
+}
+
+.variety-detail-photo img {
+  display: block;
+  width: 100%;
+  max-height: 62dvh;
+  object-fit: contain;
+}
+
+.variety-detail-photo.empty span {
+  color: var(--green);
+  font-size: 2.4rem;
+  font-weight: 950;
+}
+
+.variety-detail-gallery .photo-tile img {
+  object-fit: contain;
 }
 
 .offer-item {
@@ -898,6 +1010,31 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.offer-item-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.offer-reservation-context {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid rgba(36, 105, 70, 0.14);
+  border-radius: 20px;
+  background: linear-gradient(145deg, #f2fff4, #fff9e8);
+}
+
+.offer-reservation-context strong {
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.offer-reservation-context small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .reservation-list {
   display: grid;
   gap: 7px;
@@ -913,6 +1050,19 @@ textarea {
   border: 1px solid rgba(42, 106, 73, 0.12);
   border-radius: 17px;
   background: rgba(255, 255, 255, 0.66);
+}
+
+.reservation-line-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.reservation-line-actions .round {
+  width: 36px;
+  height: 36px;
+  box-shadow: none;
 }
 
 .reservation-line strong {
@@ -994,6 +1144,10 @@ textarea {
 
   .offer-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .offer-item-actions {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .reservation-line {
