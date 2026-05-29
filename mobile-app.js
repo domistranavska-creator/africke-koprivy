@@ -296,7 +296,7 @@ function renderCustomers() {
 }
 
 function renderVarieties() {
-  const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => a.name.localeCompare(b.name, "cs"));
+  const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
   if (!varieties.length) return empty("Žádné odrůdy.");
   return varieties.map((variety) => card({
     id: variety.id,
@@ -625,7 +625,10 @@ function openVarietyDetailSheet(id, options = {}) {
 
 function openCrossSheet(id = "") {
   const cross = findById("crosses", id) || {};
-  const options = state.data.varieties.map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`).join("");
+  const options = [...state.data.varieties]
+    .sort((a, b) => naturalCompare(a.name, b.name))
+    .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`)
+    .join("");
   openSheet(cross.id ? "Upravit křížení" : "Nové křížení", `<form class="form-grid" id="sheetForm">
     <label class="field"><span>Matka</span><select name="motherVarietyId" required>${options}</select></label>
     <label class="field"><span>Pyl</span><select name="pollenVarietyId" required>${options}</select></label>
@@ -906,7 +909,7 @@ function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
   const usedKeys = offerUsedVarietyKeys(offer, currentItem?.id);
   const varieties = [...state.data.varieties]
     .filter((variety) => clean(variety.name))
-    .sort((a, b) => a.name.localeCompare(b.name, "cs", { sensitivity: "base" }));
+    .sort((a, b) => naturalCompare(a.name, b.name));
   const matches = varieties
     .filter((variety) => !query || normalize(variety.name).includes(query));
   if (!matches.length) {
@@ -1152,13 +1155,36 @@ function openFacebookOfferSheet(id, options = {}) {
   openSheet("Facebook příspěvek", `<div class="form-grid">
     <p class="sub">Text můžeš upravit. Appka si ho uloží jako šablonu; odřezky, kusy a ceny doplní příště automaticky.</p>
     <label class="field"><span>Text příspěvku</span><textarea data-facebook-offer-text rows="14">${escapeHtml(text)}</textarea></label>
-    <div class="empty light">${escapeHtml(photoStatus)}</div>
+    ${facebookZipProgressMarkup(photoStatus)}
   </div>`, null, `<button class="button" type="button" data-close-sheet>Zpět</button><button class="button" type="button" data-save-facebook-template>Uložit text</button><button class="button" type="button" data-copy-facebook-offer>Kopírovat text</button><button class="button primary" type="button" data-download-facebook-zip="${escapeHtml(id)}">Stáhnout fotky ZIP</button>`, {
     ...options,
     restore: () => openFacebookOfferSheet(id, { replace: true }),
   });
   const textArea = els.sheet.querySelector("[data-facebook-offer-text]");
   textArea?.addEventListener("focus", () => textArea.select());
+}
+
+function facebookZipProgressMarkup(text) {
+  return `<div class="empty light facebook-zip-progress" data-facebook-zip-progress aria-live="polite">
+    <span data-facebook-zip-progress-label>${escapeHtml(text)}</span>
+    <span class="facebook-zip-progress-bar" aria-hidden="true"><span data-facebook-zip-progress-fill style="width: 0%"></span></span>
+  </div>`;
+}
+
+function updateFacebookZipProgress(current, total, message = "") {
+  const root = els.sheet?.querySelector("[data-facebook-zip-progress]");
+  if (!root) return;
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeCurrent = Math.max(0, Math.min(safeTotal, Number(current) || 0));
+  const percent = safeTotal ? Math.round((safeCurrent / safeTotal) * 100) : 0;
+  const label = root.querySelector("[data-facebook-zip-progress-label]");
+  const fill = root.querySelector("[data-facebook-zip-progress-fill]");
+  if (label) label.textContent = message || (safeTotal ? `Fotka ${safeCurrent} z ${safeTotal}` : "Bez fotek k uložení");
+  if (fill) fill.style.width = `${percent}%`;
+}
+
+function waitForUiPaint() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 async function downloadFacebookOfferZip(id, button) {
@@ -1175,17 +1201,32 @@ async function downloadFacebookOfferZip(id, button) {
   try {
     const entries = [{ name: "facebook-text.txt", blob: new Blob([text], { type: "text/plain;charset=utf-8" }) }];
     const photoEntries = facebookOfferZipEntries(offer);
-    for (const entry of photoEntries) {
+    updateFacebookZipProgress(0, photoEntries.length, photoEntries.length ? `Začínám připravovat ${photoEntries.length} fotek...` : "Bez fotek k uložení.");
+    await waitForUiPaint();
+    for (let index = 0; index < photoEntries.length; index += 1) {
+      const entry = photoEntries[index];
+      updateFacebookZipProgress(index, photoEntries.length, `Načítám fotku ${index + 1} z ${photoEntries.length}`);
+      await waitForUiPaint();
       const file = await photoRefToFacebookFile(entry.ref, entry.name);
-      if (!file) continue;
+      if (!file) {
+        updateFacebookZipProgress(index + 1, photoEntries.length, `Fotka ${index + 1} se přeskočila`);
+        continue;
+      }
+      updateFacebookZipProgress(index, photoEntries.length, `Přidávám text do fotky ${index + 1} z ${photoEntries.length}`);
+      await waitForUiPaint();
       const labeledFile = await createFacebookLabeledPhotoFile(file, entry);
       entries.push({ name: `${entry.name}${photoExtension(labeledFile)}`, blob: labeledFile });
+      updateFacebookZipProgress(index + 1, photoEntries.length, `Hotovo ${index + 1} z ${photoEntries.length}`);
     }
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, "Balím ZIP...");
+    await waitForUiPaint();
     const zip = await createZipBlob(entries);
     downloadBlob(zip, `${safeFileName(offer.title || "nabidka", "nabidka")}-fotky.zip`);
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, `ZIP hotový: ${Math.max(0, entries.length - 1)} fotek.`);
     toast(`ZIP hotový: ${Math.max(0, entries.length - 1)} fotek. Text je zkopírovaný.`);
   } catch (error) {
     console.error(error);
+    updateFacebookZipProgress(0, facebookOfferZipEntries(offer).length, "ZIP se nepodařilo vytvořit.");
     toast("ZIP se nepodařilo vytvořit.");
   } finally {
     if (button) {
@@ -1518,8 +1559,8 @@ function offerItemImageSafe(item) {
 }
 
 function compareOfferItems(a = {}, b = {}) {
-  const nameDelta = clean(a.varietyName || a.name).localeCompare(clean(b.varietyName || b.name), "cs", { sensitivity: "base" });
-  return nameDelta || clean(a.id).localeCompare(clean(b.id), "cs", { sensitivity: "base" });
+  const nameDelta = naturalCompare(a.varietyName || a.name, b.varietyName || b.name);
+  return nameDelta || naturalCompare(a.id, b.id);
 }
 
 function sortedOfferItems(offer) {
@@ -3438,6 +3479,10 @@ function clean(value) {
 
 function normalize(value) {
   return clean(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function naturalCompare(a, b) {
+  return clean(a).localeCompare(clean(b), "cs", { sensitivity: "base", numeric: true });
 }
 
 function escapeHtml(value) {

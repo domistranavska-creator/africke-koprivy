@@ -1198,7 +1198,7 @@ function topVarietyHighlights(limit = 5) {
       const match = state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key);
       return { key, name: match?.name || key, count };
     })
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "cs"))
+    .sort((a, b) => b.count - a.count || naturalCompare(a.name, b.name))
     .slice(0, limit);
 }
 
@@ -1990,7 +1990,7 @@ function customerVarietyStats(orders) {
       map.set(key, item);
     });
   });
-  return [...map.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "cs"));
+  return [...map.values()].sort((a, b) => b.count - a.count || naturalCompare(a.name, b.name));
 }
 
 function renderOrderVarietyLinks(order) {
@@ -2799,7 +2799,7 @@ function closeCountryMenus(except = null) {
 }
 
 function renderVarietyList() {
-  const varieties = [...state.data.varieties].sort((a, b) => a.name.localeCompare(b.name, "cs"));
+  const varieties = [...state.data.varieties].sort((a, b) => naturalCompare(a.name, b.name));
   els.varietyList.innerHTML = varieties.map((variety) => `<option value="${escapeHtml(variety.name)}"></option>`).join("");
 }
 
@@ -2807,7 +2807,7 @@ function renderCrossVarietyOptions() {
   if (!els.crossForm) return;
   const varieties = [...state.data.varieties]
     .filter((variety) => clean(variety.name))
-    .sort((a, b) => a.name.localeCompare(b.name, "cs"));
+    .sort((a, b) => naturalCompare(a.name, b.name));
   const motherSelect = els.crossForm.elements.motherVarietyId;
   const pollenSelect = els.crossForm.elements.pollenVarietyId;
   if (!motherSelect || !pollenSelect) return;
@@ -3701,7 +3701,7 @@ function renderOrderVarietySuggestions() {
       const aStarts = normalize(a.name).startsWith(query) ? 0 : 1;
       const bStarts = normalize(b.name).startsWith(query) ? 0 : 1;
       if (aStarts !== bStarts) return aStarts - bStarts;
-      return a.name.localeCompare(b.name, "cs");
+      return naturalCompare(a.name, b.name);
     })
     .slice(0, query ? 14 : 10);
 
@@ -5684,7 +5684,7 @@ function renderOfferItemVarietyPicker() {
   const usedKeys = offerUsedVarietyKeys(offer, currentItemId);
   const varieties = [...state.data.varieties]
     .filter((variety) => clean(variety.name))
-    .sort((a, b) => a.name.localeCompare(b.name, "cs", { sensitivity: "base" }));
+    .sort((a, b) => naturalCompare(a.name, b.name));
   const matches = varieties
     .filter((variety) => !query || normalize(variety.name).includes(query));
   if (!matches.length) {
@@ -5910,11 +5910,34 @@ function openFacebookOfferDialog(id) {
   els.facebookOfferForm.elements.offerId.value = offer.id;
   els.facebookOfferForm.elements.text.value = text;
   if (els.facebookOfferPhotoStatus) {
-    els.facebookOfferPhotoStatus.textContent = photoCount
+    els.facebookOfferPhotoStatus.innerHTML = facebookZipProgressMarkup(photoCount
       ? `Fotky k uložení: ${photoCount}. Načtou se až po tlačítku ZIP.`
-      : "Tahle nabídka zatím nemá volné fotky.";
+      : "Tahle nabídka zatím nemá volné fotky.");
   }
   showDialog(els.facebookOfferDialog);
+}
+
+function facebookZipProgressMarkup(text) {
+  return `<div class="facebook-zip-progress" data-facebook-zip-progress aria-live="polite">
+    <span data-facebook-zip-progress-label>${escapeHtml(text)}</span>
+    <span class="facebook-zip-progress-bar" aria-hidden="true"><span data-facebook-zip-progress-fill style="width: 0%"></span></span>
+  </div>`;
+}
+
+function updateFacebookZipProgress(current, total, message = "") {
+  const root = els.facebookOfferPhotoStatus?.querySelector("[data-facebook-zip-progress]");
+  if (!root) return;
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeCurrent = Math.max(0, Math.min(safeTotal, Number(current) || 0));
+  const percent = safeTotal ? Math.round((safeCurrent / safeTotal) * 100) : 0;
+  const label = root.querySelector("[data-facebook-zip-progress-label]");
+  const fill = root.querySelector("[data-facebook-zip-progress-fill]");
+  if (label) label.textContent = message || (safeTotal ? `Fotka ${safeCurrent} z ${safeTotal}` : "Bez fotek k uložení");
+  if (fill) fill.style.width = `${percent}%`;
+}
+
+function waitForUiPaint() {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function facebookOfferDialogDraft() {
@@ -5956,17 +5979,33 @@ async function downloadFacebookOfferZipFromDialog(button) {
   }
   try {
     const entries = [{ name: "facebook-text.txt", blob: new Blob([text], { type: "text/plain;charset=utf-8" }) }];
-    for (const entry of facebookOfferZipEntries(offer)) {
+    const photoEntries = facebookOfferZipEntries(offer);
+    updateFacebookZipProgress(0, photoEntries.length, photoEntries.length ? `Začínám připravovat ${photoEntries.length} fotek...` : "Bez fotek k uložení.");
+    await waitForUiPaint();
+    for (let index = 0; index < photoEntries.length; index += 1) {
+      const entry = photoEntries[index];
+      updateFacebookZipProgress(index, photoEntries.length, `Načítám fotku ${index + 1} z ${photoEntries.length}`);
+      await waitForUiPaint();
       const file = await photoRefToFacebookFile(entry.ref, entry.name);
-      if (!file) continue;
+      if (!file) {
+        updateFacebookZipProgress(index + 1, photoEntries.length, `Fotka ${index + 1} se přeskočila`);
+        continue;
+      }
+      updateFacebookZipProgress(index, photoEntries.length, `Přidávám text do fotky ${index + 1} z ${photoEntries.length}`);
+      await waitForUiPaint();
       const labeledFile = await createFacebookLabeledPhotoFile(file, entry);
       entries.push({ name: `${entry.name}${photoExtension(labeledFile)}`, blob: labeledFile });
+      updateFacebookZipProgress(index + 1, photoEntries.length, `Hotovo ${index + 1} z ${photoEntries.length}`);
     }
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, "Balím ZIP...");
+    await waitForUiPaint();
     const zip = await createZipBlob(entries);
     downloadBlob(zip, `${safeFileName(offer.title || "nabidka", "nabidka")}-fotky.zip`);
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, `ZIP hotový: ${Math.max(0, entries.length - 1)} fotek.`);
     toast(`ZIP hotový: ${Math.max(0, entries.length - 1)} fotek. Text je zkopírovaný.`);
   } catch (error) {
     console.error(error);
+    updateFacebookZipProgress(0, facebookOfferZipEntries(offer).length, "ZIP se nepodařilo vytvořit.");
     toast("ZIP se nepodařilo vytvořit.");
   } finally {
     if (button) {
@@ -6756,7 +6795,7 @@ function exportVarieties() {
   const rows = [
     ["Odrůda", "Prodejní cena", "Měna", "Historie cen", "Náhledová fotka", "Galerie", "Poznámka", "Aktivní", "V objednávkách"],
     ...state.data.varieties
-      .sort((a, b) => a.name.localeCompare(b.name, "cs"))
+      .sort((a, b) => naturalCompare(a.name, b.name))
       .map((variety) => [
         variety.name,
         variety.salePrice,
@@ -8064,7 +8103,7 @@ function filteredVarieties() {
     })
     .sort((a, b) => {
       if (state.varietySort === "updated") return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
-      if (state.varietySort === "name") return a.name.localeCompare(b.name, "cs");
+      if (state.varietySort === "name") return naturalCompare(a.name, b.name);
       if (state.varietySort === "price-asc" || state.varietySort === "price-desc") {
         const aPrice = varietyComparablePriceCzk(a);
         const bPrice = varietyComparablePriceCzk(b);
@@ -8072,14 +8111,14 @@ function filteredVarieties() {
         const bFinite = Number.isFinite(bPrice);
         if (aFinite && bFinite) {
           const delta = state.varietySort === "price-asc" ? aPrice - bPrice : bPrice - aPrice;
-          return delta || a.name.localeCompare(b.name, "cs");
+          return delta || naturalCompare(a.name, b.name);
         }
         if (aFinite) return -1;
         if (bFinite) return 1;
-        return a.name.localeCompare(b.name, "cs");
+        return naturalCompare(a.name, b.name);
       }
       const usageDelta = varietyUsageCount(b.name) - varietyUsageCount(a.name);
-      return usageDelta || a.name.localeCompare(b.name, "cs");
+      return usageDelta || naturalCompare(a.name, b.name);
     });
 }
 
@@ -9807,8 +9846,8 @@ function offerStatusClass(status) {
 }
 
 function compareOfferItems(a = {}, b = {}) {
-  const nameDelta = clean(a.varietyName || a.name).localeCompare(clean(b.varietyName || b.name), "cs", { sensitivity: "base" });
-  return nameDelta || clean(a.id).localeCompare(clean(b.id), "cs", { sensitivity: "base" });
+  const nameDelta = naturalCompare(a.varietyName || a.name, b.varietyName || b.name);
+  return nameDelta || naturalCompare(a.id, b.id);
 }
 
 function sortedOfferItems(offer) {
@@ -10947,7 +10986,7 @@ function mergeVarieties(items) {
     existing.updatedAt = variety.updatedAt || existing.updatedAt;
   });
 
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "cs"));
+  return [...map.values()].sort((a, b) => naturalCompare(a.name, b.name));
 }
 
 function varietyNamesFromText(text) {
@@ -11053,6 +11092,10 @@ function normalize(value) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function naturalCompare(a, b) {
+  return clean(a).localeCompare(clean(b), "cs", { sensitivity: "base", numeric: true });
 }
 
 function stripDiacritics(value) {

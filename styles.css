@@ -28,6 +28,32 @@
   font-family: "Aptos", "Segoe UI Variable", "Segoe UI", "Trebuchet MS", sans-serif;
 }
 
+.facebook-zip-progress {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+
+.facebook-zip-progress-bar {
+  display: block;
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(47, 113, 85, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(47, 113, 85, 0.16);
+}
+
+.facebook-zip-progress-bar > span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #78c99a, #2f7155);
+  transition: width 0.18s ease;
+}
+
 /* Final sync/privacy polish overrides. */
 .brand::after {
   display: none !important;
