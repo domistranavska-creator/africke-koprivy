@@ -800,8 +800,8 @@ function openOfferItemSheet(offerId, itemId = "") {
   const matchedVariety = findById("varieties", item?.varietyId) || findVarietyByName(item?.varietyName);
   const selectedCurrency = clean(item?.currency || matchedVariety?.saleCurrency || "CZK");
   openSheet(item ? "Upravit odřezek" : "Přidat odřezek", `<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Odrůda</span><input name="varietyName" list="offerVarietyOptions" required value="${escapeHtml(item?.varietyName || "")}" placeholder="Název odrůdy"></label>
-    <datalist id="offerVarietyOptions">${state.data.varieties.map((variety) => `<option value="${escapeHtml(variety.name)}"></option>`).join("")}</datalist>
+    <label class="field"><span>Odrůda</span><input name="varietyName" data-offer-variety-input required autocomplete="off" value="${escapeHtml(item?.varietyName || "")}" placeholder="Název odrůdy"></label>
+    <div class="offer-variety-picker" data-offer-variety-picker></div>
     <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(item?.quantity || "1")}"></label>
     <label class="field"><span>Cena za ks</span><input name="price" inputmode="decimal" value="${escapeHtml(item?.price || matchedVariety?.salePrice || "")}"></label>
     <label class="field"><span>Měna</span><select name="currency">
@@ -840,7 +840,83 @@ function openOfferItemSheet(offerId, itemId = "") {
     offer.updatedAt = now;
     setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
   });
+  bindOfferItemVarietyPicker(offer, item);
   bindPhotoGrid();
+}
+
+function bindOfferItemVarietyPicker(offer, currentItem = null) {
+  const form = document.querySelector("#sheetForm");
+  const input = form?.elements.varietyName;
+  const picker = form?.querySelector("[data-offer-variety-picker]");
+  if (!form || !input || !picker) return;
+  const render = () => renderOfferItemVarietyPicker(form, offer, currentItem);
+  input.addEventListener("input", () => {
+    const exact = findVarietyByName(input.value);
+    if (exact) applyOfferItemVarietyToForm(exact, form, { forcePrice: false });
+    render();
+  });
+  input.addEventListener("focus", render);
+  form.elements.price?.addEventListener("input", () => {
+    delete form.elements.price.dataset.autoFilledFor;
+  });
+  picker.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-offer-variety-id]");
+    if (!button) return;
+    const variety = findById("varieties", button.dataset.offerVarietyId);
+    if (!variety) return;
+    applyOfferItemVarietyToForm(variety, form, { forcePrice: true });
+    render();
+  });
+  render();
+}
+
+function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
+  const input = form?.elements.varietyName;
+  const picker = form?.querySelector("[data-offer-variety-picker]");
+  if (!input || !picker) return;
+  const query = normalize(input.value);
+  const selectedKey = normalize(input.value);
+  const usedKeys = offerUsedVarietyKeys(offer, currentItem?.id);
+  const varieties = [...state.data.varieties]
+    .filter((variety) => clean(variety.name))
+    .sort((a, b) => a.name.localeCompare(b.name, "cs", { sensitivity: "base" }));
+  const matches = varieties
+    .filter((variety) => !query || normalize(variety.name).includes(query));
+  if (!matches.length) {
+    picker.innerHTML = `<div class="offer-variety-empty">Žádná odrůda nenalezena. Můžeš napsat nový název.</div>`;
+    return;
+  }
+  picker.innerHTML = matches.map((variety) => {
+    const key = normalize(variety.name);
+    const used = usedKeys.has(key);
+    const selected = selectedKey && key === selectedKey;
+    const price = clean(variety.salePrice) ? formatMoney(variety.salePrice, variety.saleCurrency || "CZK") : "";
+    const meta = [used ? "Už v nabídce" : "", price].filter(Boolean).join(" · ");
+    return `<button class="offer-variety-option ${used ? "used" : ""} ${selected ? "selected" : ""}" type="button" data-offer-variety-id="${escapeHtml(variety.id)}">
+      <span>${escapeHtml(variety.name)}</span>
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    </button>`;
+  }).join("");
+}
+
+function applyOfferItemVarietyToForm(variety, form, options = {}) {
+  if (!variety || !form) return;
+  const input = form.elements.varietyName;
+  const priceInput = form.elements.price;
+  const currencyInput = form.elements.currency;
+  input.value = variety.name || "";
+  if (priceInput && clean(variety.salePrice) && (options.forcePrice || !clean(priceInput.value) || priceInput.dataset.autoFilledFor)) {
+    priceInput.value = variety.salePrice;
+    priceInput.dataset.autoFilledFor = normalize(variety.name);
+  }
+  if (currencyInput && clean(variety.saleCurrency)) currencyInput.value = variety.saleCurrency;
+}
+
+function offerUsedVarietyKeys(offer, excludeItemId = "") {
+  return new Set((offer?.items || [])
+    .filter((item) => !excludeItemId || item.id !== excludeItemId)
+    .map((item) => normalize(offerItemName(item)))
+    .filter(Boolean));
 }
 
 function openReservationSheet(offerId, itemId, reservationId = "", preferredStatus = "confirmed") {

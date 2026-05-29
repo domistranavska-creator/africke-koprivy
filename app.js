@@ -329,6 +329,7 @@ const els = {
   offerItemVarietyHelper: document.querySelector("#offerItemVarietyHelper"),
   offerItemVarietyHint: document.querySelector("#offerItemVarietyHint"),
   offerItemCreateVarietyWrap: document.querySelector("#offerItemCreateVarietyWrap"),
+  offerItemVarietyPicker: document.querySelector("#offerItemVarietyPicker"),
   facebookOfferDialog: document.querySelector("#facebookOfferDialog"),
   facebookOfferForm: document.querySelector("#facebookOfferForm"),
   facebookOfferDialogTitle: document.querySelector("#facebookOfferDialogTitle"),
@@ -443,8 +444,13 @@ function init() {
   els.offerForm?.querySelectorAll("[data-offer-status-option]").forEach((button) => {
     button.addEventListener("click", () => setOfferStatus(button.dataset.offerStatusOption));
   });
-  els.offerItemForm.elements.varietyName.addEventListener("input", () => refreshOfferItemVarietyHelper(true));
+  els.offerItemForm.elements.varietyName.addEventListener("input", () => {
+    refreshOfferItemVarietyHelper(true);
+    renderOfferItemVarietyPicker();
+  });
+  els.offerItemForm.elements.varietyName.addEventListener("focus", renderOfferItemVarietyPicker);
   els.offerItemForm.elements.varietyName.addEventListener("blur", () => refreshOfferItemVarietyHelper(true));
+  els.offerItemVarietyPicker?.addEventListener("click", handleOfferItemVarietyPickerClick);
   els.offerItemForm.elements.price.addEventListener("input", () => {
     delete els.offerItemForm.elements.price.dataset.autoFilledFor;
   });
@@ -5652,7 +5658,71 @@ function openOfferItemDialog(offerId, itemId = null) {
   els.offerItemForm.elements.note.value = item?.note || "";
   els.offerItemForm.elements.createVariety.checked = false;
   refreshOfferItemVarietyHelper(false);
+  renderOfferItemVarietyPicker();
   showDialog(els.offerItemDialog);
+}
+
+function renderOfferItemVarietyPicker() {
+  const form = els.offerItemForm;
+  const picker = els.offerItemVarietyPicker;
+  if (!form || !picker) return;
+  const offer = findOffer(form.elements.offerId.value);
+  const currentItemId = clean(form.elements.itemId.value);
+  const input = form.elements.varietyName;
+  const query = normalize(input.value);
+  const selectedKey = varietyNameMatchKey(input.value);
+  const usedKeys = offerUsedVarietyKeys(offer, currentItemId);
+  const varieties = [...state.data.varieties]
+    .filter((variety) => clean(variety.name))
+    .sort((a, b) => a.name.localeCompare(b.name, "cs", { sensitivity: "base" }));
+  const matches = varieties
+    .filter((variety) => !query || normalize(variety.name).includes(query));
+  if (!matches.length) {
+    picker.innerHTML = `<div class="offer-variety-empty">Žádná odrůda nenalezena. Můžeš napsat nový název.</div>`;
+    return;
+  }
+  picker.innerHTML = matches.map((variety) => {
+    const key = varietyNameMatchKey(variety.name);
+    const used = usedKeys.has(key);
+    const selected = selectedKey && key === selectedKey;
+    const price = clean(variety.salePrice) ? formatMoney(variety.salePrice, variety.saleCurrency || "CZK") : "";
+    const meta = [used ? "Už v nabídce" : "", price].filter(Boolean).join(" · ");
+    return `<button class="offer-variety-option ${used ? "used" : ""} ${selected ? "selected" : ""}" type="button" data-offer-variety-id="${escapeHtml(variety.id)}">
+      <span>${escapeHtml(variety.name)}</span>
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    </button>`;
+  }).join("");
+}
+
+function handleOfferItemVarietyPickerClick(event) {
+  const button = event.target.closest("[data-offer-variety-id]");
+  if (!button) return;
+  const variety = findVariety(button.dataset.offerVarietyId);
+  if (!variety) return;
+  applyOfferItemVarietyToForm(variety, { forcePrice: true });
+  refreshOfferItemVarietyHelper(false);
+  renderOfferItemVarietyPicker();
+}
+
+function applyOfferItemVarietyToForm(variety, options = {}) {
+  const form = els.offerItemForm;
+  if (!form || !variety) return;
+  const priceInput = form.elements.price;
+  form.elements.varietyName.value = variety.name || "";
+  if (priceInput && clean(variety.salePrice) && (options.forcePrice || !clean(priceInput.value) || priceInput.dataset.autoFilledFor)) {
+    priceInput.value = variety.salePrice;
+    priceInput.dataset.autoFilledFor = varietyNameMatchKey(variety.name);
+  }
+  const currency = normalizeCurrency(variety.saleCurrency);
+  const radio = form.querySelector(`input[name="currency"][value="${currency}"]`);
+  if (radio) radio.checked = true;
+}
+
+function offerUsedVarietyKeys(offer, excludeItemId = "") {
+  return new Set((offer?.items || [])
+    .filter((item) => !excludeItemId || item.id !== excludeItemId)
+    .map((item) => varietyNameMatchKey(item.varietyName || item.name))
+    .filter(Boolean));
 }
 
 function refreshOfferItemVarietyHelper(autofillPrice = false) {
@@ -5672,15 +5742,19 @@ function refreshOfferItemVarietyHelper(autofillPrice = false) {
     return;
   }
 
-  const variety = findVarietyByName(name);
+  const exactVariety = findExactVarietyByName(name);
+  const variety = exactVariety || findVarietyByName(name);
+  const offer = findOffer(els.offerItemForm.elements.offerId.value);
+  const currentItemId = clean(els.offerItemForm.elements.itemId.value);
+  const alreadyUsed = offerUsedVarietyKeys(offer, currentItemId).has(varietyNameMatchKey(name));
   helper.hidden = false;
   if (variety) {
     createWrap.hidden = true;
     createInput.checked = false;
-    hint.textContent = variety.salePrice
+    hint.textContent = `${variety.salePrice
       ? `V katalogu už je. Cena ${formatMoney(variety.salePrice, variety.saleCurrency)}.`
-      : "V katalogu už je. Cena se zatím v katalogu nevyplnila.";
-    if (autofillPrice) {
+      : "V katalogu už je. Cena se zatím v katalogu nevyplnila."}${alreadyUsed ? " V této nabídce už je použitá." : ""}`;
+    if (autofillPrice && exactVariety) {
       if (clean(variety.salePrice)) {
         priceInput.value = variety.salePrice;
         priceInput.dataset.autoFilledFor = varietyNameMatchKey(variety.name);
@@ -5700,7 +5774,7 @@ function refreshOfferItemVarietyHelper(autofillPrice = false) {
     priceInput.value = "";
     delete priceInput.dataset.autoFilledFor;
   }
-  hint.textContent = "V katalogu zatím není. Může zůstat jen v nabídce, nebo ji rovnou založ do odrůd.";
+  hint.textContent = `V katalogu zatím není. Může zůstat jen v nabídce, nebo ji rovnou založ do odrůd.${alreadyUsed ? " V této nabídce už je použitá." : ""}`;
 }
 
 function ensureVarietyFromOfferItem(name, price, currency) {
@@ -8822,6 +8896,11 @@ function varietyNameLooseKey(name) {
 
 function varietyNameMatchKey(name) {
   return varietyNameLooseKey(name).replace(/[^a-z0-9]+/g, "");
+}
+
+function findExactVarietyByName(name) {
+  const key = varietyNameMatchKey(name);
+  return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
 }
 
 function findVarietyByName(name) {

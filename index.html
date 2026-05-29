@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260527-41" />
+    <link rel="stylesheet" href="styles.css?v=20260527-43" />
   </head>
   <body>
     <div class="app-shell">
@@ -893,8 +893,9 @@
         <input type="hidden" name="itemId" />
         <label class="wide">
           <span>Odrůda</span>
-          <input name="varietyName" list="varietyList" required placeholder="Začni psát název odrůdy" />
+          <input name="varietyName" data-offer-variety-input required autocomplete="off" placeholder="Začni psát název odrůdy" />
         </label>
+        <div class="wide offer-variety-picker" id="offerItemVarietyPicker"></div>
         <div class="wide offer-item-variety-helper" id="offerItemVarietyHelper" hidden>
           <small id="offerItemVarietyHint"></small>
           <label class="check" id="offerItemCreateVarietyWrap" hidden>
@@ -1050,13 +1051,13 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260527-41" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260527-41" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260527-41" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260527-41" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260527-41" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260527-41" charset="utf-8"></script>
-    <script src="app.js?v=20260527-41" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-setup.js?v=20260527-43" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260527-43" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260527-43" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260527-43" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260527-43" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260527-43" charset="utf-8"></script>
+    <script src="app.js?v=20260527-43" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

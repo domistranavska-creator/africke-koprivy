@@ -6696,6 +6696,57 @@ table {
   color: var(--muted);
 }
 
+.offer-variety-picker {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  padding: 8px;
+  border: 1px solid rgba(191, 184, 168, 0.68);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.96), rgba(244, 248, 242, 0.9));
+  overflow: auto;
+  box-shadow: var(--shadow-soft);
+}
+
+.offer-variety-option {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(34, 88, 60, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.offer-variety-option small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.offer-variety-option:hover,
+.offer-variety-option.selected {
+  border-color: rgba(29, 96, 64, 0.42);
+  background: #f1fbf1;
+}
+
+.offer-variety-option.used {
+  border-color: rgba(196, 146, 36, 0.42);
+  background: #fff7dc;
+}
+
+.offer-variety-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
 .form-optional-block {
   display: grid;
   gap: 8px;
