@@ -291,6 +291,7 @@ const els = {
   orderForeignTotalHint: document.querySelector("#orderForeignTotalHint"),
   orderAdvancedSummary: document.querySelector("#orderAdvancedSummary"),
   copyCustomerOrderTextBtn: document.querySelector("#copyCustomerOrderTextBtn"),
+  toggleOrderPaymentTextSentBtn: document.querySelector("#toggleOrderPaymentTextSentBtn"),
   downloadCustomerOrderImageBtn: document.querySelector("#downloadCustomerOrderImageBtn"),
   toggleOrderPaymentQrBtn: document.querySelector("#toggleOrderPaymentQrBtn"),
   orderPaymentQrPanel: document.querySelector("#orderPaymentQrPanel"),
@@ -641,6 +642,7 @@ function init() {
   els.loadOrderRateBtn.addEventListener("click", loadCurrentOrderRate);
   els.addFeesToOrderBtn?.addEventListener("click", applyOrderFeesToPrice);
   els.copyCustomerOrderTextBtn?.addEventListener("click", copyCurrentOrderCustomerText);
+  els.toggleOrderPaymentTextSentBtn?.addEventListener("click", toggleCurrentOrderPaymentTextSent);
   els.downloadCustomerOrderImageBtn?.addEventListener("click", downloadCurrentOrderCustomerImage);
   els.toggleOrderPaymentQrBtn?.addEventListener("click", toggleCurrentOrderPaymentQr);
   els.downloadOrderPaymentQrBtn?.addEventListener("click", downloadCurrentOrderPaymentQr);
@@ -2116,11 +2118,13 @@ function renderOrders() {
               <span class="order-statuses">
                 ${statusPill(order.paymentStatus, paymentLabels[order.paymentStatus])}
                 ${shippingPill(order.shippingStatus, shippingLabels[order.shippingStatus])}
+                ${orderPaymentTextPill(order)}
               </span>
               <span class="cell-sub status-note">${escapeHtml(deliverySummary(order))}</span>
             </td>
             <td>
               <span class="row-actions row-actions-compact">
+                <button class="mini-button" type="button" title="${clean(order.paymentTextSentAt) ? "Zrušit: text k zaplacení odeslán" : "Označit: text k zaplacení odeslán"}" data-toggle-payment-text-sent="${order.id}">Txt</button>
                 <button class="mini-button" type="button" title="Upravit" data-edit-order="${order.id}">✎</button>
                 <button class="mini-button" type="button" title="Smazat" data-delete-order="${order.id}">×</button>
               </span>
@@ -2142,6 +2146,9 @@ function renderOrders() {
   });
   els.ordersTable.querySelectorAll("[data-delete-order]").forEach((button) => {
     button.addEventListener("click", () => deleteOrder(button.dataset.deleteOrder));
+  });
+  els.ordersTable.querySelectorAll("[data-toggle-payment-text-sent]").forEach((button) => {
+    button.addEventListener("click", () => toggleOrderPaymentTextSent(button.dataset.togglePaymentTextSent));
   });
   els.ordersTable.querySelectorAll("[data-open-variety-name]").forEach((button) => {
     button.addEventListener("click", () => openVarietyDetailByName(button.dataset.openVarietyName));
@@ -2667,9 +2674,16 @@ function renderOfferItem(offer, item) {
   const reservations = sortedReservationsForItem(item);
   const image = offerItemImage(item);
   const displayName = offerItemNameSafe(item);
-  return `<article class="offer-item ${soldOut ? "sold-out" : ""}">
+  const orderProgress = offerItemOrderProgress(offer, item);
+  const orderFlag = orderProgress.label
+    ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">→ OBJ</span>`
+    : "";
+  return `<article class="offer-item ${soldOut ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
     <div class="offer-item-main">
-      <div class="offer-thumb">${image ? photoImageMarkup(image, displayName, "", 'loading="lazy"') : varietyInitials(displayName)}</div>
+      <div class="offer-thumb-wrap">
+        <div class="offer-thumb">${image ? photoImageMarkup(image, displayName, "", 'loading="lazy"') : varietyInitials(displayName)}</div>
+        ${orderFlag}
+      </div>
       <div>
         <strong>${escapeHtml(displayName)}</strong>
         <small>${escapeHtml([`${item.quantity} ks`, `${formatMoney(item.price, item.currency)}/ks`, item.note].filter(Boolean).join(" · "))}</small>
@@ -2687,18 +2701,19 @@ function renderOfferItem(offer, item) {
       </span>
     </div>
     <div class="reservation-list">
-      ${reservations.length ? reservations.map((reservation) => renderReservationLine(item, reservation)).join("") : `<small class="cell-sub">Zatím bez rezervací.</small>`}
+      ${reservations.length ? reservations.map((reservation) => renderReservationLine(offer, item, reservation)).join("") : `<small class="cell-sub">Zatím bez rezervací.</small>`}
     </div>
   </article>`;
 }
 
-function renderReservationLine(item, reservation) {
+function renderReservationLine(offer, item, reservation) {
   const customer = findCustomer(reservation.customerId);
   const status = reservationStatusValue(reservation.status);
   return `<div class="reservation-line">
     <span><strong>${escapeHtml(customerName(customer))}</strong> · ${reservation.quantity} ks${reservation.note ? ` · ${escapeHtml(reservation.note)}` : ""}</span>
     <span class="row-actions">
       <span class="pill ${status === "alternate" ? "ready" : "paid"}">${escapeHtml(reservationStatusLabels[status])}</span>
+      ${reservationLinkedToOrder(offer, item, reservation) ? `<span class="pill paid">Objednávka</span>` : ""}
       <button class="mini-button" type="button" title="Upravit rezervaci" data-item-id="${item.id}" data-edit-reservation="${reservation.id}">✎</button>
       <button class="mini-button" type="button" title="Smazat rezervaci" data-item-id="${item.id}" data-delete-reservation="${reservation.id}">×</button>
     </span>
@@ -3373,6 +3388,7 @@ async function openOrderDialog(id = null, customerId = null, defaults = {}) {
   hideOrderVarietySuggestions();
   els.orderForm.elements.note.value = draft.note || "";
   refreshOrderRateHint(true);
+  syncOrderPaymentTextSentButton(order);
   showDialog(els.orderDialog);
   await autoCalculateOrderPrice({ silent: true });
   state.orderDialogBaseline = orderDialogFingerprint(captureOrderFormSnapshot());
@@ -5125,6 +5141,54 @@ function deleteOrder(id) {
   saveData();
   renderAll();
   toast("Objednávka smazána.");
+}
+
+function syncOrderPaymentTextSentButton(order = null) {
+  const current =
+    order ||
+    state.data.orders.find((item) => item.id === clean(els.orderForm?.elements?.id?.value));
+  const sent = Boolean(clean(current?.paymentTextSentAt));
+  const button = els.toggleOrderPaymentTextSentBtn;
+  if (!button) return;
+  button.disabled = !clean(current?.id);
+  button.textContent = sent ? "✓ Text odeslán" : "Text odeslán";
+  button.classList.toggle("primary", sent);
+  button.classList.toggle("ghost", !sent);
+  button.title = clean(current?.id)
+    ? sent
+      ? "Zrušit příznak odeslaného textu"
+      : "Označit, že text k zaplacení byl odeslán"
+    : "Nejdřív objednávku ulož";
+}
+
+function toggleCurrentOrderPaymentTextSent() {
+  const id = clean(els.orderForm?.elements?.id?.value);
+  if (!id) {
+    toast("Nejdřív objednávku ulož.");
+    return;
+  }
+  toggleOrderPaymentTextSent(id, { keepDialogOpen: true });
+}
+
+function toggleOrderPaymentTextSent(id, options = {}) {
+  const order = state.data.orders.find((item) => item.id === id);
+  if (!order) return;
+  if (clean(order.paymentTextSentAt)) {
+    order.paymentTextSentAt = "";
+    toast("Příznak odeslaného textu zrušen.");
+  } else {
+    order.paymentTextSentAt = new Date().toISOString();
+    toast("Text k zaplacení označen jako odeslaný.");
+  }
+  order.updatedAt = new Date().toISOString();
+  saveData();
+  if (options.keepDialogOpen) {
+    syncOrderPaymentTextSentButton(order);
+    renderOrders();
+    renderCustomerDetail();
+    return;
+  }
+  renderAll();
 }
 
 function addCustomerNote(id) {
@@ -9029,6 +9093,10 @@ function shippingPill(value, label) {
   return `<span class="pill ${classes[value] || ""}">${escapeHtml(label || value || "—")}</span>`;
 }
 
+function orderPaymentTextPill(order = {}) {
+  return clean(order.paymentTextSentAt) ? `<span class="pill sent">Text odeslán</span>` : "";
+}
+
 function tagClass(tag) {
   const lower = normalize(tag);
   if (lower.includes("pozor")) return "warning";
@@ -9472,6 +9540,7 @@ function normalizeOrder(order = {}) {
     exchangeRate: clean(order.exchangeRate),
     priceManualOverride: Boolean(order.priceManualOverride),
     feesIncludedInTotal: Boolean(order.feesIncludedInTotal),
+    paymentTextSentAt: clean(order.paymentTextSentAt),
     shippingStatus: normalizeShippingStatus(order.shippingStatus),
     paymentReminderDate: "",
     shippingReminderDate: "",
@@ -9549,6 +9618,8 @@ function normalizeReservation(reservation = {}) {
     quantity: normalizeWholeNumber(reservation.quantity) || "1",
     status: reservationStatusValue(reservation.status),
     note: clean(reservation.note),
+    orderId: clean(reservation.orderId),
+    orderCreatedAt: clean(reservation.orderCreatedAt),
   };
 }
 
@@ -9904,6 +9975,41 @@ function reservationAvailableQuantity(item, excludeReservationId = "") {
   return Math.max(0, (Number(item.quantity || 0) || 0) - offerItemConfirmedCount(item, excludeReservationId));
 }
 
+function offerItemOrderKeys(item = {}) {
+  const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
+  return unique([offerItemNameSafe(item), item.varietyName, item.name, variety?.name].map(varietyNameMatchKey).filter(Boolean));
+}
+
+function orderContainsOfferItem(order = {}, item = {}) {
+  const keys = offerItemOrderKeys(item);
+  if (!keys.length) return false;
+  const orderKeys = orderVarietyNames(order).map(varietyNameMatchKey).filter(Boolean);
+  return keys.some((key) => orderKeys.includes(key));
+}
+
+function reservationLinkedToOrder(offer = {}, item = {}, reservation = {}) {
+  if (clean(reservation.orderId)) return true;
+  if (reservationStatusValue(reservation.status) !== "confirmed") return false;
+  const offerId = clean(offer.id);
+  const customerId = clean(reservation.customerId);
+  if (!offerId || !customerId) return false;
+  return (state.data.orders || []).some((order) =>
+    clean(order.offerId) === offerId &&
+    clean(order.customerId) === customerId &&
+    orderContainsOfferItem(order, item),
+  );
+}
+
+function offerItemOrderProgress(offer = {}, item = {}) {
+  const confirmed = (item.reservations || []).filter((reservation) => reservationStatusValue(reservation.status) === "confirmed");
+  const confirmedQuantity = confirmed.reduce((sum, reservation) => sum + (Number(normalizeWholeNumber(reservation.quantity)) || 0), 0);
+  const orderedQuantity = confirmed.reduce((sum, reservation) =>
+    reservationLinkedToOrder(offer, item, reservation) ? sum + (Number(normalizeWholeNumber(reservation.quantity)) || 0) : sum, 0);
+  if (!confirmedQuantity || !orderedQuantity) return { state: "", label: "" };
+  if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednávce" };
+  return { state: "partial", label: "Částečně v objednávce" };
+}
+
 function sortedReservationsForItem(item) {
   return [...(item.reservations || [])].sort((a, b) => {
     const statusDelta = Number(reservationStatusValue(a.status) === "alternate") - Number(reservationStatusValue(b.status) === "alternate");
@@ -9980,7 +10086,7 @@ async function createOrdersFromOffer(id) {
   reservations.forEach(({ item, reservation }) => {
     const currency = normalizeCurrency(item.currency);
     const key = `${reservation.customerId}::${currency}`;
-    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, currency, lines: [], total: 0 });
+    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, currency, lines: [], total: 0, entries: [] });
     const group = grouped.get(key);
     const quantity = Number(normalizeWholeNumber(reservation.quantity)) || 1;
     const price = parseDecimal(item.price);
@@ -9990,6 +10096,7 @@ async function createOrdersFromOffer(id) {
         : `${offerItemNameSafe(item)} ${quantity}x`,
     );
     if (Number.isFinite(price)) group.total += price * quantity;
+    group.entries.push({ item, reservation });
   });
 
   const now = new Date().toISOString();
@@ -9999,8 +10106,9 @@ async function createOrdersFromOffer(id) {
     const shippingFee = parseDecimal(defaults.shippingFee);
     const packingFee = parseDecimal(defaults.packingFee);
     const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
+    const orderId = uid();
     state.data.orders.push(normalizeOrder({
-      id: uid(),
+      id: orderId,
       offerId: offer.id,
       customerId: group.customerId,
       orderDate: offer.date || toDateInput(new Date()),
@@ -10021,6 +10129,10 @@ async function createOrdersFromOffer(id) {
       createdAt: now,
       updatedAt: now,
     }));
+    group.entries.forEach(({ reservation }) => {
+      reservation.orderId = orderId;
+      reservation.orderCreatedAt = now;
+    });
     count += 1;
   });
 

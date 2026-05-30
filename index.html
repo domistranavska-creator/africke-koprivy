@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260527-50" />
+    <link rel="stylesheet" href="styles.css?v=20260527-55" />
   </head>
   <body>
     <div class="app-shell">
@@ -634,6 +634,7 @@
         </div>
         <div class="inline-actions wide order-copy-actions">
           <button class="button secondary" type="button" id="copyCustomerOrderTextBtn">Kopírovat text pro zákazníka</button>
+          <button class="button ghost" type="button" id="toggleOrderPaymentTextSentBtn">Text odeslán</button>
         </div>
         <div class="variety-picker wide">
           <label class="picker-with-menu order-variety-name-field">
@@ -1052,13 +1053,13 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260527-50" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260527-50" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260527-50" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260527-50" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260527-50" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260527-50" charset="utf-8"></script>
-    <script src="app.js?v=20260527-50" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-setup.js?v=20260527-55" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260527-55" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260527-55" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260527-55" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260527-55" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260527-55" charset="utf-8"></script>
+    <script src="app.js?v=20260527-55" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

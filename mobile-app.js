@@ -283,8 +283,8 @@ function renderOrders() {
       sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" · "),
       price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
       pills: orderVarietyNames(order).slice(0, 5).map((name) => `🌿 ${name}`),
-      badges: [paymentPill(order), statusPill(order)],
-      actions: [["copy-order", "📋"], ["edit-order", "✎"], ["delete-order", "×"]],
+      badges: [paymentPill(order), statusPill(order), orderPaymentTextPill(order)],
+      actions: [["copy-order", "📋"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "✓Txt" : "Txt"], ["edit-order", "✎"], ["delete-order", "×"]],
     });
   }).join("");
 }
@@ -422,6 +422,7 @@ function handleRowAction(action, id) {
   if (action === "edit-order") return openOrderSheet(id);
   if (action === "delete-order") return deleteItem("orders", id, "Objednávku");
   if (action === "copy-order") return copyOrderText(id);
+  if (action === "toggle-order-text-sent") return toggleOrderPaymentTextSent(id);
   if (action === "edit-variety") return openVarietySheet(id);
   if (action === "delete-variety") return deleteItem("varieties", id, "Odrůdu");
   if (action === "edit-cross") return openCrossSheet(id);
@@ -508,6 +509,7 @@ function openOrderSheet(id = "", customerId = "") {
       <button class="chip-button ${clean(order.shippingFee) === appSettings().shippingFeeCz ? "active" : ""}" type="button" data-fee="shipping-cz">Zásilkovna ČR · ${escapeHtml(appSettings().shippingFeeCz || "89")} Kč</button>
       <button class="chip-button ${clean(order.shippingFee) === appSettings().shippingFeeSk ? "active" : ""}" type="button" data-fee="shipping-sk">Zásilkovna SK · ${escapeHtml(appSettings().shippingFeeSk || "99")} Kč</button>
       <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">Balné · ${escapeHtml(appSettings().packingFee || "20")} Kč</button>
+      ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "✓ Text odeslán" : "Text odeslán"}</button>` : ""}
     </div>
     <label class="field"><span>Odrůdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 Kč">${escapeHtml(order.varietiesText)}</textarea></label>
     <label class="field"><span>Celkem Kč</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
@@ -538,6 +540,13 @@ function openOrderSheet(id = "", customerId = "") {
   });
   bindToggles();
   bindFees();
+  els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const button = event.currentTarget;
+    const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+    button.classList.toggle("active", sent);
+    button.textContent = sent ? "✓ Text odeslán" : "Text odeslán";
+  });
 }
 
 function openVarietySheet(id = "") {
@@ -783,9 +792,13 @@ function offerItemDetailMarkup(offer, item) {
   const image = offerItemImage(item);
   const offerId = escapeHtml(offer.id);
   const itemId = escapeHtml(item.id);
-  return `<article class="offer-item ${available <= 0 ? "sold-out" : ""}">
+  const orderProgress = offerItemOrderProgress(offer, item);
+  const orderFlag = orderProgress.label
+    ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">→ OBJ</span>`
+    : "";
+  return `<article class="offer-item ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
     <div class="offer-item-head">
-      <span class="thumb">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(offerItemName(item)))}</span>
+      <span class="thumb offer-thumb-wrap">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(offerItemName(item)))}${orderFlag}</span>
       <div>
         <strong>${escapeHtml(offerItemName(item))}</strong>
         <small>${total || 0} ks · ${formatMoney(item.price, item.currency || "CZK")} / ks</small>
@@ -818,6 +831,7 @@ function reservationLineMarkup(offer, item, reservation) {
     <strong>${escapeHtml(customerName(customer) || "Bez zákazníka")}</strong>
     <span>${number(reservation.quantity) || 1} ks</span>
     <span class="pill ${status === "alternate" ? "warn" : "ok"}">${status === "alternate" ? "Náhradník" : "Potvrzeno"}</span>
+    ${reservationLinkedToOrder(offer, item, reservation) ? `<span class="pill ok">Objednávka</span>` : ""}
     ${reservation.note ? `<small>${escapeHtml(reservation.note)}</small>` : ""}
     <span class="reservation-line-actions">
       <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-edit-reservation="${reservationId}" title="Upravit rezervaci">✎</button>
@@ -1078,12 +1092,13 @@ function createOrdersFromOffer(id) {
   const grouped = new Map();
   reservations.forEach(({ item, reservation }) => {
     const key = reservation.customerId;
-    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, lines: [], total: 0 });
+    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, lines: [], total: 0, entries: [] });
     const group = grouped.get(key);
     const quantity = wholeNumber(reservation.quantity, 1);
     const price = number(item.price);
     group.lines.push(Number.isFinite(price) ? offerOrderLineText(offerItemName(item), quantity, price) : `${offerItemName(item)} ${quantity}x`);
     if (Number.isFinite(price)) group.total += price * quantity;
+    group.entries.push({ item, reservation });
   });
 
   const now = new Date().toISOString();
@@ -1093,8 +1108,9 @@ function createOrdersFromOffer(id) {
     const shippingFee = number(fees.shippingFee);
     const packingFee = number(fees.packingFee);
     const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
+    const orderId = uid();
     state.data.orders.push(normalizeOrder({
-      id: uid(),
+      id: orderId,
       offerId: offer.id,
       customerId: group.customerId,
       orderDate: offer.date || todayInput(),
@@ -1109,6 +1125,10 @@ function createOrdersFromOffer(id) {
       createdAt: now,
       updatedAt: now,
     }));
+    group.entries.forEach(({ reservation }) => {
+      reservation.orderId = orderId;
+      reservation.orderCreatedAt = now;
+    });
     count += 1;
   });
 
@@ -2227,6 +2247,22 @@ async function copyOrderText(id) {
   toast("Text zkopírovaný.");
 }
 
+function toggleOrderPaymentTextSent(id, options = {}) {
+  const order = findById("orders", id);
+  if (!order) return;
+  if (clean(order.paymentTextSentAt)) {
+    order.paymentTextSentAt = "";
+    toast("Příznak odeslaného textu zrušen.");
+  } else {
+    order.paymentTextSentAt = new Date().toISOString();
+    toast("Text k zaplacení označen jako odeslaný.");
+  }
+  order.updatedAt = new Date().toISOString();
+  saveData();
+  if (!options.skipRender) render();
+  return Boolean(clean(order.paymentTextSentAt));
+}
+
 function buildCustomerOrderText(order, customer) {
   const settings = appSettings();
   const lines = clean(order.varietiesText).split(/\n+/).map(clean).filter(Boolean);
@@ -2412,7 +2448,7 @@ function normalizeCustomer(customer = {}) {
 }
 
 function normalizeOrder(order = {}) {
-  return { ...order, id: clean(order.id) || uid(), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), packingFee: normalizeAmount(order.packingFee), codFee: "", currency: "CZK", note: clean(order.note) };
+  return { ...order, id: clean(order.id) || uid(), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), packingFee: normalizeAmount(order.packingFee), codFee: "", currency: "CZK", note: clean(order.note) };
 }
 
 function normalizeVariety(variety = {}) {
@@ -2450,6 +2486,8 @@ function normalizeReservation(reservation = {}) {
     quantity: normalizeAmount(reservation.quantity) || "1",
     status: reservationStatusValue(reservation.status),
     note: clean(reservation.note),
+    orderId: clean(reservation.orderId),
+    orderCreatedAt: clean(reservation.orderCreatedAt),
   };
 }
 
@@ -2522,6 +2560,41 @@ function reservationAvailableQuantity(item = {}, excludeReservationId = "") {
     return reservationStatusValue(reservation.status) === "confirmed" ? sum + wholeNumber(reservation.quantity, 0) : sum;
   }, 0);
   return Math.max(0, total - confirmed);
+}
+
+function offerItemOrderKeys(item = {}) {
+  const variety = findById("varieties", item.varietyId) || findVarietyByName(item.varietyName);
+  return unique([offerItemName(item), item.varietyName, item.name, variety?.name].map(varietyNameMatchKey).filter(Boolean));
+}
+
+function orderContainsOfferItem(order = {}, item = {}) {
+  const keys = offerItemOrderKeys(item);
+  if (!keys.length) return false;
+  const orderKeys = orderVarietyNames(order).map(varietyNameMatchKey).filter(Boolean);
+  return keys.some((key) => orderKeys.includes(key));
+}
+
+function reservationLinkedToOrder(offer = {}, item = {}, reservation = {}) {
+  if (clean(reservation.orderId)) return true;
+  if (reservationStatusValue(reservation.status) !== "confirmed") return false;
+  const offerId = clean(offer.id);
+  const customerId = clean(reservation.customerId);
+  if (!offerId || !customerId) return false;
+  return (state.data.orders || []).some((order) =>
+    clean(order.offerId) === offerId &&
+    clean(order.customerId) === customerId &&
+    orderContainsOfferItem(order, item),
+  );
+}
+
+function offerItemOrderProgress(offer = {}, item = {}) {
+  const confirmed = (item.reservations || []).filter((reservation) => reservationStatusValue(reservation.status) === "confirmed");
+  const confirmedQuantity = confirmed.reduce((sum, reservation) => sum + wholeNumber(reservation.quantity, 0), 0);
+  const orderedQuantity = confirmed.reduce((sum, reservation) =>
+    reservationLinkedToOrder(offer, item, reservation) ? sum + wholeNumber(reservation.quantity, 0) : sum, 0);
+  if (!confirmedQuantity || !orderedQuantity) return { state: "", label: "" };
+  if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednávce" };
+  return { state: "partial", label: "Částečně v objednávce" };
 }
 
 function offerItemAlternateCount(item = {}) {
@@ -2642,6 +2715,10 @@ function paymentPill(order) {
 
 function statusPill(order) {
   return { "nová": "Nová", "připraveno": "Připravená", "odesláno": "🚚 Odeslaná", zaplaceno: "Hotovo" }[order.shippingStatus] || "Nová";
+}
+
+function orderPaymentTextPill(order = {}) {
+  return clean(order.paymentTextSentAt) ? "Text odeslán" : "";
 }
 
 function crossLineage(cross) {
