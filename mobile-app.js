@@ -375,6 +375,14 @@ function renderSync() {
       <label class="field"><span>Zásilkovna ČR</span><input id="settingShippingCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeCz)}"></label>
       <label class="field"><span>Zásilkovna SK</span><input id="settingShippingSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeSk)}"></label>
     </div>
+    <div class="two">
+      <label class="field"><span>Balíkovna</span><input id="settingPostal" inputmode="decimal" value="${escapeHtml(settings.postalFee)}"></label>
+      <label class="field"><span>Zásilkovna na adresu</span><input id="settingShippingAddress" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddress)}"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Dobírka ČR</span><input id="settingCodCz" inputmode="decimal" value="${escapeHtml(settings.codFeeCz)}"></label>
+      <label class="field"><span>Dobírka Slovensko</span><input id="settingCodSk" inputmode="decimal" value="${escapeHtml(settings.codFeeSk)}"></label>
+    </div>
     <label class="field"><span>Balné</span><input id="settingPacking" inputmode="decimal" value="${escapeHtml(settings.packingFee)}"></label>
     <strong class="title small-title">Platba pro zákazníka</strong>
     <label class="field"><span>Jméno a příjmení</span><input id="settingPaymentName" value="${escapeHtml(settings.paymentAccountName)}"></label>
@@ -468,6 +476,113 @@ function orderTotalsText(orders = []) {
   return total > 0 ? formatMoney(total, "CZK") : "0 Kč";
 }
 
+function syncOrderSheetCustomerValidity(form = els.sheet.querySelector("#sheetForm")) {
+  const customerSelect = form?.elements?.customerId;
+  if (!customerSelect) return;
+  customerSelect.setCustomValidity(clean(customerSelect.value) ? "" : "Zvol zákazníka.");
+}
+
+function shippingLabel(customer) {
+  const country = normalize(clean(customer?.country || ""));
+  if (country.includes("slovensko")) return "Zásilkovna Slovensko";
+  if (country.includes("cesko") || country.includes("česko")) return "Zásilkovna ČR";
+  return "Zásilkovna";
+}
+
+function defaultShippingPresetForCustomer(customer = null) {
+  const country = normalize(clean(customer?.country || ""));
+  if (country.includes("slovensko")) return "shipping-sk";
+  if (country.includes("cesko") || country.includes("česko")) return "shipping-cz";
+  return "";
+}
+
+function isCountryDefaultShippingPreset(preset) {
+  return preset === "shipping-cz" || preset === "shipping-sk";
+}
+
+function orderShippingLabel(order, customer = findCustomer(order?.customerId)) {
+  return clean(order?.shippingFeeLabel) || shippingLabel(customer);
+}
+
+function defaultCodFeeForCustomer(settings = appSettings(), customer = null) {
+  const country = normalize(clean(customer?.country || ""));
+  if (country.includes("slovensko")) return settings.codFeeSk;
+  if (country.includes("cesko") || country.includes("česko")) return settings.codFeeCz;
+  return settings.codFeeCz || "";
+}
+
+function recalculateOrderSheetPrice(form = document.querySelector("#sheetForm")) {
+  if (!form?.elements) return;
+  const shippingFee = number(form.elements.shippingFee?.value);
+  const packingFee = number(form.elements.packingFee?.value);
+  const codFee = number(form.elements.codFee?.value);
+  const feeTotal =
+    (Number.isFinite(shippingFee) ? shippingFee : 0)
+    + (Number.isFinite(packingFee) ? packingFee : 0)
+    + (Number.isFinite(codFee) ? codFee : 0);
+  form.elements.price.value = normalizeAmount(orderTotalFromText(form.elements.varietiesText?.value) + feeTotal);
+}
+
+function clearOrderSheetFeeRestoreSnapshot(form = document.querySelector("#sheetForm")) {
+  if (form) delete form.dataset.deliveryRestoreFees;
+}
+
+function rememberOrderSheetFeeRestoreSnapshot(form = document.querySelector("#sheetForm")) {
+  if (!form?.elements) return;
+  const snapshot = {
+    activeFees: [...els.sheet.querySelectorAll("[data-fee].active")]
+      .map((button) => button.dataset.fee || "")
+      .filter(Boolean),
+    shippingFee: clean(form.elements.shippingFee?.value),
+    shippingFeeLabel: clean(form.elements.shippingFeeLabel?.value),
+    packingFee: clean(form.elements.packingFee?.value),
+    codFee: clean(form.elements.codFee?.value),
+  };
+  const hasValues = snapshot.activeFees.length || snapshot.shippingFee || snapshot.shippingFeeLabel || snapshot.packingFee || snapshot.codFee;
+  if (!hasValues) {
+    clearOrderSheetFeeRestoreSnapshot(form);
+    return;
+  }
+  form.dataset.deliveryRestoreFees = JSON.stringify(snapshot);
+}
+
+function restoreOrderSheetFeeRestoreSnapshot(form = document.querySelector("#sheetForm")) {
+  const raw = clean(form?.dataset?.deliveryRestoreFees);
+  if (!form?.elements || !raw) return false;
+  try {
+    const snapshot = JSON.parse(raw);
+    els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+    (Array.isArray(snapshot.activeFees) ? snapshot.activeFees : []).forEach((fee) => {
+      els.sheet.querySelector(`[data-fee="${CSS.escape(fee)}"]`)?.classList.add("active");
+    });
+    form.elements.shippingFee.value = clean(snapshot.shippingFee);
+    form.elements.shippingFeeLabel.value = clean(snapshot.shippingFeeLabel);
+    form.elements.packingFee.value = clean(snapshot.packingFee);
+    form.elements.codFee.value = clean(snapshot.codFee);
+    return true;
+  } catch {
+    clearOrderSheetFeeRestoreSnapshot(form);
+    return false;
+  }
+}
+
+function syncOrderSheetCountryShippingPreset(form = document.querySelector("#sheetForm")) {
+  if (!form?.elements) return;
+  const nextPreset = defaultShippingPresetForCustomer(findCustomer(form.elements.customerId?.value));
+  if (!nextPreset) return;
+  const shippingButtons = [...els.sheet.querySelectorAll("[data-fee]")].filter((button) => {
+    const preset = button.dataset.fee || "";
+    return preset.startsWith("shipping");
+  });
+  const activeButton = shippingButtons.find((button) => button.classList.contains("active"));
+  const activePreset = activeButton?.dataset.fee || "";
+  if (!isCountryDefaultShippingPreset(activePreset) || activePreset === nextPreset) return;
+  shippingButtons.forEach((button) => {
+    if (isCountryDefaultShippingPreset(button.dataset.fee || "")) button.classList.remove("active");
+  });
+  shippingButtons.find((button) => button.dataset.fee === nextPreset)?.classList.add("active");
+}
+
 function openCustomerSheet(id = "") {
   const customer = findById("customers", id) || {};
   openSheet(customer.id ? "Upravit zákazníka" : "Nový zákazník", `${customer.id ? customerOverviewMarkup(customer.id) : ""}<form class="form-grid" id="sheetForm">
@@ -510,17 +625,27 @@ function openCustomerSheet(id = "") {
 function openOrderSheet(id = "", customerId = "") {
   const order = findById("orders", id) || {};
   const customers = state.data.customers;
+  const selectedCustomerId = clean(order.customerId || customerId);
+  const selectedCustomer = findCustomer(selectedCustomerId);
+  const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
   openSheet(order.id ? "Upravit objednávku" : "Nová objednávka", `<form class="form-grid" id="sheetForm">
     <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
-    <label class="field"><span>Zákazník</span><select name="customerId" required>${customers.map((customer) => `<option value="${escapeHtml(customer.id)}" ${(order.customerId || customerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`).join("")}</select></label>
+    <label class="field"><span>Zákazník</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zákazníka</option>${customers
+      .slice()
+      .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+      .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+      .join("")}</select></label>
     <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
     ${toggle("paymentStatus", [["čeká", "Čeká"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "čeká")}
     ${toggle("shippingStatus", [["nová", "Nová"], ["připraveno", "Připravená"], ["odesláno", "Odeslaná"], ["zaplaceno", "Vyřízená"]], order.shippingStatus || "nová")}
     ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "Osobní odběr"]], order.deliveryMethod || "ship")}
     <div class="toggle-grid">
-      <button class="chip-button ${clean(order.shippingFee) === appSettings().shippingFeeCz ? "active" : ""}" type="button" data-fee="shipping-cz">Zásilkovna ČR · ${escapeHtml(appSettings().shippingFeeCz || "89")} Kč</button>
-      <button class="chip-button ${clean(order.shippingFee) === appSettings().shippingFeeSk ? "active" : ""}" type="button" data-fee="shipping-sk">Zásilkovna SK · ${escapeHtml(appSettings().shippingFeeSk || "99")} Kč</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna ČR" ? "active" : ""}" type="button" data-fee="shipping-cz">Zásilkovna ČR · ${escapeHtml(appSettings().shippingFeeCz || "89")} Kč</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">Zásilkovna SK · ${escapeHtml(appSettings().shippingFeeSk || "99")} Kč</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Balíkovna" ? "active" : ""}" type="button" data-fee="shipping-post">Balíkovna · ${escapeHtml(appSettings().postalFee || "")} Kč</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna na adresu" ? "active" : ""}" type="button" data-fee="shipping-address">Zásilkovna na adresu · ${escapeHtml(appSettings().shippingFeeAddress || "")} Kč</button>
       <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">Balné · ${escapeHtml(appSettings().packingFee || "20")} Kč</button>
+      <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">Dobírka · ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} Kč</button>
       ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "✓ Text odeslán" : "Text odeslán"}</button>` : ""}
     </div>
     <label class="field"><span>Odrůdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 Kč">${escapeHtml(order.varietiesText)}</textarea></label>
@@ -528,7 +653,9 @@ function openOrderSheet(id = "", customerId = "") {
     <label class="field"><span>Celkem Kč</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
     <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
     <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+    <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
     <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+    <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
   </form>`, () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
@@ -545,7 +672,9 @@ function openOrderSheet(id = "", customerId = "") {
       varietiesText: clean(data.get("varietiesText")),
       price: clean(data.get("price")),
       shippingFee: clean(data.get("shippingFee")),
+      shippingFeeLabel: clean(data.get("shippingFeeLabel")),
       packingFee: clean(data.get("packingFee")),
+      codFee: clean(data.get("codFee")),
       note: clean(data.get("note")),
       createdAt: order.createdAt || now,
       updatedAt: now,
@@ -554,8 +683,44 @@ function openOrderSheet(id = "", customerId = "") {
   });
   bindToggles();
   bindFees();
+  els.sheet.querySelector("#sheetForm")?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+  syncOrderSheetCustomerValidity();
   syncOrderSheetAlternates();
-  els.sheet.querySelector('[name="customerId"]')?.addEventListener("change", () => syncOrderSheetAlternates());
+  els.sheet.querySelector('[name="varietiesText"]')?.addEventListener("input", () => recalculateOrderSheetPrice());
+  els.sheet.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+    const form = els.sheet.querySelector("#sheetForm");
+    syncOrderSheetCustomerValidity();
+    if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+      clearOrderSheetFeeRestoreSnapshot(form);
+    } else {
+      syncOrderSheetCountryShippingPreset(form);
+    }
+    form?.__syncFeeButtons?.();
+    syncOrderSheetAlternates();
+  });
+  els.sheet.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+    const form = els.sheet.querySelector("#sheetForm");
+    if (!form?.elements) return;
+    const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+    if (form.elements.deliveryMethod.value === "personal_pickup") {
+      if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+      els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+      form.elements.shippingFee.value = "";
+      form.elements.shippingFeeLabel.value = "";
+      form.elements.packingFee.value = "";
+      form.elements.codFee.value = "";
+      recalculateOrderSheetPrice(form);
+    } else if (previousDelivery === "personal_pickup") {
+      const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+      if (!restored) form.__syncFeeButtons?.();
+      recalculateOrderSheetPrice(form);
+    }
+    form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+  });
+  els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+    syncOrderSheetCustomerValidity();
+    if (!clean(els.sheet.querySelector('[name="customerId"]')?.value)) toast("Zvol zákazníka.");
+  });
   els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
     event.preventDefault();
     const button = event.currentTarget;
@@ -1149,6 +1314,7 @@ function createOrdersFromOffer(id) {
       shippingStatus: "nová",
       deliveryMethod: "ship",
       shippingFee: Number.isFinite(shippingFee) ? fees.shippingFee : "",
+      shippingFeeLabel: Number.isFinite(shippingFee) ? fees.shippingFeeLabel : "",
       packingFee: Number.isFinite(packingFee) ? fees.packingFee : "",
       note: `Z nabídky: ${offer.title}`,
       createdAt: now,
@@ -1655,6 +1821,15 @@ function buildFacebookOfferText(offer) {
 }
 
 function defaultFacebookOfferTemplate(settings = appSettings()) {
+  const feeLines = [
+    `• balné: ${formatMoney(settings.packingFee || 20, "CZK")}`,
+    `• Zásilkovna ČR: ${formatMoney(settings.shippingFeeCz || 89, "CZK")}`,
+    `• Zásilkovna SK: ${formatMoney(settings.shippingFeeSk || 99, "CZK")}`,
+    clean(settings.shippingFeeAddress) ? `• Zásilkovna na adresu: ${formatMoney(settings.shippingFeeAddress, "CZK")}` : "",
+    clean(settings.postalFee) ? `• Balíkovna: ${formatMoney(settings.postalFee, "CZK")}` : "",
+    clean(settings.codFeeCz) ? `• dobírka ČR: ${formatMoney(settings.codFeeCz, "CZK")}` : "",
+    clean(settings.codFeeSk) ? `• dobírka Slovensko: ${formatMoney(settings.codFeeSk, "CZK")}` : "",
+  ].filter(Boolean);
   return [
     "🌿 Nabídka afrických kopřiv (Coleus) 🌿",
     "Nabízím řízky afrických kopřiv, některé mají kořínky.",
@@ -1678,9 +1853,7 @@ function defaultFacebookOfferTemplate(settings = appSettings()) {
     "• adresu do Zásilkovny",
     "",
     "📦 Cena dopravy:",
-    `• balné: ${formatMoney(settings.packingFee || 20, "CZK")}`,
-    `• Zásilkovna ČR: ${formatMoney(settings.shippingFeeCz || 89, "CZK")}`,
-    `• Zásilkovna SK: ${formatMoney(settings.shippingFeeSk || 99, "CZK")}`,
+    ...feeLines,
     "",
     "🚚 Odesílám po celé ČR, Slovensku i do Evropy.",
     "Přeji krásný rostlinný lov 🌿💚",
@@ -1788,13 +1961,14 @@ async function supabasePhotoRefToFile(ref, ownerName = "fotka") {
 
 function defaultOfferOrderFees(customerId) {
   const settings = appSettings();
-  const country = normalize(findCustomer(customerId)?.country);
+  const customer = findCustomer(customerId);
+  const country = normalize(customer?.country);
   const shippingFee = country.includes("slovensko")
     ? settings.shippingFeeSk
     : country.includes("cesko") || country.includes("česko")
       ? settings.shippingFeeCz
       : "";
-  return { shippingFee: shippingFee || "", packingFee: settings.packingFee || "" };
+  return { shippingFee: shippingFee || "", shippingFeeLabel: shippingLabel(customer), packingFee: settings.packingFee || "" };
 }
 
 function openSheet(title, body, onSave, customFooter = "", options = {}) {
@@ -1865,26 +2039,75 @@ function toggleTitle(name) {
   return { paymentStatus: "Platba", shippingStatus: "Objednávka", deliveryMethod: "Doprava", stage: "Fáze", resultRating: "Výsledek", status: "Stav" }[name] || name;
 }
 
+function setSheetToggleValue(name, value) {
+  const group = els.sheet.querySelector(`[data-toggle="${name}"]`);
+  if (!group) return;
+  const input = group.querySelector("input");
+  const previousValue = input?.value;
+  if (input) input.value = value;
+  group.querySelectorAll("[data-toggle-value]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.toggleValue === value);
+  });
+  if (input && previousValue !== value) {
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+
 function bindToggles() {
   els.sheet.querySelectorAll("[data-toggle]").forEach((group) => {
     group.querySelectorAll("[data-toggle-value]").forEach((button) => button.addEventListener("click", () => {
-      group.querySelector("input").value = button.dataset.toggleValue;
-      group.querySelectorAll("[data-toggle-value]").forEach((item) => item.classList.toggle("active", item === button));
+      setSheetToggleValue(group.dataset.toggle || "", button.dataset.toggleValue);
       renderCrossPreviewInSheet();
     }));
   });
 }
 
 function bindFees() {
-  els.sheet.querySelectorAll("[data-fee]").forEach((button) => button.addEventListener("click", () => {
-    button.classList.toggle("active");
+  const shippingPresets = {
+    "shipping-cz": { amountKey: "shippingFeeCz", label: "Zásilkovna ČR" },
+    "shipping-sk": { amountKey: "shippingFeeSk", label: "Zásilkovna Slovensko" },
+    "shipping-post": { amountKey: "postalFee", label: "Balíkovna" },
+    "shipping-address": { amountKey: "shippingFeeAddress", label: "Zásilkovna na adresu" },
+  };
+  const syncFees = () => {
     const form = document.querySelector("#sheetForm");
+    if (!form) return;
     const settings = appSettings();
-    const shipping = [...els.sheet.querySelectorAll("[data-fee].active")].some((item) => item.dataset.fee === "shipping-cz") ? (settings.shippingFeeCz || "89")
-      : [...els.sheet.querySelectorAll("[data-fee].active")].some((item) => item.dataset.fee === "shipping-sk") ? (settings.shippingFeeSk || "99") : "";
-    form.elements.shippingFee.value = shipping;
-    form.elements.packingFee.value = [...els.sheet.querySelectorAll("[data-fee].active")].some((item) => item.dataset.fee === "packing") ? (settings.packingFee || "20") : "";
+    const customer = findCustomer(form.elements.customerId?.value);
+    const activeButtons = [...els.sheet.querySelectorAll("[data-fee].active")];
+    if (activeButtons.length && form.elements.deliveryMethod?.value === "personal_pickup") {
+      setSheetToggleValue("deliveryMethod", "ship");
+    }
+    const activeShippingPreset = activeButtons.find((item) => shippingPresets[item.dataset.fee || ""]);
+    if (activeShippingPreset) {
+      const preset = shippingPresets[activeShippingPreset.dataset.fee];
+      form.elements.shippingFee.value = settings[preset.amountKey] || "";
+      form.elements.shippingFeeLabel.value = preset.label;
+    } else {
+      form.elements.shippingFee.value = "";
+      form.elements.shippingFeeLabel.value = "";
+    }
+    form.elements.packingFee.value = activeButtons.some((item) => item.dataset.fee === "packing") ? (settings.packingFee || "20") : "";
+    form.elements.codFee.value = activeButtons.some((item) => item.dataset.fee === "cod") ? (defaultCodFeeForCustomer(settings, customer) || "") : "";
+    recalculateOrderSheetPrice(form);
+  };
+  const form = document.querySelector("#sheetForm");
+  if (form) form.__syncFeeButtons = syncFees;
+  els.sheet.querySelectorAll("[data-fee]").forEach((button) => button.addEventListener("click", () => {
+    const preset = button.dataset.fee || "";
+    if (shippingPresets[preset]) {
+      const wasActive = button.classList.contains("active");
+      els.sheet.querySelectorAll("[data-fee]").forEach((item) => {
+        if (shippingPresets[item.dataset.fee || ""]) item.classList.remove("active");
+      });
+      button.classList.toggle("active", !wasActive);
+    } else {
+      button.classList.toggle("active");
+    }
+    syncFees();
   }));
+  syncFees();
 }
 
 function bindPhotoGrid() {
@@ -2324,21 +2547,16 @@ function orderFeeLines(order, customer) {
   const currency = "CZK";
   const shipping = number(order.shippingFee);
   const packing = number(order.packingFee);
+  const cod = number(order.codFee);
   const parts = [];
-  if (Number.isFinite(shipping) && shipping > 0) parts.push(`${shippingLabel(customer)} ${formatMoney(shipping, currency)}`);
+  if (Number.isFinite(shipping) && shipping > 0) parts.push(`${orderShippingLabel(order, customer)} ${formatMoney(shipping, currency)}`);
   if (Number.isFinite(packing) && packing > 0) parts.push(`Balné ${formatMoney(packing, currency)}`);
+  if (Number.isFinite(cod) && cod > 0) parts.push(`Dobírka ${formatMoney(cod, currency)}`);
   normalizeNamedFees(order.extraFees).forEach((fee) => {
     const amount = number(fee.amount);
     if (clean(fee.name) && Number.isFinite(amount) && amount > 0) parts.push(`${fee.name} ${formatMoney(amount, currency)}`);
   });
   return parts;
-}
-
-function shippingLabel(customer) {
-  const country = normalize(clean(customer?.country || ""));
-  if (country.includes("slovensko")) return "Zásilkovna Slovensko";
-  if (country.includes("cesko") || country.includes("česko")) return "Zásilkovna ČR";
-  return "Zásilkovna";
 }
 
 function orderFinalTotal(order) {
@@ -2438,7 +2656,11 @@ function appSettings() {
     ...settings,
     shippingFeeCz: normalizeAmount(settings.shippingFeeCz ?? settings.shippingFee),
     shippingFeeSk: normalizeAmount(settings.shippingFeeSk),
+    postalFee: normalizeAmount(settings.postalFee ?? settings.postageFee),
+    shippingFeeAddress: normalizeAmount(settings.shippingFeeAddress ?? settings.shippingFeeHome ?? settings.shippingFeeAddressHome),
     packingFee: normalizeAmount(settings.packingFee),
+    codFeeCz: normalizeAmount(settings.codFeeCz ?? settings.codFee),
+    codFeeSk: normalizeAmount(settings.codFeeSk),
     paymentAccountName: clean(settings.paymentAccountName),
     paymentAccountNumber: clean(settings.paymentAccountNumber),
     paymentIban: clean(settings.paymentIban),
@@ -2455,7 +2677,11 @@ function saveAppSettingsFromInputs() {
     ...current,
     shippingFeeCz: normalizeAmount(document.querySelector("#settingShippingCz")?.value),
     shippingFeeSk: normalizeAmount(document.querySelector("#settingShippingSk")?.value),
+    postalFee: normalizeAmount(document.querySelector("#settingPostal")?.value),
+    shippingFeeAddress: normalizeAmount(document.querySelector("#settingShippingAddress")?.value),
     packingFee: normalizeAmount(document.querySelector("#settingPacking")?.value),
+    codFeeCz: normalizeAmount(document.querySelector("#settingCodCz")?.value),
+    codFeeSk: normalizeAmount(document.querySelector("#settingCodSk")?.value),
     currency: "CZK",
     paymentAccountName: clean(document.querySelector("#settingPaymentName")?.value),
     paymentAccountNumber: clean(document.querySelector("#settingPaymentAccount")?.value),
@@ -2477,7 +2703,7 @@ function normalizeCustomer(customer = {}) {
 }
 
 function normalizeOrder(order = {}) {
-  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), packingFee: normalizeAmount(order.packingFee), codFee: "", currency: "CZK", note: clean(order.note) };
+  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
 }
 
 function normalizeVariety(variety = {}) {

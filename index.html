@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260527-56" />
+    <link rel="stylesheet" href="styles.css?v=20260530-57" />
   </head>
   <body>
     <div class="app-shell">
@@ -427,8 +427,24 @@
                   <input id="defaultShippingFeeSk" inputmode="decimal" placeholder="0" />
                 </label>
                 <label>
+                  <span>Balíkovna</span>
+                  <input id="defaultPostalFee" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Zásilkovna na adresu</span>
+                  <input id="defaultShippingFeeAddress" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
                   <span>Balné</span>
                   <input id="defaultPackingFee" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Dobírka ČR</span>
+                  <input id="defaultCodFeeCz" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Dobírka Slovensko</span>
+                  <input id="defaultCodFeeSk" inputmode="decimal" placeholder="0" />
                 </label>
                 <label>
                   <span>Měna</span>
@@ -624,7 +640,10 @@
               <div class="order-fee-preset-strip order-fee-preset-strip-inline" role="group" aria-label="Dopravní poplatky">
                 <button class="button ghost" type="button" data-order-fee-preset="shipping-cz">Zásilkovna ČR</button>
                 <button class="button ghost" type="button" data-order-fee-preset="shipping-sk">Zásilkovna SK</button>
+                <button class="button ghost" type="button" data-order-fee-preset="shipping-post">Balíkovna</button>
+                <button class="button ghost" type="button" data-order-fee-preset="shipping-address">Zásilkovna na adresu</button>
                 <button class="button ghost" type="button" data-order-fee-preset="packing">Balné</button>
+                <button class="button ghost" type="button" data-order-fee-preset="cod">Dobírka</button>
               </div>
             </div>
             <select name="deliveryMethod" hidden aria-hidden="true" tabindex="-1">
@@ -1055,13 +1074,13 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260527-56" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260527-56" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260527-56" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260527-56" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260527-56" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260527-56" charset="utf-8"></script>
-    <script src="app.js?v=20260527-56" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-setup.js?v=20260530-57" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260530-57" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260530-57" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260530-57" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260530-57" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260530-57" charset="utf-8"></script>
+    <script src="app.js?v=20260530-57" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;
