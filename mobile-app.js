@@ -7,6 +7,7 @@ const PHOTO_BLOB_STORE = "photos";
 const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
+const SUPABASE_SYNC_DIRTY_KEY = `${STORE_KEY}:sync-dirty-at`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
 const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
@@ -87,7 +88,12 @@ function init() {
   window.setInterval(maybeAutoPull, 8000);
   if (!isSyncLoggedIn()) state.view = "sync";
   render();
-  maybeAutoPull();
+  if (hasPendingSync()) {
+    state.syncDirty = true;
+    scheduleAutoSync();
+  } else {
+    maybeAutoPull();
+  }
 }
 
 function handleGlobalClick(event) {
@@ -2313,10 +2319,14 @@ function fallbackCopyText(text) {
 
 function loadData() {
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED && localStorage.getItem(SEED_SIGNATURE_KEY) !== SEED_SIGNATURE) {
-    const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
-    localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
-    localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
-    return seeded;
+    if (localStorage.getItem(STORE_KEY) && currentSyncDirtyAt()) {
+      localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+    } else {
+      const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
+      localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
+      localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      return seeded;
+    }
   }
   const key = [STORE_KEY, ...LEGACY_STORE_KEYS].find((item) => localStorage.getItem(item));
   if (key) {
@@ -2337,6 +2347,7 @@ function loadData() {
 function saveData(options = {}) {
   localStorage.setItem(STORE_KEY, JSON.stringify(state.data));
   if (!options.skipAutoSync) {
+    markSyncDirty();
     state.syncRevision += 1;
     scheduleAutoSync();
   }
@@ -3057,11 +3068,13 @@ async function pushSync(options = {}) {
   saveSyncConfigFromInputs();
   if (!state.syncPassword) return toast("Doplň šifrovací heslo.");
   if (state.syncRunning) {
-    state.syncDirty = true;
+    markSyncDirty();
     return false;
   }
+  state.syncTimer = null;
   state.syncRunning = true;
   const startedRevision = state.syncRevision;
+  const startedDirtyAt = currentSyncDirtyAt();
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
@@ -3081,7 +3094,7 @@ async function pushSync(options = {}) {
     state.syncVerifiedPassword = state.syncPassword;
     cleanupStorage(session.user?.id || "user", collectPhotoPaths(data)).catch((error) => console.warn("Storage cleanup skipped", error));
     saveSyncConfig({ lastPushedAt: updatedAt });
-    state.syncDirty = state.syncRevision !== startedRevision;
+    clearSyncDirtyIfUnchanged(startedDirtyAt, startedRevision);
     updateSyncIndicator();
     if (!options.silent) toast("Odesláno do cloudu.");
     return true;
@@ -3092,13 +3105,19 @@ async function pushSync(options = {}) {
     return false;
   } finally {
     state.syncRunning = false;
-    if (state.syncDirty && loadSyncConfig().autoSync) scheduleAutoSync();
+    if (hasPendingSync() && loadSyncConfig().autoSync) scheduleAutoSync();
   }
 }
 
 async function pullSync(options = {}) {
   saveSyncConfigFromInputs();
   if (!state.syncPassword) return toast("Doplň šifrovací heslo.");
+  if (!options.verify && hasPendingSync()) {
+    updateSyncIndicator();
+    if (loadSyncConfig().autoSync && !state.syncTimer) scheduleAutoSync();
+    if (!options.silent) toast("Nejdřív odešli lokální změny do cloudu.");
+    return false;
+  }
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
@@ -3172,6 +3191,9 @@ function updateSyncIndicator(status = "") {
   } else if (status === "error") {
     text = "Sync chyba";
     stateClass = "error";
+  } else if (hasPendingSync()) {
+    text = "Čeká na sync";
+    stateClass = "working";
   }
   els.syncIndicator.textContent = text;
   els.syncIndicator.dataset.status = stateClass;
@@ -3184,16 +3206,59 @@ function latestSyncTimestamp(...values) {
     .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
 }
 
+function currentSyncDirtyAt() {
+  try {
+    return clean(localStorage.getItem(SUPABASE_SYNC_DIRTY_KEY));
+  } catch {
+    return "";
+  }
+}
+
+function hasPendingSync() {
+  return Boolean(state.syncDirty || currentSyncDirtyAt());
+}
+
+function markSyncDirty() {
+  state.syncDirty = true;
+  try {
+    localStorage.setItem(SUPABASE_SYNC_DIRTY_KEY, new Date().toISOString());
+  } catch {
+    // In-memory dirty state still protects this tab if storage is unavailable.
+  }
+}
+
+function clearSyncDirtyIfUnchanged(startedDirtyAt = "", startedRevision = state.syncRevision) {
+  const currentDirtyAt = currentSyncDirtyAt();
+  if (state.syncRevision !== startedRevision || (currentDirtyAt && currentDirtyAt !== startedDirtyAt)) {
+    state.syncDirty = true;
+    return false;
+  }
+  state.syncDirty = false;
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+  } catch {
+    // ignore localStorage availability issues
+  }
+  return true;
+}
+
 function scheduleAutoSync() {
   if (!loadSyncConfig().autoSync) return;
-  state.syncDirty = true;
+  markSyncDirty();
   clearTimeout(state.syncTimer);
-  state.syncTimer = setTimeout(() => pushSync({ silent: true }), 5000);
+  state.syncTimer = setTimeout(() => {
+    state.syncTimer = null;
+    pushSync({ silent: true });
+  }, 5000);
 }
 
 async function maybeAutoPull() {
   const config = loadSyncConfig();
-  if (!config.autoSync || !state.syncPassword || state.syncRunning || state.syncDirty) return;
+  if (!config.autoSync || !state.syncPassword || state.syncRunning) return;
+  if (hasPendingSync()) {
+    if (!state.syncTimer) scheduleAutoSync();
+    return;
+  }
   await pullSync({ silent: true });
 }
 

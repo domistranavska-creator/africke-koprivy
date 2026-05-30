@@ -22,6 +22,7 @@ const MOBILE_PHOTO_EXPORT_TYPE = "africke-koprivy-mobile-photo-export-v1";
 const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
+const SUPABASE_SYNC_DIRTY_KEY = `${STORE_KEY}:supabase-sync-dirty-at`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
 const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
@@ -731,6 +732,10 @@ function init() {
   if (!isSupabaseSyncLoggedIn()) setView("settings");
   renderAll();
   restorePhotoFolder();
+  if (hasPendingSupabaseSync()) {
+    updateSupabaseSyncStatus("Čeká na odeslání lokální změny.");
+    scheduleAutoSupabaseSync("retry");
+  }
   // Kurzy se načítají až při práci s konkrétní objednávkou, aby start appky nečekal na síť.
 }
 
@@ -755,10 +760,14 @@ function loadData() {
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED) {
     const storedSeedSignature = localStorage.getItem(SEED_SIGNATURE_KEY);
     if (storedSeedSignature !== SEED_SIGNATURE) {
-      const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
-      localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
-      localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
-      return seeded;
+      if (localStorage.getItem(STORE_KEY) && currentSupabaseSyncDirtyAt()) {
+        localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      } else {
+        const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
+        localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
+        localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+        return seeded;
+      }
     }
   }
 
@@ -952,7 +961,10 @@ function fallbackData() {
 function saveData(options = {}) {
   invalidateDerivedCache();
   localStorage.setItem(STORE_KEY, JSON.stringify(state.data));
-  if (!options.skipAutoSync) scheduleAutoSupabaseSync("save");
+  if (!options.skipAutoSync) {
+    markSupabaseSyncDirty();
+    scheduleAutoSupabaseSync("save");
+  }
 }
 
 function invalidateDerivedCache() {
@@ -7199,6 +7211,12 @@ function updateSupabaseSyncStatus(message = "") {
     els.syncStatus.textContent = "Nastavení uložené, ještě se přihlas.";
     return;
   }
+  if (hasPendingSupabaseSync()) {
+    els.syncStatus.textContent = "Čeká na odeslání lokální změny.";
+    updateSupabaseSyncFloat(els.syncStatus.textContent);
+    updateSupabaseSyncPanelMode();
+    return;
+  }
   const auto = config.autoSync ? " Automatický sync je zapnutý." : "";
   const key = currentSupabaseEncryptionPassword() ? "" : " Pro automatický sync zadej šifrovací heslo.";
   els.syncStatus.textContent = `Přihlášeno. Sync je připravený.${auto}${key}`;
@@ -7218,11 +7236,12 @@ function updateSupabaseSyncFloat(text = "") {
   let shortText = last ? `Syncnuto ${formatTime(last)}` : `Syncnuto ${formatTime(new Date())}`;
   if (/selhalo|nepoda|chybi|chyba/.test(normalizedSource)) shortText = "Sync chyba";
   else if (/odesil|nahrav|stah|kontrol|sifruj|desifruj|prihlasuj|vytvarim/.test(normalizedSource)) shortText = "Syncuji...";
+  else if (hasPendingSupabaseSync()) shortText = "Čeká na sync";
   else if (!session.accessToken) shortText = "Sync vypnutý";
   els.syncFloat.textContent = shortText;
   const normalized = normalize(shortText);
   els.syncFloat.classList.toggle("is-error", /selhalo|nepoda|chybi|chyba/.test(normalized));
-  els.syncFloat.classList.toggle("is-working", /syncuji/.test(normalized));
+  els.syncFloat.classList.toggle("is-working", /syncuji|ceka/.test(normalized));
   els.syncFloat.classList.toggle("is-off", /vypnuty/.test(normalized));
 }
 
@@ -7231,6 +7250,42 @@ function latestSyncTimestamp(...values) {
     .map(clean)
     .filter(Boolean)
     .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
+}
+
+function currentSupabaseSyncDirtyAt() {
+  try {
+    return clean(localStorage.getItem(SUPABASE_SYNC_DIRTY_KEY));
+  } catch {
+    return "";
+  }
+}
+
+function hasPendingSupabaseSync() {
+  return Boolean(state.supabaseSyncDirty || currentSupabaseSyncDirtyAt());
+}
+
+function markSupabaseSyncDirty() {
+  state.supabaseSyncDirty = true;
+  try {
+    localStorage.setItem(SUPABASE_SYNC_DIRTY_KEY, new Date().toISOString());
+  } catch {
+    // In-memory dirty state still protects this tab if storage is unavailable.
+  }
+}
+
+function clearSupabaseSyncDirtyIfUnchanged(startedDirtyAt = "") {
+  const currentDirtyAt = currentSupabaseSyncDirtyAt();
+  if (currentDirtyAt && currentDirtyAt !== startedDirtyAt) {
+    state.supabaseSyncDirty = true;
+    return false;
+  }
+  state.supabaseSyncDirty = false;
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+  } catch {
+    // ignore localStorage availability issues
+  }
+  return true;
 }
 
 function updateSupabaseSyncPanelMode() {
@@ -7267,7 +7322,7 @@ function canAutoSupabaseSync() {
 function scheduleAutoSupabaseSync(reason = "") {
   const config = loadSupabaseSyncConfig();
   if (!config.autoSync || state.supabaseSyncMuted) return;
-  state.supabaseSyncDirty = true;
+  markSupabaseSyncDirty();
   window.clearTimeout(state.supabaseSyncTimer);
   if (!canAutoSupabaseSync()) {
     if (reason === "save") updateSupabaseSyncStatus("Změna je uložená lokálně. Pro automatický sync se přihlas a zadej šifrovací heslo.");
@@ -7278,13 +7333,17 @@ function scheduleAutoSupabaseSync(reason = "") {
 }
 
 async function runAutoSupabaseSync() {
-  if (!state.supabaseSyncDirty || state.supabaseSyncRunning || state.supabasePullRunning || !canAutoSupabaseSync()) return;
-  state.supabaseSyncDirty = false;
+  state.supabaseSyncTimer = null;
+  if (!hasPendingSupabaseSync() || state.supabaseSyncRunning || state.supabasePullRunning || !canAutoSupabaseSync()) return;
   await pushSupabaseSync({ auto: true, silent: true });
 }
 
 async function maybeAutoPullSupabaseSync() {
-  if (state.supabasePullRunning || state.supabaseSyncRunning || state.supabaseSyncDirty || !canAutoSupabaseSync()) return;
+  if (state.supabasePullRunning || state.supabaseSyncRunning || !canAutoSupabaseSync()) return;
+  if (hasPendingSupabaseSync()) {
+    if (!state.supabaseSyncTimer) scheduleAutoSupabaseSync("retry");
+    return;
+  }
   await pullSupabaseSync({ auto: true, silent: true });
 }
 
@@ -7369,6 +7428,7 @@ function logoutSupabaseSync() {
 }
 
 async function pushSupabaseSync(options = {}) {
+  const startedDirtyAt = currentSupabaseSyncDirtyAt();
   try {
     const encryptionPassword = currentSupabaseEncryptionPassword();
     if (!encryptionPassword) {
@@ -7402,8 +7462,10 @@ async function pushSupabaseSync(options = {}) {
     state.syncEncryptionVerifiedPassword = encryptionPassword;
     cleanupSupabaseStorage(session.user?.id || "user", collectSupabasePhotoPaths(syncData)).catch((error) => console.warn("Supabase storage cleanup skipped", error));
     updateSupabaseSyncConfig({ lastPushedAt: updatedAt });
+    const cleanAfterPush = clearSupabaseSyncDirtyIfUnchanged(startedDirtyAt);
     updateSupabaseSyncStatus(options.auto ? `Automatický sync hotový: ${formatTime(new Date())}.` : "Hotovo. Celá appka je v cloudu.");
     if (!options.silent) toast("Sync odeslán do cloudu.");
+    if (!cleanAfterPush && loadSupabaseSyncConfig().autoSync) scheduleAutoSupabaseSync("retry");
     return true;
   } catch (error) {
     console.error(error);
@@ -7413,7 +7475,7 @@ async function pushSupabaseSync(options = {}) {
     return false;
   } finally {
     state.supabaseSyncRunning = false;
-    if (state.supabaseSyncDirty && loadSupabaseSyncConfig().autoSync) scheduleAutoSupabaseSync("retry");
+    if (hasPendingSupabaseSync() && loadSupabaseSyncConfig().autoSync) scheduleAutoSupabaseSync("retry");
   }
 }
 
@@ -7423,6 +7485,12 @@ async function pullSupabaseSync(options = {}) {
     if (!encryptionPassword) {
       if (!options.silent) toast("Doplň šifrovací heslo.");
       return;
+    }
+    if (!options.verify && hasPendingSupabaseSync()) {
+      updateSupabaseSyncStatus("Čeká na odeslání lokální změny. Cloud zatím nestahuji.");
+      if (loadSupabaseSyncConfig().autoSync && !state.supabaseSyncTimer) scheduleAutoSupabaseSync("retry");
+      if (!options.silent) toast("Nejdřív odešli lokální změny do cloudu.");
+      return false;
     }
     state.supabasePullRunning = true;
     const session = await ensureSupabaseSession();
@@ -10639,10 +10707,14 @@ async function saveVarietyPhotoFiles(varietyName, files) {
   const preparedImages = [];
   for (const file of images) preparedImages.push(await preparePhotoFileForStorage(file));
 
-  const saved = await saveOriginalPhotoFiles(varietyName, preparedImages);
-  const fallbackFiles = preparedImages.slice(saved.length);
-  const fallback = fallbackFiles.length ? await saveIndexedPhotoFiles(fallbackFiles) : [];
-  return [...saved, ...fallback];
+  const saved = await saveIndexedPhotoFiles(preparedImages);
+  if (photoRuntime.rootHandle) {
+    saveOriginalPhotoFiles(varietyName, preparedImages).catch((error) => console.warn("Local photo backup skipped", error));
+  }
+  if (saved.length !== preparedImages.length) {
+    throw new Error("Fotky se nepodařilo uložit do appky.");
+  }
+  return saved;
 }
 
 async function saveIndexedPhotoFiles(files) {
