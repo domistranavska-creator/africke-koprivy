@@ -42,6 +42,7 @@ const state = {
   syncTimer: null,
   syncDirty: false,
   syncRunning: false,
+  syncRevision: 0,
   syncVerifiedPassword: "",
   installPromptEvent: null,
   data: loadData(),
@@ -1755,14 +1756,30 @@ function openSheet(title, body, onSave, customFooter = "", options = {}) {
   </section>`;
   els.sheet.querySelectorAll("[data-close-sheet]").forEach((button) => button.addEventListener("click", closeSheet));
   els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", async () => {
+    const saveButton = els.sheet.querySelector("[data-save-sheet]");
+    if (saveButton?.disabled) return;
     const form = els.sheet.querySelector("form");
     if (form && !form.reportValidity()) return;
-    const result = await onSave?.();
-    if (result === false) return;
-    saveData();
-    closeSheet();
-    render();
-    toast("Uloženo.");
+    const previousLabel = saveButton?.textContent;
+    if (saveButton) {
+      saveButton.disabled = true;
+      saveButton.textContent = "Ukládám...";
+    }
+    try {
+      const result = await onSave?.();
+      if (result === false) return;
+      saveData();
+      closeSheet();
+      render();
+      toast("Uloženo.");
+    } catch (error) {
+      console.error(error);
+      toast("Uložení se nepodařilo.");
+      if (saveButton) {
+        saveButton.disabled = false;
+        saveButton.textContent = previousLabel || "Uložit";
+      }
+    }
   });
 }
 
@@ -1822,6 +1839,7 @@ function bindPhotoGrid() {
   }));
   els.sheet.querySelectorAll(".photo-pickers input[type='file']").forEach((input) => {
     input.addEventListener("change", () => {
+      rememberPendingPhotoFiles(input);
       renderPendingPhotoPreviews(input.form);
       renderCrossPreviewInSheet();
     });
@@ -1840,45 +1858,67 @@ function renderPendingPhotoPreviews(form) {
   if (!grid) return;
   clearPendingPhotoPreviewUrls(form);
   grid.querySelectorAll("[data-pending-photo-tile]").forEach((node) => node.remove());
-  const entries = ["photos", "cameraPhotos"].flatMap((inputName) => {
-    const input = form.elements[inputName];
-    return [...(input?.files || [])]
-      .map((file, index) => ({ file, inputName, index }))
-      .filter(({ file }) => file.type?.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || ""));
-  });
+  const entries = pendingPhotoEntries(form);
   if (!entries.length) return;
   const fragment = document.createDocumentFragment();
-  entries.forEach(({ file, inputName, index }) => {
+  entries.forEach(({ id, file }) => {
     const url = URL.createObjectURL(file);
     form.__pendingPhotoPreviewUrls.push(url);
     const tile = document.createElement("span");
     tile.className = "photo-tile pending";
     tile.dataset.pendingPhotoTile = "1";
-    tile.innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(file.name || "Fotka")}"><button type="button" data-remove-pending-photo="${escapeHtml(inputName)}" data-pending-photo-index="${index}">&times;</button>`;
+    tile.innerHTML = `<img src="${escapeHtml(url)}" alt="${escapeHtml(file.name || "Fotka")}"><button type="button" data-remove-pending-photo="${escapeHtml(id)}">&times;</button>`;
     fragment.append(tile);
   });
   grid.append(fragment);
   grid.querySelectorAll("[data-remove-pending-photo]").forEach((button) => {
     button.addEventListener("click", () => {
-      removePendingPhotoFile(form, button.dataset.removePendingPhoto, Number(button.dataset.pendingPhotoIndex));
+      removePendingPhotoFile(form, button.dataset.removePendingPhoto);
     });
   });
 }
 
-function removePendingPhotoFile(form, inputName, index) {
-  const input = form?.elements?.[inputName];
-  if (!input) return;
-  const files = [...(input.files || [])];
-  files.splice(index, 1);
-  try {
-    const transfer = new DataTransfer();
-    files.forEach((file) => transfer.items.add(file));
-    input.files = transfer.files;
-  } catch {
-    input.value = "";
-  }
+function rememberPendingPhotoFiles(input) {
+  const form = input?.form;
+  if (!form) return;
+  const entries = pendingPhotoEntries(form);
+  const seen = new Set(entries.map((entry) => photoFileSignature(entry.file)));
+  [...(input.files || [])]
+    .filter(isPhotoFile)
+    .forEach((file) => {
+      const signature = photoFileSignature(file);
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      entries.push({ id: uid(), file });
+    });
+  input.value = "";
+}
+
+function pendingPhotoEntries(form) {
+  if (!form) return [];
+  if (!Array.isArray(form.__pendingPhotoFiles)) form.__pendingPhotoFiles = [];
+  return form.__pendingPhotoFiles;
+}
+
+function selectedPhotoFiles(form) {
+  const pending = pendingPhotoEntries(form).map((entry) => entry.file).filter(isPhotoFile);
+  if (pending.length) return pending;
+  return [...(form.elements.photos?.files || []), ...(form.elements.cameraPhotos?.files || [])].filter(isPhotoFile);
+}
+
+function removePendingPhotoFile(form, id) {
+  if (!form || !Array.isArray(form.__pendingPhotoFiles)) return;
+  form.__pendingPhotoFiles = form.__pendingPhotoFiles.filter((entry) => entry.id !== id);
   renderPendingPhotoPreviews(form);
   renderCrossPreviewInSheet();
+}
+
+function isPhotoFile(file) {
+  return Boolean(file && (file.type?.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || "")));
+}
+
+function photoFileSignature(file) {
+  return [file?.name, file?.size, file?.lastModified, file?.type].map(clean).join("|");
 }
 
 function photoPickerFields(label) {
@@ -1889,11 +1929,6 @@ function photoPickerFields(label) {
       <label class="button"><input name="cameraPhotos" type="file" accept="image/*" capture="environment">Vyfotit</label>
     </div>
   </div>`;
-}
-
-function selectedPhotoFiles(form) {
-  return [...(form.elements.photos?.files || []), ...(form.elements.cameraPhotos?.files || [])]
-    .filter((file) => file.type?.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || ""));
 }
 
 function photoTiles(images) {
@@ -2301,7 +2336,10 @@ function loadData() {
 
 function saveData(options = {}) {
   localStorage.setItem(STORE_KEY, JSON.stringify(state.data));
-  if (!options.skipAutoSync) scheduleAutoSync();
+  if (!options.skipAutoSync) {
+    state.syncRevision += 1;
+    scheduleAutoSync();
+  }
 }
 
 function normalizeLoadedData(data = {}) {
@@ -3018,8 +3056,12 @@ function logoutSync() {
 async function pushSync(options = {}) {
   saveSyncConfigFromInputs();
   if (!state.syncPassword) return toast("Doplň šifrovací heslo.");
-  if (state.syncRunning) return;
+  if (state.syncRunning) {
+    state.syncDirty = true;
+    return false;
+  }
   state.syncRunning = true;
+  const startedRevision = state.syncRevision;
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
@@ -3039,7 +3081,7 @@ async function pushSync(options = {}) {
     state.syncVerifiedPassword = state.syncPassword;
     cleanupStorage(session.user?.id || "user", collectPhotoPaths(data)).catch((error) => console.warn("Storage cleanup skipped", error));
     saveSyncConfig({ lastPushedAt: updatedAt });
-    state.syncDirty = false;
+    state.syncDirty = state.syncRevision !== startedRevision;
     updateSyncIndicator();
     if (!options.silent) toast("Odesláno do cloudu.");
     return true;
@@ -3050,6 +3092,7 @@ async function pushSync(options = {}) {
     return false;
   } finally {
     state.syncRunning = false;
+    if (state.syncDirty && loadSyncConfig().autoSync) scheduleAutoSync();
   }
 }
 
@@ -3119,7 +3162,7 @@ function updateSyncIndicator(status = "") {
   if (!els.syncIndicator) return;
   const config = loadSyncConfig();
   const session = loadSyncSession();
-  const last = config.lastPulledAt || config.lastPushedAt;
+  const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
   const time = last ? formatTime(last) : formatTime(new Date());
   let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutý";
   let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
@@ -3132,6 +3175,13 @@ function updateSyncIndicator(status = "") {
   }
   els.syncIndicator.textContent = text;
   els.syncIndicator.dataset.status = stateClass;
+}
+
+function latestSyncTimestamp(...values) {
+  return values
+    .map(clean)
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
 }
 
 function scheduleAutoSync() {
@@ -3150,16 +3200,30 @@ async function maybeAutoPull() {
 async function buildSyncData(userId) {
   const data = JSON.parse(JSON.stringify(state.data));
   for (const variety of data.varieties || []) {
-    const refs = await uploadPhotoList(userId, variety.name, varietyImages(variety));
+    const images = varietyImages(variety);
+    const refs = await uploadPhotoList(userId, variety.name, images);
+    ensureUploadedPhotoRefs(images, refs, variety.name || "odrůda");
     variety.photoUrl = refs[0] || "";
     variety.gallery = refs.slice(1);
   }
   for (const cross of data.crosses || []) {
-    const refs = await uploadPhotoList(userId, cross.seedlingName || "semenac", crossSeedlingImages(cross));
+    const images = crossSeedlingImages(cross);
+    const refs = await uploadPhotoList(userId, cross.seedlingName || "semenac", images);
+    ensureUploadedPhotoRefs(images, refs, cross.seedlingName || "semenáč");
     cross.seedlingPhotoUrl = refs[0] || "";
     cross.seedlingGallery = refs.slice(1);
   }
   return data;
+}
+
+function ensureUploadedPhotoRefs(originalRefs, uploadedRefs, ownerName = "fotka") {
+  const originals = unique((originalRefs || []).map(clean).filter(Boolean));
+  const uploaded = unique((uploadedRefs || []).map(clean).filter(Boolean));
+  const allUploaded = originals.every((ref) => ref.startsWith(SUPABASE_PHOTO_PREFIX))
+    || (uploaded.length >= originals.length && uploaded.every((ref) => ref.startsWith(SUPABASE_PHOTO_PREFIX)));
+  if (!allUploaded) {
+    throw new Error(`Fotku u „${ownerName}“ se nepodařilo nahrát do cloudu. Cloud jsem raději nepřepsala.`);
+  }
 }
 
 function collectPhotoPaths(data) {
@@ -3220,7 +3284,7 @@ async function uploadPhotoList(userId, ownerName, refs) {
     if (ref.startsWith(SUPABASE_PHOTO_PREFIX)) uploaded.push(ref);
     else {
       const file = await photoToFile(ref, ownerName);
-      if (!file) continue;
+      if (!file) throw new Error(`Fotku u „${ownerName}“ se nepodařilo přečíst pro cloud.`);
       const uploadFile = await preparePhotoFileForStorage(file);
       const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(uploadFile)}${photoExtension(uploadFile)}`;
       await uploadStorage(path, uploadFile);

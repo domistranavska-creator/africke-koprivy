@@ -7214,7 +7214,8 @@ function updateSupabaseSyncFloat(text = "") {
   els.syncFloat.hidden = !visible;
   if (!visible) return;
   const normalizedSource = normalize(text);
-  let shortText = `Syncnuto ${formatTime(new Date())}`;
+  const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
+  let shortText = last ? `Syncnuto ${formatTime(last)}` : `Syncnuto ${formatTime(new Date())}`;
   if (/selhalo|nepoda|chybi|chyba/.test(normalizedSource)) shortText = "Sync chyba";
   else if (/odesil|nahrav|stah|kontrol|sifruj|desifruj|prihlasuj|vytvarim/.test(normalizedSource)) shortText = "Syncuji...";
   else if (!session.accessToken) shortText = "Sync vypnutý";
@@ -7223,6 +7224,13 @@ function updateSupabaseSyncFloat(text = "") {
   els.syncFloat.classList.toggle("is-error", /selhalo|nepoda|chybi|chyba/.test(normalized));
   els.syncFloat.classList.toggle("is-working", /syncuji/.test(normalized));
   els.syncFloat.classList.toggle("is-off", /vypnuty/.test(normalized));
+}
+
+function latestSyncTimestamp(...values) {
+  return values
+    .map(clean)
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
 }
 
 function updateSupabaseSyncPanelMode() {
@@ -7536,21 +7544,37 @@ async function supabaseRequest(path, options = {}) {
 async function buildSupabaseSyncData(userId) {
   const data = JSON.parse(JSON.stringify(state.data || {}));
   for (const variety of data.varieties || []) {
-    const refs = await uploadPhotoListForSync(userId, variety.name, varietyImages(variety));
+    const images = varietyImages(variety);
+    const refs = await uploadPhotoListForSync(userId, variety.name, images);
+    ensureSupabasePhotoRefsForSync(images, refs, variety.name || "odrůda");
     variety.photoUrl = refs[0] || "";
     variety.gallery = refs.slice(1);
   }
   for (const cross of data.crosses || []) {
-    const refs = await uploadPhotoListForSync(userId, cross.seedlingName || "semenac", crossSeedlingImages(cross));
+    const images = crossSeedlingImages(cross);
+    const refs = await uploadPhotoListForSync(userId, cross.seedlingName || "semenac", images);
+    ensureSupabasePhotoRefsForSync(images, refs, cross.seedlingName || "semenáč");
     cross.seedlingPhotoUrl = refs[0] || "";
     cross.seedlingGallery = refs.slice(1);
   }
   for (const offer of data.offers || []) {
     for (const item of offer.items || []) {
+      const originalPhoto = clean(item.photoUrl);
       item.photoUrl = await uploadPhotoForSync(userId, offerItemNameSafe(item) || "nabidka", item.photoUrl);
+      ensureSupabasePhotoRefsForSync(originalPhoto ? [originalPhoto] : [], item.photoUrl ? [item.photoUrl] : [], offerItemNameSafe(item) || "nabídka");
     }
   }
   return data;
+}
+
+function ensureSupabasePhotoRefsForSync(originalRefs, uploadedRefs, ownerName = "fotka") {
+  const originals = unique((originalRefs || []).map(clean).filter(Boolean));
+  const uploaded = unique((uploadedRefs || []).map(clean).filter(Boolean));
+  const allUploaded = originals.every((ref) => isSupabasePhotoRef(ref))
+    || (uploaded.length >= originals.length && uploaded.every((ref) => isSupabasePhotoRef(ref)));
+  if (!allUploaded) {
+    throw new Error(`Fotku u „${ownerName}“ se nepodařilo nahrát do cloudu. Cloud jsem raději nepřepsala.`);
+  }
 }
 
 function collectSupabasePhotoPaths(data) {
@@ -7628,7 +7652,7 @@ async function uploadPhotoForSync(userId, ownerName, image) {
   if (!value) return "";
   if (isSupabasePhotoRef(value)) return value;
   const file = await photoToOriginalFile(value, ownerName);
-  if (!file) return value;
+  if (!file) throw new Error(`Fotku u „${ownerName}“ se nepodařilo přečíst pro cloud.`);
   const uploadFile = await preparePhotoFileForStorage(file);
   const path = await supabaseStoragePathForPhoto(userId, ownerName, uploadFile);
   await uploadSupabaseStorageFile(path, uploadFile);
