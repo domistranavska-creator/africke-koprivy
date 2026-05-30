@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260527-55" />
+    <link rel="stylesheet" href="styles.css?v=20260527-56" />
   </head>
   <body>
     <div class="app-shell">
@@ -398,7 +398,7 @@
               <div class="inline-actions export-actions">
                 <button class="button primary" type="button" id="backupDataBtn">Stáhnout zálohu</button>
               </div>
-              <p class="panel-note">Ruční záloha je jen pojistka. Běžně stačí používat soukromý sync.</p>
+              <p class="panel-note">Ruční záloha stáhne jen data a odkazy na fotky. Originály fotek se nestahují.</p>
               <div class="hidden-tools" hidden>
                 <button type="button" id="exportOrdersBtn">Objednávky CSV</button>
                 <button type="button" id="exportCustomersBtn">Zákazníci CSV</button>
@@ -577,6 +577,7 @@
           <button class="icon-button" type="button" data-close-dialog aria-label="Zavřít">×</button>
         </header>
         <input type="hidden" name="id" />
+        <input type="hidden" name="offerId" />
         <input type="hidden" name="season" />
         <label class="order-customer-field">
           <span>Zákazník</span>
@@ -664,6 +665,7 @@
             <small class="order-fee-preview" id="orderFeePreview"></small>
           </div>
         </label>
+        <section class="order-alternate-block wide" id="orderAlternateBlock" hidden></section>
         <div class="order-total-row wide">
           <div class="order-total-highlight" id="orderTotalHighlight"></div>
           <small class="order-foreign-total-hint" id="orderForeignTotalHint" hidden></small>
@@ -1053,13 +1055,13 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260527-55" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260527-55" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260527-55" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260527-55" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260527-55" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260527-55" charset="utf-8"></script>
-    <script src="app.js?v=20260527-55" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-setup.js?v=20260527-56" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260527-56" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260527-56" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260527-56" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260527-56" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260527-56" charset="utf-8"></script>
+    <script src="app.js?v=20260527-56" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

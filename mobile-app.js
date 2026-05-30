@@ -209,6 +209,14 @@ function render() {
   updateSyncIndicator();
 }
 
+function renderCardPill(pill) {
+  if (!pill) return "";
+  if (typeof pill === "object") {
+    return `<span class="pill ${escapeHtml(clean(pill.className))}">${escapeHtml(clean(pill.label))}</span>`;
+  }
+  return `<span class="pill">${escapeHtml(String(pill))}</span>`;
+}
+
 function renderSummary() {
   const summary = {
     offers: ["Nabídky", `${state.data.offers.length} nabídek`, "Rychle vytvoříš nabídku a rezervace."],
@@ -282,7 +290,10 @@ function renderOrders() {
       title: compactName(customerName(customer) || "Bez zákazníka"),
       sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" · "),
       price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
-      pills: orderVarietyNames(order).slice(0, 5).map((name) => `🌿 ${name}`),
+      pills: [
+        ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `🌿 ${item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name}`),
+        ...orderOfferAlternateEntries(order).map((item) => ({ label: `⚠ Náhradník: ${item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+      ],
       badges: [paymentPill(order), statusPill(order), orderPaymentTextPill(order)],
       actions: [["copy-order", "📋"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "✓Txt" : "Txt"], ["edit-order", "✎"], ["delete-order", "×"]],
     });
@@ -378,7 +389,7 @@ function card({ id, type, tone = "", title, sub = "", price = "", pills = [], ba
   const thumbRef = thumbPreviewRef(thumb);
   const thumbHtml = thumb || thumbText ? `<span class="thumb">${thumb ? `<img data-photo-ref="${escapeHtml(thumbRef)}" alt="">` : escapeHtml(thumbText)}</span>` : "";
   return `<article class="card card-${escapeHtml(type)} ${tone} ${badges.length ? "has-status" : ""}" data-card="${type}" data-id="${escapeHtml(id)}">
-    ${badges.length ? `<div class="status-badges">${badges.filter(Boolean).map((badge) => `<span class="pill">${escapeHtml(badge)}</span>`).join("")}</div>` : ""}
+    ${badges.length ? `<div class="status-badges">${badges.filter(Boolean).map(renderCardPill).join("")}</div>` : ""}
     <div class="card-row">
       ${thumbHtml}
       <div class="card-main">
@@ -387,7 +398,7 @@ function card({ id, type, tone = "", title, sub = "", price = "", pills = [], ba
       </div>
     </div>
     ${price ? `<strong class="price">${escapeHtml(price)}</strong>` : ""}
-    ${pills.length ? `<div class="pill-row">${pills.filter(Boolean).map((pill) => `<span class="pill">${escapeHtml(pill)}</span>`).join("")}</div>` : ""}
+    ${pills.length ? `<div class="pill-row">${pills.filter(Boolean).map(renderCardPill).join("")}</div>` : ""}
     ${actions.length ? `<div class="card-actions">${actions.map(([action, label]) => `<button class="round" type="button" data-action-row="${action}" data-id="${escapeHtml(id)}">${label}</button>`).join("")}</div>` : ""}
   </article>`;
 }
@@ -500,6 +511,7 @@ function openOrderSheet(id = "", customerId = "") {
   const order = findById("orders", id) || {};
   const customers = state.data.customers;
   openSheet(order.id ? "Upravit objednávku" : "Nová objednávka", `<form class="form-grid" id="sheetForm">
+    <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
     <label class="field"><span>Zákazník</span><select name="customerId" required>${customers.map((customer) => `<option value="${escapeHtml(customer.id)}" ${(order.customerId || customerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`).join("")}</select></label>
     <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
     ${toggle("paymentStatus", [["čeká", "Čeká"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "čeká")}
@@ -512,6 +524,7 @@ function openOrderSheet(id = "", customerId = "") {
       ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "✓ Text odeslán" : "Text odeslán"}</button>` : ""}
     </div>
     <label class="field"><span>Odrůdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 Kč">${escapeHtml(order.varietiesText)}</textarea></label>
+    <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
     <label class="field"><span>Celkem Kč</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
     <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
     <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
@@ -523,6 +536,7 @@ function openOrderSheet(id = "", customerId = "") {
     const item = normalizeOrder({
       ...order,
       id: order.id || uid(),
+      offerId: clean(data.get("offerId")),
       customerId: clean(data.get("customerId")),
       orderDate: clean(data.get("orderDate")) || todayInput(),
       paymentStatus: form.querySelector('[name="paymentStatus"]').value,
@@ -540,6 +554,8 @@ function openOrderSheet(id = "", customerId = "") {
   });
   bindToggles();
   bindFees();
+  syncOrderSheetAlternates();
+  els.sheet.querySelector('[name="customerId"]')?.addEventListener("change", () => syncOrderSheetAlternates());
   els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
     event.preventDefault();
     const button = event.currentTarget;
@@ -1092,11 +1108,18 @@ function createOrdersFromOffer(id) {
   const grouped = new Map();
   reservations.forEach(({ item, reservation }) => {
     const key = reservation.customerId;
-    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, lines: [], total: 0, entries: [] });
+    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, lineItems: new Map(), total: 0, entries: [] });
     const group = grouped.get(key);
     const quantity = wholeNumber(reservation.quantity, 1);
     const price = number(item.price);
-    group.lines.push(Number.isFinite(price) ? offerOrderLineText(offerItemName(item), quantity, price) : `${offerItemName(item)} ${quantity}x`);
+    const lineKey = clean(item.id) || offerItemName(item);
+    const lineItem = group.lineItems.get(lineKey) || {
+      name: offerItemName(item),
+      quantity: 0,
+      unitPrice: item.price,
+    };
+    lineItem.quantity += quantity;
+    group.lineItems.set(lineKey, lineItem);
     if (Number.isFinite(price)) group.total += price * quantity;
     group.entries.push({ item, reservation });
   });
@@ -1109,12 +1132,18 @@ function createOrdersFromOffer(id) {
     const packingFee = number(fees.packingFee);
     const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
     const orderId = uid();
+    const lines = [...group.lineItems.values()].map((line) => {
+      const unitPrice = number(line.unitPrice);
+      return Number.isFinite(unitPrice)
+        ? offerOrderLineText(line.name, line.quantity, line.unitPrice)
+        : `${line.name} ${line.quantity}x`;
+    });
     state.data.orders.push(normalizeOrder({
       id: orderId,
       offerId: offer.id,
       customerId: group.customerId,
       orderDate: offer.date || todayInput(),
-      varietiesText: group.lines.join("\n"),
+      varietiesText: lines.join("\n"),
       price: normalizeAmount(group.total + feeTotal),
       paymentStatus: "čeká",
       shippingStatus: "nová",
@@ -2448,7 +2477,7 @@ function normalizeCustomer(customer = {}) {
 }
 
 function normalizeOrder(order = {}) {
-  return { ...order, id: clean(order.id) || uid(), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), packingFee: normalizeAmount(order.packingFee), codFee: "", currency: "CZK", note: clean(order.note) };
+  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), packingFee: normalizeAmount(order.packingFee), codFee: "", currency: "CZK", note: clean(order.note) };
 }
 
 function normalizeVariety(variety = {}) {
@@ -2575,23 +2604,162 @@ function orderContainsOfferItem(order = {}, item = {}) {
 }
 
 function reservationLinkedToOrder(offer = {}, item = {}, reservation = {}) {
-  if (clean(reservation.orderId)) return true;
   if (reservationStatusValue(reservation.status) !== "confirmed") return false;
-  const offerId = clean(offer.id);
   const customerId = clean(reservation.customerId);
-  if (!offerId || !customerId) return false;
-  return (state.data.orders || []).some((order) =>
-    clean(order.offerId) === offerId &&
-    clean(order.customerId) === customerId &&
-    orderContainsOfferItem(order, item),
-  );
+  if (!customerId) return false;
+  const orderedQuantity = orderedQuantityForOfferItemAndCustomer(offer, item, customerId);
+  if (!orderedQuantity) return false;
+  const confirmedReservations = (item.reservations || [])
+    .filter((entry) => clean(entry.customerId) === customerId && reservationStatusValue(entry.status) === "confirmed");
+  let quantityBefore = 0;
+  for (const entry of confirmedReservations) {
+    if (clean(entry.id) === clean(reservation.id)) {
+      const reservationQuantity = wholeNumber(entry.quantity, 0);
+      return orderedQuantity >= quantityBefore + reservationQuantity;
+    }
+    quantityBefore += wholeNumber(entry.quantity, 0);
+  }
+  return false;
+}
+
+function orderOfferAlternateEntries(order = {}) {
+  const offerId = clean(order.offerId);
+  const customerId = clean(order.customerId);
+  if (!offerId || !customerId) return [];
+  const offer = findById("offers", offerId);
+  if (!offer?.items?.length) return [];
+
+  return (offer.items || []).reduce((entries, item) => {
+    const alternateQuantity = reservationQuantityForCustomer(item, customerId, "alternate");
+    if (!alternateQuantity) return entries;
+    const confirmedQuantity = reservationQuantityForCustomer(item, customerId, "confirmed");
+    const orderQuantity = orderQuantityForOfferItem(order, item);
+    const pendingQuantity = Math.max(alternateQuantity - Math.max(orderQuantity - confirmedQuantity, 0), 0);
+    if (pendingQuantity > 0) {
+      entries.push({
+        itemId: clean(item.id) || String(entries.length),
+        name: offerItemName(item),
+        quantity: pendingQuantity,
+      });
+    }
+    return entries;
+  }, []);
+}
+
+function orderQuantityForOfferItem(order = {}, item = {}) {
+  const keys = offerItemOrderKeys(item);
+  if (!keys.length) return 0;
+  return orderVarietyPreviewItems(order).reduce((sum, previewItem) => {
+    const key = varietyNameMatchKey(previewItem.name);
+    return sum + (keys.includes(key) ? previewItem.quantity : 0);
+  }, 0);
+}
+
+function reservationQuantityForCustomer(item = {}, customerId = "", status = "") {
+  return (item.reservations || []).reduce((sum, reservation) => {
+    if (clean(reservation.customerId) !== customerId) return sum;
+    if (status && reservationStatusValue(reservation.status) !== status) return sum;
+    return sum + wholeNumber(reservation.quantity, 0);
+  }, 0);
+}
+
+function orderedQuantityForOfferItemAndCustomer(offer = {}, item = {}, customerId = "") {
+  const offerId = clean(offer.id);
+  if (!offerId || !customerId) return 0;
+  return (state.data.orders || []).reduce((sum, order) => {
+    if (clean(order.offerId) !== offerId) return sum;
+    if (clean(order.customerId) !== customerId) return sum;
+    return sum + orderQuantityForOfferItem(order, item);
+  }, 0);
+}
+
+function offerItemOrderedQuantity(offer = {}, item = {}) {
+  const customerIds = unique((item.reservations || [])
+    .filter((reservation) => reservationStatusValue(reservation.status) === "confirmed")
+    .map((reservation) => clean(reservation.customerId))
+    .filter(Boolean));
+  return customerIds.reduce((sum, customerId) => {
+    const confirmedQuantity = reservationQuantityForCustomer(item, customerId, "confirmed");
+    const orderedQuantity = orderedQuantityForOfferItemAndCustomer(offer, item, customerId);
+    return sum + Math.min(confirmedQuantity, orderedQuantity);
+  }, 0);
+}
+
+function syncOrderSheetAlternates() {
+  const container = els.sheet.querySelector("[data-sheet-order-alternates]");
+  const form = els.sheet.querySelector("#sheetForm");
+  if (!container || !form) return;
+  const entries = orderOfferAlternateEntries({
+    offerId: clean(form.elements.offerId?.value),
+    customerId: clean(form.elements.customerId?.value),
+    varietiesText: clean(form.elements.varietiesText?.value),
+  });
+  if (!entries.length) {
+    container.hidden = true;
+    container.innerHTML = "";
+    return;
+  }
+  container.hidden = false;
+  container.innerHTML = `
+    <div class="order-alternate-sheet-heading">
+      <strong>Náhradníci z nabídky</strong>
+      <small>Toto se nepočítá do ceny.</small>
+    </div>
+    <div class="order-alternate-sheet-list">
+      ${entries.map((entry) => `<div class="order-alternate-sheet-item"><span>⚠ Náhradník: ${escapeHtml(entry.name)} · ${escapeHtml(quantityText(entry.quantity))} ks</span><button class="round order-alternate-sheet-add" type="button" data-add-sheet-order-alternate="${escapeHtml(entry.itemId)}">+</button></div>`).join("")}
+    </div>
+  `;
+  container.querySelectorAll("[data-add-sheet-order-alternate]").forEach((button) => {
+    button.addEventListener("click", () => addAlternateReservationToOrderSheet(button.dataset.addSheetOrderAlternate));
+  });
+}
+
+function addAlternateReservationToOrderSheet(itemId) {
+  const form = els.sheet.querySelector("#sheetForm");
+  const offer = findById("offers", clean(form?.elements?.offerId?.value));
+  const item = (offer?.items || []).find((entry) => clean(entry.id) === clean(itemId));
+  if (!form || !offer || !item) return;
+  const orderState = {
+    offerId: clean(form.elements.offerId?.value),
+    customerId: clean(form.elements.customerId?.value),
+    varietiesText: clean(form.elements.varietiesText?.value),
+  };
+  const entry = orderOfferAlternateEntries(orderState).find((current) => clean(current.itemId) === clean(itemId));
+  if (!entry?.quantity) return;
+
+  const keys = offerItemOrderKeys(item);
+  const lines = clean(form.elements.varietiesText.value).split(/\n+/).map(clean).filter(Boolean);
+  const index = lines.findIndex((line) => {
+    const name = line.replace(/\s+\d+\s*(ks|x).*/i, "").replace(/\s+-\s+\d+.*/, "").trim();
+    return keys.includes(varietyNameMatchKey(name));
+  });
+  if (index >= 0) {
+    const line = lines[index];
+    const name = line.replace(/\s+\d+\s*(ks|x).*/i, "").replace(/\s+-\s+\d+.*/, "").trim();
+    const unitPrice = orderLineUnitPrice(line);
+    lines[index] = Number.isFinite(unitPrice)
+      ? offerOrderLineText(name, orderLineQuantity(line) + entry.quantity, unitPrice)
+      : `${name} ${orderLineQuantity(line) + entry.quantity}x`;
+  } else {
+    const unitPrice = number(item.price);
+    lines.push(Number.isFinite(unitPrice) ? offerOrderLineText(offerItemName(item), entry.quantity, unitPrice) : `${offerItemName(item)} ${entry.quantity}x`);
+  }
+
+  form.elements.varietiesText.value = lines.join("\n");
+
+  const shippingFee = number(form.elements.shippingFee?.value);
+  const packingFee = number(form.elements.packingFee?.value);
+  const feesTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
+  const orderTotal = orderTotalFromText(form.elements.varietiesText.value);
+  form.elements.price.value = normalizeAmount(orderTotal + feesTotal);
+  syncOrderSheetAlternates();
+  toast("Náhradník přidán do objednávky.");
 }
 
 function offerItemOrderProgress(offer = {}, item = {}) {
   const confirmed = (item.reservations || []).filter((reservation) => reservationStatusValue(reservation.status) === "confirmed");
   const confirmedQuantity = confirmed.reduce((sum, reservation) => sum + wholeNumber(reservation.quantity, 0), 0);
-  const orderedQuantity = confirmed.reduce((sum, reservation) =>
-    reservationLinkedToOrder(offer, item, reservation) ? sum + wholeNumber(reservation.quantity, 0) : sum, 0);
+  const orderedQuantity = offerItemOrderedQuantity(offer, item);
   if (!confirmedQuantity || !orderedQuantity) return { state: "", label: "" };
   if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednávce" };
   return { state: "partial", label: "Částečně v objednávce" };
@@ -2709,6 +2877,41 @@ function orderVarietyNames(order = {}) {
   return clean(order.varietiesText).split(/\n+/).map((line) => line.replace(/\s+\d+\s*(ks|x).*/i, "").replace(/\s+-\s+\d+.*/, "").trim()).filter(Boolean);
 }
 
+function orderVarietyPreviewItems(order = {}) {
+  const grouped = new Map();
+  clean(order.varietiesText).split(/\n+/).forEach((rawLine) => {
+    const line = clean(rawLine);
+    if (!line) return;
+    const name = line.replace(/\s+\d+\s*(ks|x).*/i, "").replace(/\s+-\s+\d+.*/, "").trim();
+    if (!name) return;
+    const key = varietyNameMatchKey(name) || name;
+    const existing = grouped.get(key) || { name, quantity: 0 };
+    existing.quantity += orderLineQuantity(line);
+    grouped.set(key, existing);
+  });
+  return [...grouped.values()];
+}
+
+function orderLineQuantity(line = "") {
+  const value = clean(line);
+  const match =
+    value.match(/\b(\d+)\s*x\b/i) ||
+    value.match(/\bx\s*(\d+)\b/i) ||
+    value.match(/\b(\d+)\s*(ks|kus|kusy|řízků|rizku|sazenic)\b/i);
+  const quantity = match ? Number(match[1]) : 1;
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function orderLineUnitPrice(line = "") {
+  const value = clean(line);
+  const pricedAtEnd =
+    value.match(/(?:-|–|—)\s*(\d+(?:[,.]\d+)?)\s*(Kč|kc|czk|eur|€)?\s*$/i) ||
+    value.match(/(?:@|=)\s*(\d+(?:[,.]\d+)?)\s*(Kč|kc|czk|eur|€)?\s*$/i);
+  if (pricedAtEnd) return number(pricedAtEnd[1]);
+  const inline = value.match(/(\d+(?:[,.]\d+)?)\s*Kč/i);
+  return inline ? number(inline[1]) : Number.NaN;
+}
+
 function paymentPill(order) {
   return order.paymentStatus === "zaplaceno" ? "✅ Zaplaceno" : "⏳ Čeká";
 }
@@ -2741,8 +2944,8 @@ function varietyUsageCount(name) {
 
 function orderTotalFromText(text) {
   return clean(text).split(/\n+/).reduce((sum, line) => {
-    const match = line.match(/(\d+(?:[,.]\d+)?)\s*Kč/i);
-    return sum + (match ? number(match[1]) : 0);
+    const unitPrice = orderLineUnitPrice(line);
+    return sum + (Number.isFinite(unitPrice) ? unitPrice * orderLineQuantity(line) : 0);
   }, 0);
 }
 

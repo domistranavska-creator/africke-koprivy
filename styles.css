@@ -7940,6 +7940,79 @@ fieldset > legend {
     inset 0 1px 0 rgba(255, 255, 255, 0.88);
 }
 
+#orderForm .order-alternate-block {
+  display: grid;
+  gap: 10px;
+  margin-top: -2px;
+  padding: 14px 16px;
+  border: 1px solid rgba(205, 145, 61, 0.42);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 222, 164, 0.28), transparent 34%),
+    linear-gradient(180deg, rgba(255, 251, 243, 0.98), rgba(255, 243, 225, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 12px 22px rgba(140, 98, 29, 0.08);
+}
+
+#orderForm .order-alternate-heading {
+  display: grid;
+  gap: 2px;
+}
+
+#orderForm .order-alternate-heading strong {
+  color: #7a3d00;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+#orderForm .order-alternate-heading small {
+  color: #8b5a12 !important;
+  font-size: 0.84rem;
+  font-weight: 800 !important;
+}
+
+#orderForm .order-alternate-list {
+  display: grid;
+  gap: 8px;
+}
+
+#orderForm .order-alternate-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(221, 162, 77, 0.36);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #5d3300;
+  font-size: 0.94rem;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+#orderForm .order-alternate-add-button {
+  min-width: 34px;
+  min-height: 34px !important;
+  padding: 0 !important;
+  border-radius: 999px;
+  border-color: rgba(194, 79, 79, 0.46) !important;
+  background: linear-gradient(135deg, rgba(255, 240, 240, 0.98), rgba(255, 216, 216, 0.96)) !important;
+  color: #a22020 !important;
+  font-size: 1.1rem;
+  font-weight: 900;
+}
+
+.variety-link.order-alternate-preview {
+  border-color: rgba(204, 84, 84, 0.42) !important;
+  background: linear-gradient(135deg, rgba(255, 235, 235, 0.98), rgba(255, 214, 214, 0.96)) !important;
+  color: #8f1f1f !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 8px 16px rgba(170, 61, 61, 0.08) !important;
+}
+
 #orderForm .order-summary-field textarea {
   min-height: 92px;
   padding: 0 !important;

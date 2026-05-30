@@ -282,6 +282,7 @@ const els = {
   orderDialog: document.querySelector("#orderDialog"),
   orderForm: document.querySelector("#orderForm"),
   orderDialogTitle: document.querySelector("#orderDialogTitle"),
+  orderAlternateBlock: document.querySelector("#orderAlternateBlock"),
   orderAdvancedDetails: document.querySelector("#orderAdvancedDetails"),
   currencyRateHint: document.querySelector("#currencyRateHint"),
   loadOrderRateBtn: document.querySelector("#loadOrderRateBtn"),
@@ -664,6 +665,7 @@ function init() {
     applyDefaultShippingFeeForSelectedCustomer();
     renderOrderExtraFeeFields(undefined, { preserveValues: true });
     updateOrderAdvancedSummary();
+    syncOrderAlternateBlock();
     refreshOrderPricingPreview();
   });
   els.orderForm.elements.paymentStatus.addEventListener("change", handleOrderPaymentStatusChange);
@@ -2008,10 +2010,12 @@ function customerVarietyStats(orders) {
 }
 
 function renderOrderVarietyLinks(order) {
-  const names = orderVarietyNames(order);
-  if (!names.length) return `<small>${escapeHtml(order.varietiesText || "Bez odrůd")}</small>`;
-  return `<div class="variety-links">${names
-    .map((name) => `<button class="variety-link" type="button" data-open-variety-name="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+  const items = orderVarietyPreviewItems(order);
+  const alternates = orderOfferAlternateEntries(order);
+  if (!items.length && !alternates.length) return `<small>${escapeHtml(order.varietiesText || "Bez odrůd")}</small>`;
+  return `<div class="variety-links">${items
+    .map((item) => `<button class="variety-link" type="button" data-open-variety-name="${escapeHtml(item.name)}">${escapeHtml(item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name)}</button>`)
+    .concat(alternates.map((item) => `<span class="variety-link order-alternate-preview">⚠ ${escapeHtml(item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name)}</span>`))
     .join("")}</div>`;
 }
 
@@ -2119,6 +2123,7 @@ function renderOrders() {
                 ${statusPill(order.paymentStatus, paymentLabels[order.paymentStatus])}
                 ${shippingPill(order.shippingStatus, shippingLabels[order.shippingStatus])}
                 ${orderPaymentTextPill(order)}
+                ${orderAlternateReservationsPill(order)}
               </span>
               <span class="cell-sub status-note">${escapeHtml(deliverySummary(order))}</span>
             </td>
@@ -3074,9 +3079,9 @@ function syncOrderCustomerFieldLock(isLocked = Boolean(clean(els.orderForm?.elem
   const customerSelect = els.orderForm?.elements?.customerId;
   const customerField = customerSelect?.closest(".order-customer-field");
   if (!customerSelect || !customerField) return;
-  customerSelect.disabled = Boolean(isLocked);
-  customerSelect.setAttribute("aria-disabled", isLocked ? "true" : "false");
-  customerField.classList.toggle("is-locked", Boolean(isLocked));
+  customerSelect.disabled = false;
+  customerSelect.setAttribute("aria-disabled", "false");
+  customerField.classList.remove("is-locked");
 }
 
 function syncOrderPaymentFieldTone() {
@@ -3347,6 +3352,7 @@ async function openOrderDialog(id = null, customerId = null, defaults = {}) {
   els.orderForm.dataset.priceManual = "";
   els.orderForm.dataset.programmaticPrice = "";
   els.orderForm.elements.id.value = order?.id || "";
+  els.orderForm.elements.offerId.value = draft.offerId || order?.offerId || "";
   els.orderForm.elements.customerId.value = draft.customerId || customerId || state.selectedCustomerId || state.data.customers[0].id;
   syncOrderCustomerFieldLock(Boolean(order?.id));
   els.orderForm.elements.orderDate.value = draft.orderDate || toDateInput(new Date());
@@ -3389,6 +3395,7 @@ async function openOrderDialog(id = null, customerId = null, defaults = {}) {
   els.orderForm.elements.note.value = draft.note || "";
   refreshOrderRateHint(true);
   syncOrderPaymentTextSentButton(order);
+  syncOrderAlternateBlock();
   showDialog(els.orderDialog);
   await autoCalculateOrderPrice({ silent: true });
   state.orderDialogBaseline = orderDialogFingerprint(captureOrderFormSnapshot());
@@ -6813,15 +6820,16 @@ function parseDelimited(text) {
 }
 
 async function backupData() {
-  toast("Připravuji zálohu fotek...");
+  toast("Připravuji zálohu dat...");
   const snapshot = {
     app: "Africké kopřivy",
     version: STORE_KEY,
     exportedAt: new Date().toISOString(),
-    data: await buildPortableData(state.data),
+    photoMode: "refs-only",
+    data: JSON.parse(JSON.stringify(state.data || {})),
   };
   downloadJson(`africke-koprivy-zaloha-${toDateInput(new Date())}.json`, snapshot);
-  toast("Záloha stažena.");
+  toast("Záloha dat stažena.");
 }
 
 function exportCustomers() {
@@ -9097,6 +9105,10 @@ function orderPaymentTextPill(order = {}) {
   return clean(order.paymentTextSentAt) ? `<span class="pill sent">Text odeslán</span>` : "";
 }
 
+function orderAlternateReservationsPill(order = {}) {
+  return orderOfferAlternateEntries(order).length ? `<span class="pill warning">Má náhradníky</span>` : "";
+}
+
 function tagClass(tag) {
   const lower = normalize(tag);
   if (lower.includes("pozor")) return "warning";
@@ -9207,6 +9219,19 @@ function orderMatchesVariety(order, name) {
 
 function orderVarietyNames(order) {
   return varietyNamesFromText(order?.varietiesText).map((name) => findVarietyByName(name)?.name || name);
+}
+
+function orderVarietyPreviewItems(order = {}) {
+  const grouped = new Map();
+  parseVarietyOrderLines(order?.varietiesText || "").forEach((line) => {
+    const name = findVarietyByName(line.name)?.name || line.name;
+    const key = varietyNameMatchKey(name) || name;
+    if (!key) return;
+    const existing = grouped.get(key) || { name, quantity: 0 };
+    existing.quantity += Math.max(line.quantity || 1, 1);
+    grouped.set(key, existing);
+  });
+  return [...grouped.values()];
 }
 
 function customerName(customer) {
@@ -9987,24 +10012,173 @@ function orderContainsOfferItem(order = {}, item = {}) {
   return keys.some((key) => orderKeys.includes(key));
 }
 
-function reservationLinkedToOrder(offer = {}, item = {}, reservation = {}) {
-  if (clean(reservation.orderId)) return true;
-  if (reservationStatusValue(reservation.status) !== "confirmed") return false;
+function orderQuantityForOfferItem(order = {}, item = {}) {
+  const keys = offerItemOrderKeys(item);
+  if (!keys.length) return 0;
+  return parseVarietyOrderLines(order?.varietiesText || "").reduce((sum, line) => {
+    const key = varietyNameMatchKey(line.name);
+    return sum + (keys.includes(key) ? Math.max(line.quantity || 1, 1) : 0);
+  }, 0);
+}
+
+function reservationQuantityForCustomer(item = {}, customerId = "", status = "") {
+  return (item.reservations || []).reduce((sum, reservation) => {
+    if (clean(reservation.customerId) !== customerId) return sum;
+    if (status && reservationStatusValue(reservation.status) !== status) return sum;
+    return sum + (Number(normalizeWholeNumber(reservation.quantity)) || 0);
+  }, 0);
+}
+
+function orderedQuantityForOfferItemAndCustomer(offer = {}, item = {}, customerId = "") {
   const offerId = clean(offer.id);
+  if (!offerId || !customerId) return 0;
+  return (state.data.orders || []).reduce((sum, order) => {
+    if (clean(order.offerId) !== offerId) return sum;
+    if (clean(order.customerId) !== customerId) return sum;
+    return sum + orderQuantityForOfferItem(order, item);
+  }, 0);
+}
+
+function offerItemOrderedQuantity(offer = {}, item = {}) {
+  const customerIds = unique((item.reservations || [])
+    .filter((reservation) => reservationStatusValue(reservation.status) === "confirmed")
+    .map((reservation) => clean(reservation.customerId))
+    .filter(Boolean));
+  return customerIds.reduce((sum, customerId) => {
+    const confirmedQuantity = reservationQuantityForCustomer(item, customerId, "confirmed");
+    const orderedQuantity = orderedQuantityForOfferItemAndCustomer(offer, item, customerId);
+    return sum + Math.min(confirmedQuantity, orderedQuantity);
+  }, 0);
+}
+
+function orderOfferAlternateEntries(order = {}) {
+  const offerId = clean(order.offerId);
+  const customerId = clean(order.customerId);
+  if (!offerId || !customerId) return [];
+  const offer = findOffer(offerId);
+  if (!offer?.items?.length) return [];
+
+  return (offer.items || []).reduce((entries, item) => {
+    const alternateQuantity = reservationQuantityForCustomer(item, customerId, "alternate");
+    if (!alternateQuantity) return entries;
+    const confirmedQuantity = reservationQuantityForCustomer(item, customerId, "confirmed");
+    const orderQuantity = orderQuantityForOfferItem(order, item);
+    const pendingQuantity = Math.max(alternateQuantity - Math.max(orderQuantity - confirmedQuantity, 0), 0);
+    if (pendingQuantity > 0) {
+      entries.push({
+        itemId: clean(item.id) || String(entries.length),
+        name: offerItemNameSafe(item),
+        quantity: pendingQuantity,
+      });
+    }
+    return entries;
+  }, []);
+}
+
+function syncOrderAlternateBlock() {
+  const block = els.orderAlternateBlock;
+  const form = els.orderForm;
+  if (!block || !form) return;
+  const entries = orderOfferAlternateEntries({
+    offerId: clean(form.elements.offerId?.value),
+    customerId: clean(form.elements.customerId?.value),
+    varietiesText: clean(form.elements.varietiesText?.value),
+  });
+  if (!entries.length) {
+    block.hidden = true;
+    block.innerHTML = "";
+    return;
+  }
+  block.hidden = false;
+  block.innerHTML = `
+    <div class="order-alternate-heading">
+      <strong>Náhradníci z nabídky</strong>
+      <small>Toto se nepočítá do ceny.</small>
+    </div>
+    <div class="order-alternate-list">
+      ${entries.map((entry) => `<div class="order-alternate-item"><span>⚠ Náhradník: ${escapeHtml(entry.name)} · ${escapeHtml(quantityText(entry.quantity))} ks</span><button class="mini-button order-alternate-add-button" type="button" data-add-order-alternate="${escapeHtml(entry.itemId)}">+</button></div>`).join("")}
+    </div>
+  `;
+  block.querySelectorAll("[data-add-order-alternate]").forEach((button) => {
+    button.addEventListener("click", () => addAlternateReservationToOrder(button.dataset.addOrderAlternate));
+  });
+}
+
+function addAlternateReservationToOrder(itemId) {
+  const form = els.orderForm;
+  const offer = findOffer(clean(form?.elements?.offerId?.value));
+  const item = (offer?.items || []).find((entry) => clean(entry.id) === clean(itemId));
+  if (!form || !offer || !item) return;
+  const orderState = {
+    offerId: clean(form.elements.offerId?.value),
+    customerId: clean(form.elements.customerId?.value),
+    varietiesText: clean(form.elements.varietiesText?.value),
+  };
+  const entry = orderOfferAlternateEntries(orderState).find((current) => clean(current.itemId) === clean(itemId));
+  if (!entry?.quantity) return;
+
+  const lines = parseVarietyOrderLines(orderState.varietiesText);
+  const keys = offerItemOrderKeys(item);
+  const index = lines.findIndex((line) => keys.includes(varietyNameMatchKey(line.name)));
+  const itemCurrency = normalizeCurrency(item.currency || currentOrderCurrency());
+
+  if (index >= 0) {
+    const target = lines[index];
+    const explicitPrice = parseDecimal(target.explicitPrice);
+    lines[index] = {
+      ...target,
+      quantity: Math.max(target.quantity || 1, 1) + entry.quantity,
+      explicitPrice: Number.isFinite(explicitPrice) ? target.explicitPrice : item.price,
+      explicitCurrency: target.explicitCurrency || itemCurrency,
+    };
+  } else {
+    lines.push({
+      raw: "",
+      name: offerItemNameSafe(item),
+      quantity: entry.quantity,
+      explicitPrice: item.price,
+      explicitCurrency: itemCurrency,
+    });
+  }
+
+  form.elements.varietiesText.value = lines
+    .map((line) => {
+      const price = parseDecimal(line.explicitPrice);
+      return Number.isFinite(price)
+        ? buildOrderLineText(line.name, line.quantity, line.explicitPrice, normalizeCurrency(line.explicitCurrency || itemCurrency))
+        : `${line.name} ${line.quantity}x`;
+    })
+    .join("\n");
+  form.dataset.feesBasePrice = "";
+  syncOrderAlternateBlock();
+  refreshOrderPricingPreview();
+  syncOrderDialogState();
+  toast("Náhradník přidán do objednávky.");
+}
+
+function reservationLinkedToOrder(offer = {}, item = {}, reservation = {}) {
+  if (reservationStatusValue(reservation.status) !== "confirmed") return false;
   const customerId = clean(reservation.customerId);
-  if (!offerId || !customerId) return false;
-  return (state.data.orders || []).some((order) =>
-    clean(order.offerId) === offerId &&
-    clean(order.customerId) === customerId &&
-    orderContainsOfferItem(order, item),
-  );
+  if (!customerId) return false;
+  const orderedQuantity = orderedQuantityForOfferItemAndCustomer(offer, item, customerId);
+  if (!orderedQuantity) return false;
+  const confirmedReservations = (item.reservations || [])
+    .filter((entry) => clean(entry.customerId) === customerId && reservationStatusValue(entry.status) === "confirmed");
+  let quantityBefore = 0;
+  for (const entry of confirmedReservations) {
+    if (clean(entry.id) === clean(reservation.id)) {
+      const reservationQuantity = Number(normalizeWholeNumber(entry.quantity)) || 0;
+      return orderedQuantity >= quantityBefore + reservationQuantity;
+    }
+    quantityBefore += Number(normalizeWholeNumber(entry.quantity)) || 0;
+  }
+  return false;
 }
 
 function offerItemOrderProgress(offer = {}, item = {}) {
   const confirmed = (item.reservations || []).filter((reservation) => reservationStatusValue(reservation.status) === "confirmed");
   const confirmedQuantity = confirmed.reduce((sum, reservation) => sum + (Number(normalizeWholeNumber(reservation.quantity)) || 0), 0);
-  const orderedQuantity = confirmed.reduce((sum, reservation) =>
-    reservationLinkedToOrder(offer, item, reservation) ? sum + (Number(normalizeWholeNumber(reservation.quantity)) || 0) : sum, 0);
+  const orderedQuantity = offerItemOrderedQuantity(offer, item);
   if (!confirmedQuantity || !orderedQuantity) return { state: "", label: "" };
   if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednávce" };
   return { state: "partial", label: "Částečně v objednávce" };
@@ -10086,15 +10260,18 @@ async function createOrdersFromOffer(id) {
   reservations.forEach(({ item, reservation }) => {
     const currency = normalizeCurrency(item.currency);
     const key = `${reservation.customerId}::${currency}`;
-    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, currency, lines: [], total: 0, entries: [] });
+    if (!grouped.has(key)) grouped.set(key, { customerId: reservation.customerId, currency, lineItems: new Map(), total: 0, entries: [] });
     const group = grouped.get(key);
     const quantity = Number(normalizeWholeNumber(reservation.quantity)) || 1;
     const price = parseDecimal(item.price);
-    group.lines.push(
-      Number.isFinite(price)
-        ? buildOrderLineText(offerItemNameSafe(item), quantity, item.price, currency)
-        : `${offerItemNameSafe(item)} ${quantity}x`,
-    );
+    const lineKey = clean(item.id) || offerItemNameSafe(item);
+    const lineItem = group.lineItems.get(lineKey) || {
+      name: offerItemNameSafe(item),
+      quantity: 0,
+      unitPrice: item.price,
+    };
+    lineItem.quantity += quantity;
+    group.lineItems.set(lineKey, lineItem);
     if (Number.isFinite(price)) group.total += price * quantity;
     group.entries.push({ item, reservation });
   });
@@ -10107,13 +10284,19 @@ async function createOrdersFromOffer(id) {
     const packingFee = parseDecimal(defaults.packingFee);
     const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
     const orderId = uid();
+    const lines = [...group.lineItems.values()].map((line) => {
+      const unitPrice = parseDecimal(line.unitPrice);
+      return Number.isFinite(unitPrice)
+        ? buildOrderLineText(line.name, line.quantity, line.unitPrice, group.currency)
+        : `${line.name} ${line.quantity}x`;
+    });
     state.data.orders.push(normalizeOrder({
       id: orderId,
       offerId: offer.id,
       customerId: group.customerId,
       orderDate: offer.date || toDateInput(new Date()),
       season: seasonFromDate(offer.date),
-      varietiesText: group.lines.join("\n"),
+      varietiesText: lines.join("\n"),
       price: formatEditableAmount(group.total + feeTotal, group.currency),
       currency: group.currency,
       paymentStatus: "čeká",
@@ -10511,6 +10694,13 @@ function parseVarietyOrderLines(text) {
       };
     })
     .filter((line) => line.name);
+}
+
+function orderTotalFromText(text) {
+  return parseVarietyOrderLines(text).reduce((sum, line) => {
+    const amount = parseDecimal(line.explicitPrice);
+    return sum + (Number.isFinite(amount) ? amount * Math.max(line.quantity, 1) : 0);
+  }, 0);
 }
 
 function rawLineWithoutQuantity(line) {
