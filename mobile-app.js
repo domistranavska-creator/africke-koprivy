@@ -2459,9 +2459,11 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
   const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
   (data?.offers || []).forEach((offer) => {
     (offer.items || []).forEach((item) => {
-      const exactByName = byName.get(varietyNameMatchKey(item.varietyName || item.name));
+      const itemNameKey = varietyNameMatchKey(item.varietyName || item.name);
       const linkedById = byId.get(clean(item.varietyId));
-      const variety = exactByName || linkedById;
+      const exactByName = byName.get(itemNameKey);
+      const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
+      const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
       if (!variety) return;
       item.varietyId = clean(variety.id);
       item.varietyName = clean(variety.name);
@@ -2655,8 +2657,9 @@ function crossSeedlingImages(cross = {}) {
 }
 
 function varietyUsageCount(name) {
-  const key = normalize(name);
-  return state.data.orders.filter((order) => normalize(order.varietiesText).includes(key)).length;
+  const key = varietyNameMatchKey(name);
+  if (!key) return 0;
+  return state.data.orders.filter((order) => orderVarietyNames(order).some((item) => varietyNameMatchKey(item) === key)).length;
 }
 
 function orderTotalFromText(text) {

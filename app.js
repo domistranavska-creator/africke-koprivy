@@ -5774,9 +5774,11 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
   const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
   (data?.offers || []).forEach((offer) => {
     (offer.items || []).forEach((item) => {
-      const exactByName = byName.get(varietyNameMatchKey(item.varietyName || item.name));
+      const itemNameKey = varietyNameMatchKey(item.varietyName || item.name);
       const linkedById = byId.get(clean(item.varietyId));
-      const variety = exactByName || linkedById;
+      const exactByName = byName.get(itemNameKey);
+      const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
+      const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
       if (!variety) return;
       item.varietyId = variety.id;
       item.varietyName = variety.name;
@@ -9091,15 +9093,17 @@ function findVarietyByName(name) {
   const looseKey = varietyNameLooseKey(name);
   if (!key && !looseKey) return null;
   const varieties = [...state.data.varieties].sort((a, b) => b.name.length - a.name.length);
+  const canFuzzyMatch = key.length >= 4 && !/\d/.test(key);
   return (
     varieties.find((variety) => varietyNameMatchKey(variety.name) === key) ||
+    varieties.find((variety) => varietyNameLooseKey(variety.name) === looseKey) ||
     varieties.find((variety) => {
       const varietyKey = varietyNameMatchKey(variety.name);
-      return key && (key.includes(varietyKey) || varietyKey.includes(key));
+      return canFuzzyMatch && varietyKey.length >= 4 && !/\d/.test(varietyKey) && (key.includes(varietyKey) || varietyKey.includes(key));
     }) ||
     varieties.find((variety) => {
       const varietyLooseKey = varietyNameLooseKey(variety.name);
-      return looseKey && (looseKey.includes(varietyLooseKey) || varietyLooseKey.includes(looseKey));
+      return canFuzzyMatch && varietyLooseKey.length >= 4 && !/\d/.test(varietyLooseKey) && looseKey && (looseKey.includes(varietyLooseKey) || varietyLooseKey.includes(looseKey));
     }) ||
     null
   );
@@ -9125,10 +9129,11 @@ function orderMatchesVariety(order, name) {
   if (!needle) return false;
   const names = orderVarietyNames(order).map(varietyNameMatchKey);
   const textNeedle = normalize(clean(order.varietiesText)).replace(/[^a-z0-9]+/g, "");
+  const canFuzzyMatch = needle.length >= 4 && !/\d/.test(needle);
   return (
-    names.some((item) => item === needle || item.includes(needle) || needle.includes(item)) ||
-    (looseNeedle && normalize(cleanVarietyNameFromOrderLine(order.varietiesText)).includes(looseNeedle)) ||
-    textNeedle.includes(needle)
+    names.some((item) => item === needle || (canFuzzyMatch && item.length >= 4 && !/\d/.test(item) && (item.includes(needle) || needle.includes(item)))) ||
+    (canFuzzyMatch && looseNeedle && normalize(cleanVarietyNameFromOrderLine(order.varietiesText)).includes(looseNeedle)) ||
+    (canFuzzyMatch && textNeedle.includes(needle))
   );
 }
 
@@ -11092,9 +11097,11 @@ function varietyNamesFromText(text) {
       .map((part) =>
         clean(part)
           .replace(/(?:@|=)\s*\d+([,.]\d+)?\s*(kč|kc|czk|eur|€)?/gi, " ")
-          .replace(/-\s*\d+([,.]\d+)?\s*(kč|kc|czk|eur|€)?/gi, " ")
-          .replace(/\b\d+([,.]\d+)?\s*(kč|kc|czk|eur|€)?\b/gi, " ")
+          .replace(/-\s*\d+([,.]\d+)?\s*(kč|kc|czk|eur|€)/gi, " ")
+          .replace(/\b\d+([,.]\d+)?\s*(kč|kc|czk|eur|€)\b/gi, " ")
           .replace(/\b\d+\s*x\b/gi, " ")
+          .replace(/\b\d+\s*(ks|kus|kusy|řízků|rizku|sazenic)\b/gi, " ")
+          .replace(/\b(ks|kus|kusy|řízků|rizku|sazenic)\s*\d+\b/gi, " ")
           .replace(/[@=]/g, " ")
           .replace(/\b(celkem|bonus|kusy|sazenice|řízky|rizky|kč|kc|eur|euro|další|dalsi|kopřivy|koprivy)\b/gi, " ")
           .replace(/^[\s\-/?.,]+|[\s\-/?.,]+$/g, ""),
