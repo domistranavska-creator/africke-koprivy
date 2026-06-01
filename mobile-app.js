@@ -1,4 +1,4 @@
-const STORE_KEY = "africke-koprivy-data-v11";
+﻿const STORE_KEY = "africke-koprivy-data-v11";
 const LEGACY_STORE_KEYS = ["africke-koprivy-data-v10", "africke-koprivy-data-v9", "africke-koprivy-data-v8", "africke-koprivy-data-v7"];
 const SEED_SIGNATURE = window.AFRICKE_KOPRIVY_SEED_SIGNATURE || "";
 const SEED_SIGNATURE_KEY = `${STORE_KEY}:seed-signature`;
@@ -25,15 +25,24 @@ const SUPABASE_PREPARED_PHOTO_CACHE_PREFIX = "supabase-prepared-cache:";
 const SUPABASE_PHOTO_CACHE_MAX_BYTES = 300 * 1024 * 1024;
 const SUPABASE_PHOTO_CACHE_MAX_ITEMS = 1200;
 const SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES = 12 * 1024 * 1024;
+const AUTO_PULL_INTERVAL_MS = 2 * 60 * 1000;
+const AUTO_PULL_MIN_GAP_MS = 30 * 1000;
+const SUPABASE_PHOTO_LAZY_MARGIN_PX = 600;
+const SUPABASE_PHOTO_OBSERVER_ROOT_MARGIN = "600px 0px";
 const FACEBOOK_ITEMS_TOKEN = "{{ODREZKY}}";
 const FACEBOOK_DATE_TOKEN = "{{DATUM}}";
 const INDEXED_PHOTO_PREFIX = "indexed-photo:";
 const BRAND_LOGO_IMAGE_DATA_URI = clean(window.AFRICKE_KOPRIVY_BRAND_LOGO_DATA_URI || "");
 
+const photoRuntime = {
+  observer: null,
+  deferredLoads: new WeakMap(),
+};
+
 const stageLabels = { opyleno: "Opyleno", vyseto: "Vyseto", roste: "Roste", hotovo: "Hotovo" };
-const stageIcons = { opyleno: "✦", vyseto: "🌱", roste: "🌿", hotovo: "✓" };
-const ratingLabels = { krasna: "Krásná", hnusna: "Hnusná", nejista: "Nejistá" };
-const statusLabels = { "nová": "Nová", "připraveno": "Připravená", "odesláno": "Odeslaná", zaplaceno: "Vyřízená" };
+const stageIcons = { opyleno: "âś¦", vyseto: "đźŚ±", roste: "đźŚż", hotovo: "âś“" };
+const ratingLabels = { krasna: "KrĂˇsnĂˇ", hnusna: "HnusnĂˇ", nejista: "NejistĂˇ" };
+const statusLabels = { "novĂˇ": "NovĂˇ", "pĹ™ipraveno": "PĹ™ipravenĂˇ", "odeslĂˇno": "OdeslanĂˇ", zaplaceno: "VyĹ™Ă­zenĂˇ" };
 
 const state = {
   view: "offers",
@@ -45,6 +54,7 @@ const state = {
   syncRunning: false,
   syncRevision: 0,
   syncVerifiedPassword: "",
+  lastAutoPullAt: 0,
   installPromptEvent: null,
   data: loadData(),
   photoUrls: new Map(),
@@ -81,18 +91,18 @@ function init() {
     state.query = els.search.value;
     render();
   });
-  window.addEventListener("focus", () => maybeAutoPull());
+  window.addEventListener("focus", () => maybeAutoPull({ force: true }));
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
   els.installAppBtn?.addEventListener("click", installPwaApp);
-  window.setInterval(maybeAutoPull, 8000);
+  window.setInterval(() => maybeAutoPull(), AUTO_PULL_INTERVAL_MS);
   if (!isSyncLoggedIn()) state.view = "sync";
   render();
   if (hasPendingSync()) {
     state.syncDirty = true;
     scheduleAutoSync();
   } else {
-    maybeAutoPull();
+    maybeAutoPull({ force: true });
   }
 }
 
@@ -145,7 +155,7 @@ function openView(view) {
   if (!isSyncLoggedIn() && view !== "sync") {
     state.view = "sync";
     render();
-    toast("Nejdřív se přihlas.");
+    toast("NejdĹ™Ă­v se pĹ™ihlas.");
     return;
   }
   state.view = view;
@@ -158,11 +168,13 @@ function openView(view) {
 }
 
 function runAction(action) {
+  const stableOpenOrderSheet = globalThis.__akOpenOrderSheetFinal || openOrderSheet;
   if (action === "new-customer") return openCustomerSheet();
-  if (action === "new-order") return openOrderSheet();
+  if (action === "new-order") return stableOpenOrderSheet();
   if (action === "new-variety") return openVarietySheet();
   if (action === "new-cross") return openCrossSheet();
   if (action === "new-offer") return openOfferSheet();
+  if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
 }
 
 function handleBeforeInstallPrompt(event) {
@@ -174,12 +186,12 @@ function handleBeforeInstallPrompt(event) {
 function handleAppInstalled() {
   state.installPromptEvent = null;
   if (els.installAppBtn) els.installAppBtn.hidden = true;
-  toast("Appka je nainstalovaná.");
+  toast("Appka je nainstalovanĂˇ.");
 }
 
 async function installPwaApp() {
   if (!state.installPromptEvent) {
-    toast("Instalace se objeví až po otevření z HTTPS odkazu v Chrome.");
+    toast("Instalace se objevĂ­ aĹľ po otevĹ™enĂ­ z HTTPS odkazu v Chrome.");
     return;
   }
   const promptEvent = state.installPromptEvent;
@@ -219,22 +231,22 @@ function renderCardPill(pill) {
 
 function renderSummary() {
   const summary = {
-    offers: ["Nabídky", `${state.data.offers.length} nabídek`, "Rychle vytvoříš nabídku a rezervace."],
-    orders: ["Objednávky", `${state.data.orders.length} objednávek`, "Platby, doprava a text zákazníkovi po ruce."],
-    customers: ["Zákazníci", `${state.data.customers.length} kontaktů`, ""],
-    varieties: ["Odrůdy", `${state.data.varieties.length} odrůd`, "Fotky a ceny v Kč."],
-    crosses: ["Křížení", `${state.data.crosses.length} záznamů`, ""],
-    sync: ["Nastavení", loadSyncConfig().autoSync ? "Sync zapnutý" : "Sync vypnutý", "Soukromý cloud, fotky a základní nastavení aplikace."],
-  }[state.view] || ["Přehled", "", ""];
+    offers: ["NabĂ­dky", `${state.data.offers.length} nabĂ­dek`, "Rychle vytvoĹ™Ă­Ĺˇ nabĂ­dku a rezervace."],
+    orders: ["ObjednĂˇvky", `${state.data.orders.length} objednĂˇvek`, "Platby, doprava a text zĂˇkaznĂ­kovi po ruce."],
+    customers: ["ZĂˇkaznĂ­ci", `${state.data.customers.length} kontaktĹŻ`, ""],
+    varieties: ["OdrĹŻdy", `${state.data.varieties.length} odrĹŻd`, "Fotky a ceny v KÄŤ."],
+    crosses: ["KĹ™Ă­ĹľenĂ­", `${state.data.crosses.length} zĂˇznamĹŻ`, ""],
+    sync: ["NastavenĂ­", loadSyncConfig().autoSync ? "Sync zapnutĂ˝" : "Sync vypnutĂ˝", "SoukromĂ˝ cloud, fotky a zĂˇkladnĂ­ nastavenĂ­ aplikace."],
+  }[state.view] || ["PĹ™ehled", "", ""];
   els.summary.innerHTML = `<div><span>${escapeHtml(summary[0])}</span><strong>${escapeHtml(summary[1])}</strong></div>${summary[2] ? `<p>${escapeHtml(summary[2])}</p>` : ""}`;
 }
 
 function renderFilters() {
   const filters = {
     offers: [],
-    orders: [["all", "Vše"], ["todo", "K řešení"], ["done", "Hotovo"]],
-    customers: [["all", "Vše"], ["cz", "Česko"], ["foreign", "Zahraničí"]],
-    varieties: [["all", "Vše"], ["active", "Aktivní"], ["photo", "S fotkou"]],
+    orders: [["all", "VĹˇe"], ["todo", "K Ĺ™eĹˇenĂ­"], ["done", "Hotovo"]],
+    customers: [["all", "VĹˇe"], ["cz", "ÄŚesko"], ["foreign", "ZahraniÄŤĂ­"]],
+    varieties: [["all", "VĹˇe"], ["active", "AktivnĂ­"], ["photo", "S fotkou"]],
     crosses: [],
     sync: [],
   }[state.view] || [];
@@ -250,35 +262,44 @@ function renderFilters() {
 
 function renderOffers() {
   const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
-  if (!offers.length) return empty("Žádné nabídky.");
-  return offers.map((offer) => {
-    const items = sortedOfferItems(offer);
-    const reserved = offerReservedCount(offer);
-    const total = offerTotalCount(offer);
-    const available = offerAvailableCount(offer);
-    const alternates = offerAlternateCount(offer);
-    const coverImage = items.map((item) => offerItemImage(item)).find(Boolean) || "";
-    const itemPills = items.slice(0, 4).map((item) => `🌿 ${offerItemName(item)}`);
-    if (items.length > 4) itemPills.push(`+${items.length - 4} další`);
-    return card({
-      id: offer.id,
-      type: "offer",
-      title: offer.title,
-      sub: `${formatDate(offer.date)} · ${offer.status}`,
-      pills: [...itemPills, `Volné ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `Náhradníci ${alternates}` : ""],
+  if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+  const groups = splitOffersByType(offers);
+  const renderOfferGroup = (label, items) => {
+    if (!items.length) return "";
+    return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+      const items = sortedOfferItems(offer);
+      const reserved = offerReservedCount(offer);
+      const total = offerTotalCount(offer);
+      const available = offerAvailableCount(offer);
+      const alternates = offerAlternateCount(offer);
+      const coverImage = items.map((item) => offerItemImage(item)).find(Boolean) || "";
+      const itemPills = items.slice(0, 4).map((item) => `đźŚż ${offerItemName(item)}`);
+      if (items.length > 4) itemPills.push(`+${items.length - 4} dalĹˇĂ­`);
+      return card({
+        id: offer.id,
+        type: "offer",
+        title: offer.title,
+      sub: `${formatDate(offer.date)} Â· ${offerTypeLabel(offer)} Â· ${offer.status}`,
+      pills: [...itemPills, `VolnĂ© ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `NĂˇhradnĂ­ci ${alternates}` : ""],
+      badges: isRestOffer(offer) ? [{ label: "Resty/poznĂˇmky", className: "warn" }] : [],
       thumb: coverImage,
       thumbText: initials(offer.title),
-      actions: [["facebook-offer", "FB"], ["edit-offer", "✎"], ["delete-offer", "×"]],
+      actions: [["facebook-offer", "FB"], ["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]],
     });
-  }).join("");
+    }).join("")}`;
+  };
+  return [
+    renderOfferGroup("NabĂ­dky", groups.offers),
+    renderOfferGroup("Resty/poznĂˇmky", groups.rests),
+  ].filter(Boolean).join("");
 }
 
 function renderOrders() {
   const orders = state.data.orders.filter(matchOrder).sort((a, b) => String(b.orderDate).localeCompare(String(a.orderDate)));
-  if (!orders.length) return empty("Žádné objednávky.");
+  if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
   return orders.map((order) => {
     const customer = findCustomer(order.customerId);
-    const tone = order.paymentStatus === "zaplaceno" && ["odesláno", "zaplaceno"].includes(order.shippingStatus)
+    const tone = order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)
       ? "done"
       : order.paymentStatus === "zaplaceno"
         ? "progress"
@@ -287,51 +308,51 @@ function renderOrders() {
       id: order.id,
       type: "order",
       tone,
-      title: compactName(customerName(customer) || "Bez zákazníka"),
-      sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" · "),
+      title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+      sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· "),
       price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
       pills: [
-        ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `🌿 ${item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name}`),
-        ...orderOfferAlternateEntries(order).map((item) => ({ label: `⚠ Náhradník: ${item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+        ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `đźŚż ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`),
+        ...orderOfferAlternateEntries(order).map((item) => ({ label: `âš  NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
       ],
       badges: [paymentPill(order), statusPill(order), orderPaymentTextPill(order)],
-      actions: [["copy-order", "📋"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "✓Txt" : "Txt"], ["edit-order", "✎"], ["delete-order", "×"]],
+      actions: [["copy-order", "đź“‹"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "âś“Txt" : "Txt"], ["edit-order", "âśŽ"], ["delete-order", "Ă—"]],
     });
   }).join("");
 }
 
 function renderCustomers() {
   const customers = state.data.customers.filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
-  if (!customers.length) return empty("Žádní zákazníci.");
+  if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
   return customers.map((customer) => card({
     id: customer.id,
     type: "customer",
     title: customerName(customer),
     sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>"),
     pills: customer.tags || [],
-    actions: [["order-customer", "+"], ["edit-customer", "✎"], ["delete-customer", "×"]],
+    actions: [["order-customer", "+"], ["edit-customer", "âśŽ"], ["delete-customer", "Ă—"]],
   })).join("");
 }
 
 function renderVarieties() {
   const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
-  if (!varieties.length) return empty("Žádné odrůdy.");
+  if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
   return varieties.map((variety) => card({
     id: variety.id,
     type: "variety",
-    title: `🌿 ${variety.name}`,
-    sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} · ${varietyUsageCount(variety.name)} záznamů`,
+    title: `đźŚż ${variety.name}`,
+    sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} Â· ${varietyUsageCount(variety.name)} zĂˇznamĹŻ`,
     price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
     thumb: varietyImages(variety)[0],
     thumbText: initials(variety.name),
-    pills: [variety.active === false ? "Neaktivní" : "✅ Aktivní"],
-    actions: [["edit-variety", "✎"], ["delete-variety", "×"]],
+    pills: [variety.active === false ? "NeaktivnĂ­" : "âś… AktivnĂ­"],
+    actions: [["edit-variety", "âśŽ"], ["delete-variety", "Ă—"]],
   })).join("");
 }
 
 function renderCrosses() {
   const crosses = state.data.crosses.filter(matchCross).sort((a, b) => String(b.pollinatedAt).localeCompare(String(a.pollinatedAt)));
-  if (!crosses.length) return empty("Žádná křížení.");
+  if (!crosses.length) return empty("Ĺ˝ĂˇdnĂˇ kĹ™Ă­ĹľenĂ­.");
   return crosses.map((cross) => {
     const tone = cross.resultRating === "hnusna" ? "reject" : cross.stage === "hotovo" ? "done" : "attention";
     return card({
@@ -342,8 +363,8 @@ function renderCrosses() {
       sub: cross.seedlingName || "",
       thumb: crossSeedlingImages(cross)[0],
       thumbText: initials(crossLineage(cross)),
-      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `✅ ${ratingLabels[cross.resultRating]}` : "Bez hodnocení", cross.seedlingName || "—"],
-      actions: [["download-cross", "▣"], ["edit-cross", "✎"], ["delete-cross", "×"]],
+      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `âś… ${ratingLabels[cross.resultRating]}` : "Bez hodnocenĂ­", cross.seedlingName || "â€”"],
+      actions: [["download-cross", "â–Ł"], ["edit-cross", "âśŽ"], ["delete-cross", "Ă—"]],
     });
   }).join("");
 }
@@ -356,40 +377,43 @@ function renderSync() {
   const loginFields = loggedIn
     ? ""
     : `<label class="field"><span>Email</span><input id="syncEmail" type="email" value="${escapeHtml(config.email)}" autocomplete="email"></label>
-    <label class="field"><span>Heslo k účtu</span><input id="syncLoginPassword" type="password" autocomplete="current-password"></label>
-    <label class="field"><span>Šifrovací heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmí se ztratit"></label>`;
+    <label class="field"><span>Heslo k ĂşÄŤtu</span><input id="syncLoginPassword" type="password" autocomplete="current-password"></label>
+    <label class="field"><span>Ĺ ifrovacĂ­ heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmĂ­ se ztratit"></label>`;
   return `<section class="sync-card">
-    <strong class="title">Soukromá appka</strong>
-    <p class="sub">${loggedIn ? "Přihlášeno. Sync běží automaticky na pozadí." : "Po přihlášení se ukáže obsah appky. Sync běží úsporně."}</p>
+    <strong class="title">SoukromĂˇ appka</strong>
+    <p class="sub">${loggedIn ? "PĹ™ihlĂˇĹˇeno. Sync bÄ›ĹľĂ­ automaticky na pozadĂ­." : "Po pĹ™ihlĂˇĹˇenĂ­ se ukĂˇĹľe obsah appky. Sync bÄ›ĹľĂ­ ĂşspornÄ›."}</p>
     <input id="syncUrl" type="hidden" value="${escapeHtml(config.url)}">
     <input id="syncAnon" type="hidden" value="${escapeHtml(config.anonKey)}">
     ${loginFields}
     <div class="two">
-      ${loggedIn ? `<button class="button" type="button" id="syncLogout">Odhlásit</button>` : `<button class="button primary" type="button" id="syncLogin">Přihlásit</button>`}
+      ${loggedIn ? `<button class="button" type="button" id="syncLogout">OdhlĂˇsit</button>` : `<button class="button primary" type="button" id="syncLogin">PĹ™ihlĂˇsit</button>`}
     </div>
-    <small class="sub">${loggedIn ? "Obsah je odemčený." : "Obsah se zobrazí až po přihlášení."}</small>
+    <small class="sub">${loggedIn ? "Obsah je odemÄŤenĂ˝." : "Obsah se zobrazĂ­ aĹľ po pĹ™ihlĂˇĹˇenĂ­."}</small>
   </section>
   <section class="sync-card">
     <strong class="title">Poplatky</strong>
     <div class="two">
-      <label class="field"><span>Zásilkovna ČR</span><input id="settingShippingCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeCz)}"></label>
-      <label class="field"><span>Zásilkovna SK</span><input id="settingShippingSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeSk)}"></label>
+      <label class="field"><span>ZĂˇsilkovna ÄŚR</span><input id="settingShippingCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeCz)}"></label>
+      <label class="field"><span>ZĂˇsilkovna SK</span><input id="settingShippingSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeSk)}"></label>
     </div>
     <div class="two">
-      <label class="field"><span>Balíkovna</span><input id="settingPostal" inputmode="decimal" value="${escapeHtml(settings.postalFee)}"></label>
-      <label class="field"><span>Zásilkovna na adresu</span><input id="settingShippingAddress" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddress)}"></label>
+      <label class="field"><span>BalĂ­kovna</span><input id="settingPostal" inputmode="decimal" value="${escapeHtml(settings.postalFee)}"></label>
+      <label class="field"><span>BalnĂ©</span><input id="settingPacking" inputmode="decimal" value="${escapeHtml(settings.packingFee)}"></label>
     </div>
     <div class="two">
-      <label class="field"><span>Dobírka ČR</span><input id="settingCodCz" inputmode="decimal" value="${escapeHtml(settings.codFeeCz)}"></label>
-      <label class="field"><span>Dobírka Slovensko</span><input id="settingCodSk" inputmode="decimal" value="${escapeHtml(settings.codFeeSk)}"></label>
+      <label class="field"><span>ZĂˇsilkovna na adresu ÄŚR</span><input id="settingShippingAddressCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddressCz)}"></label>
+      <label class="field"><span>ZĂˇsilkovna na adresu Slovensko</span><input id="settingShippingAddressSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddressSk)}"></label>
     </div>
-    <label class="field"><span>Balné</span><input id="settingPacking" inputmode="decimal" value="${escapeHtml(settings.packingFee)}"></label>
-    <strong class="title small-title">Platba pro zákazníka</strong>
-    <label class="field"><span>Jméno a příjmení</span><input id="settingPaymentName" value="${escapeHtml(settings.paymentAccountName)}"></label>
-    <label class="field"><span>Číslo účtu</span><input id="settingPaymentAccount" value="${escapeHtml(settings.paymentAccountNumber)}"></label>
+    <div class="two">
+      <label class="field"><span>DobĂ­rka ÄŚR</span><input id="settingCodCz" inputmode="decimal" value="${escapeHtml(settings.codFeeCz)}"></label>
+      <label class="field"><span>DobĂ­rka Slovensko</span><input id="settingCodSk" inputmode="decimal" value="${escapeHtml(settings.codFeeSk)}"></label>
+    </div>
+    <strong class="title small-title">Platba pro zĂˇkaznĂ­ka</strong>
+    <label class="field"><span>JmĂ©no a pĹ™Ă­jmenĂ­</span><input id="settingPaymentName" value="${escapeHtml(settings.paymentAccountName)}"></label>
+    <label class="field"><span>ÄŚĂ­slo ĂşÄŤtu</span><input id="settingPaymentAccount" value="${escapeHtml(settings.paymentAccountNumber)}"></label>
     <label class="field"><span>IBAN</span><input id="settingPaymentIban" value="${escapeHtml(settings.paymentIban)}"></label>
     <label class="field"><span>SWIFT / BIC</span><input id="settingPaymentSwift" value="${escapeHtml(settings.paymentSwift)}"></label>
-    <button class="button primary" type="button" id="saveAppSettings">Uložit nastavení</button>
+    <button class="button primary" type="button" id="saveAppSettings">UloĹľit nastavenĂ­</button>
   </section>`;
 }
 
@@ -417,8 +441,9 @@ function bindListActions() {
       if (event.target.closest("button")) return;
       const type = cardEl.dataset.card;
       const id = cardEl.dataset.id;
+      const stableOpenOrderSheet = globalThis.__akOpenOrderSheetFinal || openOrderSheet;
       if (type === "customer") openCustomerSheet(id);
-      if (type === "order") openOrderSheet(id);
+      if (type === "order") stableOpenOrderSheet(id);
       if (type === "variety") openVarietyDetailSheet(id);
       if (type === "cross") openCrossDetailSheet(id);
       if (type === "offer") openOfferDetailSheet(id);
@@ -435,21 +460,22 @@ function bindListActions() {
 }
 
 function handleRowAction(action, id) {
+  const stableOpenOrderSheet = globalThis.__akOpenOrderSheetFinal || openOrderSheet;
   if (action === "edit-customer") return openCustomerSheet(id);
-  if (action === "order-customer") return openOrderSheet(null, id);
-  if (action === "delete-customer") return deleteItem("customers", id, "Zákazníka");
-  if (action === "edit-order") return openOrderSheet(id);
-  if (action === "delete-order") return deleteItem("orders", id, "Objednávku");
+  if (action === "order-customer") return stableOpenOrderSheet(null, id);
+  if (action === "delete-customer") return deleteItem("customers", id, "ZĂˇkaznĂ­ka");
+  if (action === "edit-order") return stableOpenOrderSheet(id);
+  if (action === "delete-order") return deleteItem("orders", id, "ObjednĂˇvku");
   if (action === "copy-order") return copyOrderText(id);
   if (action === "toggle-order-text-sent") return toggleOrderPaymentTextSent(id);
   if (action === "edit-variety") return openVarietySheet(id);
-  if (action === "delete-variety") return deleteItem("varieties", id, "Odrůdu");
+  if (action === "delete-variety") return deleteItem("varieties", id, "OdrĹŻdu");
   if (action === "edit-cross") return openCrossSheet(id);
   if (action === "download-cross") return downloadCrossCard(id);
-  if (action === "delete-cross") return deleteItem("crosses", id, "Křížení");
+  if (action === "delete-cross") return deleteItem("crosses", id, "KĹ™Ă­ĹľenĂ­");
   if (action === "facebook-offer") return prepareFacebookOffer(id);
   if (action === "edit-offer") return openOfferSheet(id);
-  if (action === "delete-offer") return deleteItem("offers", id, "Nabídku");
+  if (action === "delete-offer") return deleteItem("offers", id, "NabĂ­dku");
 }
 
 function crossStageText(stage) {
@@ -461,38 +487,57 @@ function customerOverviewMarkup(customerId) {
     .filter((order) => order.customerId === customerId)
     .sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
   const waitingOrders = orders.filter((order) => order.paymentStatus !== "zaplaceno");
-  const waitingText = waitingOrders.length ? `${waitingOrders.length} · ${orderTotalsText(waitingOrders)}` : "Ne";
+  const waitingText = waitingOrders.length ? `${waitingOrders.length} Â· ${orderTotalsText(waitingOrders)}` : "Ne";
   return `<section class="customer-overview">
     <div class="offer-stats customer-overview-stats">
-      <span><small>Objednávky</small><strong>${orders.length}</strong></span>
+      <span><small>ObjednĂˇvky</small><strong>${orders.length}</strong></span>
       <span><small>Celkem koupil</small><strong>${escapeHtml(orderTotalsText(orders))}</strong></span>
-      <span><small>Čeká platba</small><strong>${escapeHtml(waitingText)}</strong></span>
+      <span><small>ÄŚekĂˇ platba</small><strong>${escapeHtml(waitingText)}</strong></span>
     </div>
   </section>`;
 }
 
 function orderTotalsText(orders = []) {
   const total = orders.reduce((sum, order) => sum + orderFinalTotal(order), 0);
-  return total > 0 ? formatMoney(total, "CZK") : "0 Kč";
+  return total > 0 ? formatMoney(total, "CZK") : "0 KÄŤ";
 }
 
 function syncOrderSheetCustomerValidity(form = els.sheet.querySelector("#sheetForm")) {
   const customerSelect = form?.elements?.customerId;
   if (!customerSelect) return;
-  customerSelect.setCustomValidity(clean(customerSelect.value) ? "" : "Zvol zákazníka.");
+  customerSelect.setCustomValidity(clean(customerSelect.value) ? "" : "Zvol zĂˇkaznĂ­ka.");
+}
+
+function mobileCustomerCountryMode(customer = null) {
+  const country = normalize(clean(customer?.country || ""));
+  if (!country) return "";
+  if (["sk", "sr"].includes(country) || country.includes("slovensko") || country.includes("slovenska republika") || country.includes("slovak")) return "sk";
+  if (["cz", "cr"].includes(country) || country.includes("cesko") || country.includes("ceska republika") || country.includes("czech")) return "cz";
+  return "";
+}
+
+function defaultPackingFeeValue(settings = appSettings()) {
+  return clean(settings?.packingFee) || "20";
+}
+
+function shippingAddressLabel(customer) {
+  const countryMode = mobileCustomerCountryMode(customer);
+  if (countryMode === "sk") return "Zásilkovna na adresu Slovensko";
+  if (countryMode === "cz") return "Zásilkovna na adresu ČR";
+  return "Zásilkovna na adresu";
 }
 
 function shippingLabel(customer) {
-  const country = normalize(clean(customer?.country || ""));
-  if (country.includes("slovensko")) return "Zásilkovna Slovensko";
-  if (country.includes("cesko") || country.includes("česko")) return "Zásilkovna ČR";
+  const countryMode = mobileCustomerCountryMode(customer);
+  if (countryMode === "sk") return "Zásilkovna Slovensko";
+  if (countryMode === "cz") return "Zásilkovna ČR";
   return "Zásilkovna";
 }
 
 function defaultShippingPresetForCustomer(customer = null) {
-  const country = normalize(clean(customer?.country || ""));
-  if (country.includes("slovensko")) return "shipping-sk";
-  if (country.includes("cesko") || country.includes("česko")) return "shipping-cz";
+  const countryMode = mobileCustomerCountryMode(customer);
+  if (countryMode === "sk") return "shipping-sk";
+  if (countryMode === "cz") return "shipping-cz";
   return "";
 }
 
@@ -500,14 +545,30 @@ function isCountryDefaultShippingPreset(preset) {
   return preset === "shipping-cz" || preset === "shipping-sk";
 }
 
+function isShippingAddressLabel(label) {
+  const normalized = normalize(clean(label));
+  return [
+    normalize("Zásilkovna na adresu"),
+    normalize("Zásilkovna na adresu ČR"),
+    normalize("Zásilkovna na adresu Slovensko"),
+  ].includes(normalized);
+}
+
 function orderShippingLabel(order, customer = findCustomer(order?.customerId)) {
   return clean(order?.shippingFeeLabel) || shippingLabel(customer);
 }
 
+function defaultShippingAddressFeeForCustomer(settings = appSettings(), customer = null) {
+  const countryMode = mobileCustomerCountryMode(customer);
+  if (countryMode === "sk") return settings.shippingFeeAddressSk || settings.shippingFeeAddressCz || "";
+  if (countryMode === "cz") return settings.shippingFeeAddressCz || settings.shippingFeeAddressSk || "";
+  return settings.shippingFeeAddressCz || settings.shippingFeeAddressSk || "";
+}
+
 function defaultCodFeeForCustomer(settings = appSettings(), customer = null) {
-  const country = normalize(clean(customer?.country || ""));
-  if (country.includes("slovensko")) return settings.codFeeSk;
-  if (country.includes("cesko") || country.includes("česko")) return settings.codFeeCz;
+  const countryMode = mobileCustomerCountryMode(customer);
+  if (countryMode === "sk") return settings.codFeeSk;
+  if (countryMode === "cz") return settings.codFeeCz;
   return settings.codFeeCz || "";
 }
 
@@ -568,6 +629,12 @@ function restoreOrderSheetFeeRestoreSnapshot(form = document.querySelector("#she
 
 function syncOrderSheetCountryShippingPreset(form = document.querySelector("#sheetForm")) {
   if (!form?.elements) return;
+  if (form.elements.deliveryMethod?.value === "personal_pickup") return;
+  const packingButton = els.sheet.querySelector('[data-fee="packing"]');
+  const shouldDefaultPacking = !clean(form.dataset.orderId) && clean(defaultPackingFeeValue(appSettings())) && !clean(form.elements.packingFee?.value);
+  if (packingButton && shouldDefaultPacking && !packingButton.classList.contains("active")) {
+    packingButton.classList.add("active");
+  }
   const nextPreset = defaultShippingPresetForCustomer(findCustomer(form.elements.customerId?.value));
   if (!nextPreset) return;
   const shippingButtons = [...els.sheet.querySelectorAll("[data-fee]")].filter((button) => {
@@ -576,7 +643,8 @@ function syncOrderSheetCountryShippingPreset(form = document.querySelector("#she
   });
   const activeButton = shippingButtons.find((button) => button.classList.contains("active"));
   const activePreset = activeButton?.dataset.fee || "";
-  if (!isCountryDefaultShippingPreset(activePreset) || activePreset === nextPreset) return;
+  if (activePreset && !isCountryDefaultShippingPreset(activePreset)) return;
+  if (activePreset === nextPreset) return;
   shippingButtons.forEach((button) => {
     if (isCountryDefaultShippingPreset(button.dataset.fee || "")) button.classList.remove("active");
   });
@@ -585,18 +653,18 @@ function syncOrderSheetCountryShippingPreset(form = document.querySelector("#she
 
 function openCustomerSheet(id = "") {
   const customer = findById("customers", id) || {};
-  openSheet(customer.id ? "Upravit zákazníka" : "Nový zákazník", `${customer.id ? customerOverviewMarkup(customer.id) : ""}<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Jméno a příjmení</span><input name="fullName" required value="${escapeHtml(customerName(customer))}"></label>
+  openSheet(customer.id ? "Upravit zĂˇkaznĂ­ka" : "NovĂ˝ zĂˇkaznĂ­k", `${customer.id ? customerOverviewMarkup(customer.id) : ""}<form class="form-grid" id="sheetForm">
+    <label class="field"><span>JmĂ©no a pĹ™Ă­jmenĂ­</span><input name="fullName" required value="${escapeHtml(customerName(customer))}"></label>
     <label class="field"><span>Telefon</span><input name="phone" value="${escapeHtml(customer.phone)}"></label>
     <label class="field"><span>Email</span><input name="email" type="email" value="${escapeHtml(customer.email)}"></label>
-    <label class="field"><span>FB jméno</span><input name="fbName" value="${escapeHtml(customer.fbName)}"></label>
+    <label class="field"><span>FB jmĂ©no</span><input name="fbName" value="${escapeHtml(customer.fbName)}"></label>
     <label class="field"><span>Ulice</span><input name="street" value="${escapeHtml(customer.street)}"></label>
     <div class="two">
-      <label class="field"><span>PSČ</span><input name="postalCode" value="${escapeHtml(customer.postalCode)}"></label>
-      <label class="field"><span>Město</span><input name="city" value="${escapeHtml(customer.city)}"></label>
+      <label class="field"><span>PSÄŚ</span><input name="postalCode" value="${escapeHtml(customer.postalCode)}"></label>
+      <label class="field"><span>MÄ›sto</span><input name="city" value="${escapeHtml(customer.city)}"></label>
     </div>
-    <label class="field"><span>Země</span><input name="country" value="${escapeHtml(customer.country)}"></label>
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(customer.note)}</textarea></label>
+    <label class="field"><span>ZemÄ›</span><input name="country" value="${escapeHtml(customer.country)}"></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(customer.note)}</textarea></label>
   </form>`, () => {
     const form = new FormData(document.querySelector("#sheetForm"));
     const now = new Date().toISOString();
@@ -628,30 +696,30 @@ function openOrderSheet(id = "", customerId = "") {
   const selectedCustomerId = clean(order.customerId || customerId);
   const selectedCustomer = findCustomer(selectedCustomerId);
   const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
-  openSheet(order.id ? "Upravit objednávku" : "Nová objednávka", `<form class="form-grid" id="sheetForm">
+  openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
     <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
-    <label class="field"><span>Zákazník</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zákazníka</option>${customers
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
       .slice()
       .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
       .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
       .join("")}</select></label>
     <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
-    ${toggle("paymentStatus", [["čeká", "Čeká"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "čeká")}
-    ${toggle("shippingStatus", [["nová", "Nová"], ["připraveno", "Připravená"], ["odesláno", "Odeslaná"], ["zaplaceno", "Vyřízená"]], order.shippingStatus || "nová")}
-    ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "Osobní odběr"]], order.deliveryMethod || "ship")}
+    ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+    ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+    ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
     <div class="toggle-grid">
-      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna ČR" ? "active" : ""}" type="button" data-fee="shipping-cz">Zásilkovna ČR · ${escapeHtml(appSettings().shippingFeeCz || "89")} Kč</button>
-      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">Zásilkovna SK · ${escapeHtml(appSettings().shippingFeeSk || "99")} Kč</button>
-      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Balíkovna" ? "active" : ""}" type="button" data-fee="shipping-post">Balíkovna · ${escapeHtml(appSettings().postalFee || "")} Kč</button>
-      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna na adresu" ? "active" : ""}" type="button" data-fee="shipping-address">Zásilkovna na adresu · ${escapeHtml(appSettings().shippingFeeAddress || "")} Kč</button>
-      <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">Balné · ${escapeHtml(appSettings().packingFee || "20")} Kč</button>
-      <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">Dobírka · ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} Kč</button>
-      ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "✓ Text odeslán" : "Text odeslán"}</button>` : ""}
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+      <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+      <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+      ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
     </div>
-    <label class="field"><span>Odrůdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 Kč">${escapeHtml(order.varietiesText)}</textarea></label>
+    <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
     <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
-    <label class="field"><span>Celkem Kč</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+    <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
     <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
     <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
     <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
@@ -719,26 +787,26 @@ function openOrderSheet(id = "", customerId = "") {
   });
   els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
     syncOrderSheetCustomerValidity();
-    if (!clean(els.sheet.querySelector('[name="customerId"]')?.value)) toast("Zvol zákazníka.");
+    if (!clean(els.sheet.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
   });
   els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
     event.preventDefault();
     const button = event.currentTarget;
     const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
     button.classList.toggle("active", sent);
-    button.textContent = sent ? "✓ Text odeslán" : "Text odeslán";
+    button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
   });
 }
 
 function openVarietySheet(id = "") {
   const variety = findById("varieties", id) || {};
-  openSheet(variety.id ? "Upravit odrůdu" : "Nová odrůda", `<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Název</span><input name="name" required value="${escapeHtml(variety.name)}"></label>
-    <label class="field"><span>Prodejní cena Kč</span><input name="salePrice" inputmode="decimal" value="${escapeHtml(variety.salePrice)}"></label>
-    <button class="chip-button ${variety.active === false ? "" : "active"}" type="button" data-toggle-active>${variety.active === false ? "Neaktivní" : "✅ Aktivní"}</button>
+  openSheet(variety.id ? "Upravit odrĹŻdu" : "NovĂˇ odrĹŻda", `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>NĂˇzev</span><input name="name" required value="${escapeHtml(variety.name)}"></label>
+    <label class="field"><span>ProdejnĂ­ cena KÄŤ</span><input name="salePrice" inputmode="decimal" value="${escapeHtml(variety.salePrice)}"></label>
+    <button class="chip-button ${variety.active === false ? "" : "active"}" type="button" data-toggle-active>${variety.active === false ? "NeaktivnĂ­" : "âś… AktivnĂ­"}</button>
     ${photoPickerFields("Fotky")}
     <div class="photo-grid" id="photoGrid">${photoTiles(varietyImages(variety))}</div>
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(variety.note)}</textarea></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(variety.note)}</textarea></label>
   </form>`, async () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
@@ -769,7 +837,7 @@ function openVarietySheet(id = "") {
     const button = buttonEvent.currentTarget;
     button.classList.toggle("active");
     button.classList.toggle("is-off");
-    button.textContent = button.classList.contains("is-off") ? "Neaktivní" : "✅ Aktivní";
+    button.textContent = button.classList.contains("is-off") ? "NeaktivnĂ­" : "âś… AktivnĂ­";
   });
 }
 
@@ -806,12 +874,12 @@ function openVarietyDetailSheet(id, options = {}) {
     <div class="offer-stats variety-detail-stats">
       <span><strong>${escapeHtml(variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "-")}</strong><small>cena</small></span>
       <span><strong>${images.length}</strong><small>fotek</small></span>
-      <span><strong>${usage}</strong><small>v objednávkách</small></span>
-      <span><strong>${variety.active === false ? "Ne" : "Ano"}</strong><small>aktivní</small></span>
+      <span><strong>${usage}</strong><small>v objednĂˇvkĂˇch</small></span>
+      <span><strong>${variety.active === false ? "Ne" : "Ano"}</strong><small>aktivnĂ­</small></span>
     </div>
     ${variety.note ? `<p class="sub">${escapeHtml(variety.note)}</p>` : ""}
     ${images.length > 1 ? `<div class="photo-grid variety-detail-gallery">${images.map((image) => `<span class="photo-tile"><img data-photo-ref="${escapeHtml(thumbPreviewRef(image))}" alt="${escapeHtml(variety.name)}"></span>`).join("")}</div>` : ""}
-  </section>`, null, `<button class="button" type="button" data-download-variety-photo="${escapeHtml(id)}" ${mainImage ? "" : "disabled"}>Stáhnout fotku</button><button class="button primary" type="button" data-edit-variety-detail="${escapeHtml(id)}">Upravit</button>`, {
+  </section>`, null, `<button class="button" type="button" data-download-variety-photo="${escapeHtml(id)}" ${mainImage ? "" : "disabled"}>StĂˇhnout fotku</button><button class="button primary" type="button" data-edit-variety-detail="${escapeHtml(id)}">Upravit</button>`, {
     ...options,
     restore: () => openVarietyDetailSheet(id, { replace: true }),
   });
@@ -826,17 +894,17 @@ function openCrossSheet(id = "") {
     .sort((a, b) => naturalCompare(a.name, b.name))
     .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`)
     .join("");
-  openSheet(cross.id ? "Upravit křížení" : "Nové křížení", `<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Matka</span><select name="motherVarietyId" required>${options}</select></label>
-    <label class="field"><span>Pyl</span><select name="pollenVarietyId" required>${options}</select></label>
-    <label class="field"><span>Datum opylení</span><input name="pollinatedAt" type="date" required value="${escapeHtml(cross.pollinatedAt || todayInput())}"></label>
+  openSheet(cross.id ? "Upravit kĹ™Ă­ĹľenĂ­" : "NovĂ© kĹ™Ă­ĹľenĂ­", `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>Matka</span><select name="motherVarietyId" required><option value="">Vyber odrůdu</option>${options}</select></label>
+    <label class="field"><span>Pyl</span><select name="pollenVarietyId" required><option value="">Vyber odrůdu</option>${options}</select></label>
+    <label class="field"><span>Datum opylenĂ­</span><input name="pollinatedAt" type="date" required value="${escapeHtml(cross.pollinatedAt || todayInput())}"></label>
     ${toggle("stage", [["opyleno", "Opyleno"], ["vyseto", "Vyseto"], ["roste", "Roste"], ["hotovo", "Hotovo"]], cross.stage || "opyleno")}
-    ${toggle("resultRating", [["krasna", "Krásná"], ["hnusna", "Hnusná"], ["nejista", "Nejistá"]], cross.resultRating || "nejista")}
-    <label class="field"><span>Název semenáče</span><input name="seedlingName" value="${escapeHtml(cross.seedlingName)}"></label>
-    ${photoPickerFields("Fotky semenáče")}
+    ${toggle("resultRating", [["krasna", "KrĂˇsnĂˇ"], ["hnusna", "HnusnĂˇ"], ["nejista", "NejistĂˇ"]], cross.resultRating || "nejista")}
+    <label class="field"><span>NĂˇzev semenĂˇÄŤe</span><input name="seedlingName" value="${escapeHtml(cross.seedlingName)}"></label>
+    ${photoPickerFields("Fotky semenĂˇÄŤe")}
     <div class="photo-grid" id="photoGrid">${photoTiles(crossSeedlingImages(cross))}</div>
     <div class="cross-flow" id="crossPreview"></div>
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(cross.note)}</textarea></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(cross.note)}</textarea></label>
   </form>`, async () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
@@ -861,8 +929,8 @@ function openCrossSheet(id = "") {
     if (item.seedlingName) item.linkedVarietyId = ensureVarietyFromCross(item);
     upsert("crosses", item);
   });
-  document.querySelector('[name="motherVarietyId"]').value = cross.motherVarietyId || state.data.varieties[0]?.id || "";
-  document.querySelector('[name="pollenVarietyId"]').value = cross.pollenVarietyId || state.data.varieties[1]?.id || state.data.varieties[0]?.id || "";
+  document.querySelector('[name="motherVarietyId"]').value = cross.motherVarietyId || "";
+  document.querySelector('[name="pollenVarietyId"]').value = cross.pollenVarietyId || "";
   bindToggles();
   bindPhotoGrid();
   renderCrossPreviewInSheet();
@@ -875,10 +943,10 @@ function openCrossDetailSheet(id, options = {}) {
   openSheet(crossLineage(cross), `<div class="cross-flow">${crossPreviewMarkup(cross)}</div>
     <div class="pill-row">
       <span class="pill">${escapeHtml(crossStageText(cross.stage))}</span>
-      <span class="pill">${ratingLabels[cross.resultRating] || "Bez hodnocení"}</span>
+      <span class="pill">${ratingLabels[cross.resultRating] || "Bez hodnocenĂ­"}</span>
       ${cross.seedlingName ? `<span class="pill">${escapeHtml(cross.seedlingName)}</span>` : ""}
     </div>
-    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button" type="button" data-download-cross="${escapeHtml(id)}">Stáhnout obrázek</button><button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`, {
+    ${cross.note ? `<p class="sub">${escapeHtml(cross.note)}</p>` : ""}`, null, `<button class="button" type="button" data-download-cross="${escapeHtml(id)}">StĂˇhnout obrĂˇzek</button><button class="button primary" type="button" data-edit-cross="${escapeHtml(id)}">Upravit</button>`, {
     ...options,
     restore: () => openCrossDetailSheet(id, { replace: true }),
   });
@@ -887,26 +955,33 @@ function openCrossDetailSheet(id, options = {}) {
   resolvePhotos(els.sheet);
 }
 
-function openOfferSheet(id = "") {
+function openOfferSheet(id = "", defaults = {}) {
   const offer = findById("offers", id) || {};
-  openSheet(offer.id ? "Upravit nabídku" : "Nová nabídka", `<form class="form-grid" id="sheetForm">
-    <label class="field"><span>Název</span><input name="title" required value="${escapeHtml(offer.title || `Nabídka ${formatDate(todayInput())}`)}"></label>
-    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(offer.date || todayInput())}"></label>
-    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || offer.date || todayInput())}"></label>
-    <label class="field"><span>Čas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
-    ${toggle("status", [["připravená", "Připravená"], ["zveřejněná", "Zveřejněná"], ["uzavřená", "Uzavřená"]], offer.status || "připravená")}
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  openSheet(offer.id ? (initialType === "rests" ? "Upravit resty" : "Upravit nabĂ­dku") : (initialType === "rests" ? "NovĂ© resty" : "NovĂˇ nabĂ­dka"), `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>NĂˇzev</span><input name="title" required value="${escapeHtml(offer.title || defaultOfferTitle(initialType, initialDate))}"></label>
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || initialDate)}"></label>
+    <label class="field"><span>ÄŚas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
+    <label class="field"><span>Typ</span><select name="type"><option value="offer" ${initialType === "offer" ? "selected" : ""}>NabĂ­dka</option><option value="rests" ${initialType === "rests" ? "selected" : ""}>Resty</option></select></label>
+    ${toggle("status", [["pĹ™ipravenĂˇ", "PĹ™ipravenĂˇ"], ["zveĹ™ejnÄ›nĂˇ", "ZveĹ™ejnÄ›nĂˇ"], ["uzavĹ™enĂˇ", "UzavĹ™enĂˇ"]], offer.status || "pĹ™ipravenĂˇ")}
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
   </form>`, () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
     const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const nextType = normalizeOfferType(data.get("type"));
+    const sourceType = offer.id ? normalizeOfferType(offer.type) : nextType;
     upsert("offers", normalizeOffer({
       ...offer,
       id: offer.id || uid(),
-      title: clean(data.get("title")),
-      date: clean(data.get("date")),
-      facebookPublishDate: clean(data.get("facebookPublishDate")) || clean(data.get("date")),
+      title: adjustedOfferTitleForType(clean(data.get("title")), sourceType, nextType, nextDate),
+      date: nextDate,
+      facebookPublishDate: clean(data.get("facebookPublishDate")) || nextDate,
       facebookPublishTime: clean(data.get("facebookPublishTime")) || "20:00",
+      type: nextType,
       status: form.querySelector('[name="status"]').value,
       note: clean(data.get("note")),
       items: offer.items || [],
@@ -924,19 +999,23 @@ function openOfferDetailSheet(id, options = {}) {
   const items = sortedOfferItems(offer);
   const reserved = offerReservedCount(offer);
   const total = offerTotalCount(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty" : "Upravit nabĂ­dku";
+  const toggleTypeLabel = isRestOffer(offer) ? "PĹ™esunout do nabĂ­dek" : "PĹ™esunout do restĹŻ";
   openSheet(offer.title, `<section class="offer-detail">
     <div class="offer-stats">
-      <span><strong>${items.length}</strong><small>odřezků</small></span>
-      <span><strong>${total}</strong><small>kusů</small></span>
-      <span><strong>${reserved}</strong><small>rezervací</small></span>
-      <span><strong>${Math.max(0, total - reserved)}</strong><small>volné</small></span>
+      <span><strong>${items.length}</strong><small>odĹ™ezkĹŻ</small></span>
+      <span><strong>${total}</strong><small>kusĹŻ</small></span>
+      <span><strong>${reserved}</strong><small>rezervacĂ­</small></span>
+      <span><strong>${Math.max(0, total - reserved)}</strong><small>volnĂ©</small></span>
     </div>
+    <div class="pill-row"><span class="pill ${isRestOffer(offer) ? "warn" : ""}">${escapeHtml(offerTypeLabel(offer))}</span><span class="pill">${escapeHtml(offer.status)}</span></div>
     ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
-    <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Připravit Facebook příspěvek</button>
+    <button class="button" type="button" data-toggle-offer-type="${escapeHtml(id)}">${toggleTypeLabel}</button>
+    <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">PĹ™ipravit Facebook pĹ™Ă­spÄ›vek</button>
     <div class="offer-items">
-      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
+      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">ZatĂ­m bez odĹ™ezkĹŻ.</div>`}
     </div>
-  </section>`, null, `<button class="button" type="button" data-close-sheet>Zavřít</button><button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button><button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabídku</button><button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávky</button><button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">Přidat odřezek</button>`, {
+  </section>`, null, `<button class="button" type="button" data-close-sheet>ZavĹ™Ă­t</button><button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button><button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabĂ­dku</button><button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoĹ™it objednĂˇvky</button><button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">PĹ™idat odĹ™ezek</button>`, {
     ...options,
     restore: () => openOfferDetailSheet(id, { replace: true }),
   });
@@ -964,6 +1043,4062 @@ function openOfferDetailSheet(id, options = {}) {
   resolvePhotos(els.sheet);
 }
 
+(function finalizeMobileRestMode() {
+  function looksLikeLegacyRestOffer(offer = {}) {
+    const title = clean(offer.title);
+    if (!/^Resty(?:\/pozn.*)?/i.test(title)) return false;
+    return Boolean(clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName) || clean(offer.note));
+  }
+
+  function mobileRestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function mobileRestCustomerText(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez z\u00e1kazn\u00edka";
+  }
+
+  function mobileRestNotePreview(offer = {}, max = 42) {
+    return clean(offer.note) ? `\ud83d\udcdd ${mobileShortRestText(offer.note, max)}` : "";
+  }
+
+  const previousOpenOfferSheet = openOfferSheet;
+  const previousOpenOfferDetailSheet = openOfferDetailSheet;
+
+  isRestOffer = function isRestOfferFinal(offer) {
+    return normalizeOfferType(offer?.type) === "rests" || looksLikeLegacyRestOffer(offer);
+  };
+
+  offerTypeLabel = function offerTypeLabelFinal(offerOrType) {
+    if (typeof offerOrType === "string") return normalizeOfferType(offerOrType) === "rests" ? "Resty" : "Nab\u00eddka";
+    return isRestOffer(offerOrType) ? "Resty" : "Nab\u00eddka";
+  };
+
+  mobileRestOfferVarietyLabel = function mobileRestOfferVarietyLabelFinal(offer = {}) {
+    return mobileRestNames(offer).join(", ");
+  };
+
+  mobileRestOfferSummaryText = function mobileRestOfferSummaryTextFinal(offer = {}) {
+    return [mobileRestCustomerText(offer), mobileRestOfferVarietyLabel(offer)].filter(Boolean).join(" \u00b7 ");
+  };
+
+  openOfferSheet = function openOfferSheetFinal(id = "", defaults = {}) {
+    const offer = findById("offers", id) || {};
+    const initialIsRest = offer.id ? isRestOffer(offer) : normalizeOfferType(defaults.type) === "rests";
+    if (!initialIsRest) return previousOpenOfferSheet(id, defaults);
+    const initialDate = offer.date || clean(defaults.date) || todayInput();
+    const names = mobileRestNames(offer);
+    const customers = [...state.data.customers].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    openSheet(offer.id ? "Upravit resty" : "Nov\u00e9 resty", `<form class="form-grid" id="sheetForm">
+      <input name="type" type="hidden" value="rests">
+      <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+      <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+      <input name="facebookPublishTime" type="hidden" value="20:00">
+      <input name="status" type="hidden" value="p\u0159ipraven\u00e1">
+      <input name="restVarietyId" type="hidden" value="">
+      <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+      <label class="field"><span>Z\u00e1kazn\u00edk</span><select name="restCustomerId"><option value="">Bez z\u00e1kazn\u00edka</option>${customers
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>Odr\u016fdy</span><input name="restVarietyPicker" list="varietyList" placeholder="Za\u010dni ps\u00e1t a p\u0159idej"></label>
+      <textarea name="restVarietyName" hidden aria-hidden="true">${escapeHtml(names.join("\n"))}</textarea>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-rest-variety-add>P\u0159idat odr\u016fdu</button></div>
+      <div class="rest-variety-selection" data-rest-variety-list></div>
+      <label class="field"><span>Pozn\u00e1mka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const nextDate = clean(data.get("date")) || todayInput();
+      const nextNames = restFormVarietyNames(data.get("restVarietyName"));
+      const matchedVariety = nextNames.length === 1 ? findVarietyByName(nextNames[0]) : null;
+      upsert("offers", normalizeOffer({
+        ...offer,
+        id: offer.id || uid(),
+        title: defaultOfferTitle("rests", nextDate),
+        date: nextDate,
+        facebookPublishDate: nextDate,
+        facebookPublishTime: "20:00",
+        type: "rests",
+        status: "p\u0159ipraven\u00e1",
+        note: clean(data.get("note")),
+        restCustomerId: clean(data.get("restCustomerId")),
+        restVarietyId: clean(matchedVariety?.id),
+        restVarietyName: nextNames.join("\n"),
+        items: offer.items || [],
+        createdAt: offer.createdAt || now,
+        updatedAt: now,
+      }));
+    });
+    setupRestVarietyPickerForSheet(els.sheet.querySelector("#sheetForm"), names.join("\n"));
+  };
+
+  openOfferDetailSheet = function openOfferDetailSheetFinal(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer || !isRestOffer(offer)) return previousOpenOfferDetailSheet(id, options);
+    state.activeOfferId = id;
+    const names = mobileRestNames(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>Z\u00e1kazn\u00edk</small><strong>${escapeHtml(mobileRestCustomerText(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "Odr\u016fdy" : "Odr\u016fda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+      </div>
+      ${clean(offer.note) ? `<div class="rest-meta-stack"><div class="rest-meta-card"><small>Pozn\u00e1mka</small><strong>${escapeHtml(offer.note)}</strong></div></div>` : ""}
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>Zav\u0159\u00edt</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvo\u0159it objedn\u00e1vku</button>`;
+    openSheet(offer.title, body, null, footer, {
+      ...options,
+      restore: () => openOfferDetailSheet(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  };
+
+  renderOffers = function renderOffersFinal() {
+    const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!offers.length) return empty("\u017d\u00e1dn\u00e9 nab\u00eddky.");
+    const groups = splitOffersByType(offers);
+    const renderOfferGroup = (label, items) => {
+      if (!items.length) return "";
+      return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+        if (isRestOffer(offer)) {
+          const names = mobileRestNames(offer);
+          const pills = names.slice(0, 4).map((name) => `\ud83c\udf3f ${name}`);
+          if (names.length > 4) pills.push(`+${names.length - 4} dal\u0161\u00ed`);
+          const notePill = mobileRestNotePreview(offer);
+          if (notePill) pills.push(notePill);
+          return card({
+            id: offer.id,
+            type: "offer",
+            title: offer.title,
+            sub: [formatDate(offer.date), mobileRestCustomerText(offer)].filter(Boolean).join(" \u00b7 "),
+            pills,
+            badges: [{ label: "Resty", className: "warn" }],
+            thumb: "",
+            thumbText: "R",
+            actions: [["edit-offer", "\u270e"], ["delete-offer", "\u00d7"]],
+          });
+        }
+
+        const offerItems = sortedOfferItems(offer);
+        const reserved = offerReservedCount(offer);
+        const total = offerTotalCount(offer);
+        const available = offerAvailableCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const coverImage = offerItems.map((item) => offerItemImage(item)).find(Boolean) || "";
+        const itemPills = offerItems.slice(0, 4).map((item) => `\ud83c\udf3f ${offerItemName(item)}`);
+        if (offerItems.length > 4) itemPills.push(`+${offerItems.length - 4} dal\u0161\u00ed`);
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title,
+          sub: `${formatDate(offer.date)} \u00b7 ${offerTypeLabel(offer)} \u00b7 ${offer.status}`,
+          pills: [...itemPills, `Voln\u00e9 ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `N\u00e1hradn\u00edci ${alternates}` : ""],
+          badges: [],
+          thumb: coverImage,
+          thumbText: initials(offer.title),
+          actions: [["facebook-offer", "FB"], ["edit-offer", "\u270e"], ["delete-offer", "\u00d7"]],
+        });
+      }).join("")}`;
+    };
+    return [
+      renderOfferGroup("Nab\u00eddky", groups.offers),
+      renderOfferGroup("Resty", groups.rests),
+    ].filter(Boolean).join("");
+  };
+})();
+(() => {
+  const stableOpenOrder = globalThis.__akOpenOrderSheetStable84 || globalThis.__akOpenOrderSheetFinal || openOrderSheet;
+
+  function safeOrderTone(order) {
+    if (customerStornoOrders(order?.customerId).length || orderHasStorno(order)) return "reject";
+    if (order?.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order?.shippingStatus)) return "done";
+    if (order?.paymentStatus === "zaplaceno") return "progress";
+    return "attention";
+  }
+
+  function fallbackRenderOffers() {
+    const offers = (state.data.offers || []).filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+    return offers.map((offer) => card({
+      id: offer.id,
+      type: "offer",
+      title: offer.title,
+      sub: [formatDate(offer.date), offerTypeLabel(offer), offer.status].filter(Boolean).join(" Â· "),
+      pills: [isRestOffer(offer) ? "Resty" : "NabĂ­dka"],
+      actions: [["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]],
+    })).join("");
+  }
+
+  function fallbackRenderOrders() {
+    const orders = (state.data.orders || []).filter(matchOrder).sort((a, b) => String(b.orderDate).localeCompare(String(a.orderDate)));
+    if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoCount = customerStornoOrders(order.customerId).length;
+      const latestStornoNote = stornoCount
+        ? clean(order.cancelledNote) || clean(orderStornoLines(order).slice().reverse().find((entry) => clean(entry.note))?.note)
+        : "";
+      return card({
+        id: order.id,
+        type: "order",
+        tone: safeOrderTone(order),
+        title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+        sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· ")
+          + (stornoCount ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoCount > 1 ? ` (${stornoCount})` : ""}</span>${latestStornoNote ? `<span class="customer-storno-mobile-note">${escapeHtml(latestStornoNote)}</span>` : ""}` : ""),
+        price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `đźŚż ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`),
+          ...orderOfferAlternateEntries(order).map((item) => ({ label: `âš  NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+          ...orderStornoLines(order).map((item) => ({ label: `âś• Storno: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+        ],
+        badges: [stornoCount ? `Stornuje${stornoCount > 1 ? ` (${stornoCount})` : ""}` : "", orderHasStorno(order) ? "Storno" : "", paymentPill(order), statusPill(order), orderPaymentTextPill(order)].filter(Boolean),
+        actions: [["copy-order", "đź“‹"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "âś“Txt" : "Txt"], ["edit-order", "âśŽ"], ["delete-order", "Ă—"]],
+      });
+    }).join("");
+  }
+
+  function fallbackRenderCustomers() {
+    const customers = (state.data.customers || []).filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoOrders = customerStornoOrders(customer.id);
+      const latestStornoNote = clean(stornoOrders[0]?.cancelledNote) || clean(orderStornoLines(stornoOrders[0] || {}).slice().reverse().find((entry) => clean(entry.note))?.note);
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoOrders.length ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>")
+          + (stornoOrders.length ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoOrders.length > 1 ? ` (${stornoOrders.length})` : ""}</span>${latestStornoNote ? `<span class="customer-storno-mobile-note">${escapeHtml(latestStornoNote)}</span>` : ""}` : ""),
+        pills: [...(customer.tags || []), ...(stornoOrders.length ? [`Stornuje${stornoOrders.length > 1 ? ` (${stornoOrders.length})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "âśŽ"], ["delete-customer", "Ă—"]],
+      });
+    }).join("");
+  }
+
+  function fallbackRenderVarieties() {
+    const varieties = (state.data.varieties || []).filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
+    if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
+    return varieties.map((variety) => card({
+      id: variety.id,
+      type: "variety",
+      title: `đźŚ± ${variety.name}`,
+      sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} Â· ${varietyUsageCount(variety.name)} zĂˇznamĹŻ`,
+      price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
+      thumb: varietyImages(variety)[0],
+      thumbText: initials(variety.name),
+      pills: [variety.active === false ? "NeaktivnĂ­" : "AktivnĂ­"],
+      actions: [["edit-variety", "âśŽ"], ["delete-variety", "Ă—"]],
+    })).join("");
+  }
+
+  function fallbackRenderCrosses() {
+    const crosses = (state.data.crosses || []).filter(matchCross).sort((a, b) => String(b.pollinatedAt).localeCompare(String(a.pollinatedAt)));
+    if (!crosses.length) return empty("Ĺ˝ĂˇdnĂˇ kĹ™Ă­ĹľenĂ­.");
+    return crosses.map((cross) => card({
+      id: cross.id,
+      type: "cross",
+      tone: cross.resultRating === "hnusna" ? "reject" : cross.stage === "hotovo" ? "done" : "attention",
+      title: crossLineage(cross),
+      sub: cross.seedlingName || "",
+      thumb: crossSeedlingImages(cross)[0],
+      thumbText: initials(crossLineage(cross)),
+      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `âś“ ${ratingLabels[cross.resultRating]}` : "Bez hodnocenĂ­", cross.seedlingName || "â€”"],
+      actions: [["download-cross", "â–Ł"], ["edit-cross", "âśŽ"], ["delete-cross", "Ă—"]],
+    })).join("");
+  }
+
+  function fallbackRenderSync() {
+    try {
+      return renderSync();
+    } catch {
+      return '<section class="sync-card"><strong class="title">NastavenĂ­</strong><p class="sub">NastavenĂ­ se nepodaĹ™ilo naÄŤĂ­st.</p></section>';
+    }
+  }
+
+  function bindSyncButtonsStable() {
+    document.querySelector("#syncLogin")?.addEventListener("click", loginSync, { capture: true });
+    document.querySelector("#syncLogout")?.addEventListener("click", logoutSync, { capture: true });
+    document.querySelector("#saveAppSettings")?.addEventListener("click", saveAppSettingsFromInputs, { capture: true });
+  }
+
+  function rebindStaticControlsStable() {
+    document.querySelectorAll("[data-view], [data-action]").forEach((node) => {
+      if (!(node instanceof HTMLButtonElement)) return;
+      const clone = node.cloneNode(true);
+      node.replaceWith(clone);
+    });
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = button.dataset.action || "";
+        if (action === "new-order") return (globalThis.__akOpenOrderSheetFinal || stableOpenOrder || openOrderSheet)();
+        if (action === "new-customer") return openCustomerSheet();
+        if (action === "new-variety") return openVarietySheet();
+        if (action === "new-cross") return openCrossSheet();
+        if (action === "new-offer") return openOfferSheet();
+        if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
+      }, true);
+    });
+  }
+
+  if (!globalThis.__akMobileListDelegationFinal86) {
+    globalThis.__akMobileListDelegationFinal86 = true;
+    els.list.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const actionButton = target.closest("[data-action-row]");
+      if (actionButton?.dataset?.actionRow) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = actionButton.dataset.actionRow;
+        const id = actionButton.dataset.id || "";
+        if (action === "edit-order") return (globalThis.__akOpenOrderSheetFinal || stableOpenOrder || openOrderSheet)(id);
+        if (action === "order-customer") return (globalThis.__akOpenOrderSheetFinal || stableOpenOrder || openOrderSheet)("", id);
+        return handleRowAction(action, id);
+      }
+      const cardEl = target.closest("[data-card]");
+      if (!cardEl?.dataset?.card || target.closest("button")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      const type = cardEl.dataset.card;
+      const id = cardEl.dataset.id || "";
+      if (type === "order") return (globalThis.__akOpenOrderSheetFinal || stableOpenOrder || openOrderSheet)(id);
+      if (type === "customer") return openCustomerSheet(id);
+      if (type === "variety") return openVarietyDetailSheet(id);
+      if (type === "cross") return openCrossDetailSheet(id);
+      if (type === "offer") return openOfferDetailSheet(id);
+    }, true);
+  }
+
+  render = function renderStableMobileEOF() {
+    if (!isSyncLoggedIn()) state.view = "sync";
+    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
+
+    try {
+      renderFilters();
+    } catch (error) {
+      console.error("mobile renderFilters failed", error);
+      els.filterRow.innerHTML = "";
+    }
+
+    try {
+      renderSummary();
+    } catch (error) {
+      console.error("mobile renderSummary failed", error);
+      els.summary.innerHTML = "";
+    }
+
+    const renderers = {
+      offers: () => {
+        try { return renderOffers(); } catch (error) { console.error("mobile offers render failed", error); return fallbackRenderOffers(); }
+      },
+      orders: () => {
+        try { return renderOrders(); } catch (error) { console.error("mobile orders render failed", error); return fallbackRenderOrders(); }
+      },
+      customers: () => {
+        try { return renderCustomers(); } catch (error) { console.error("mobile customers render failed", error); return fallbackRenderCustomers(); }
+      },
+      varieties: () => {
+        try { return renderVarieties(); } catch (error) { console.error("mobile varieties render failed", error); return fallbackRenderVarieties(); }
+      },
+      crosses: () => {
+        try { return renderCrosses(); } catch (error) { console.error("mobile crosses render failed", error); return fallbackRenderCrosses(); }
+      },
+      sync: fallbackRenderSync,
+    };
+
+    els.list.innerHTML = "";
+    try {
+      els.list.innerHTML = renderers[state.view]?.() || "";
+    } catch (error) {
+      console.error("mobile final list render failed", error);
+      els.list.innerHTML = empty("Tahle sekce se nepodaĹ™ila otevĹ™Ă­t.");
+    }
+
+    try {
+      resolvePhotos(els.list);
+    } catch (error) {
+      console.error("mobile resolvePhotos failed", error);
+    }
+    try {
+      bindSyncButtonsStable();
+    } catch (error) {
+      console.error("mobile bindSyncButtons failed", error);
+    }
+    try {
+      updateSyncIndicator();
+    } catch (error) {
+      console.error("mobile updateSyncIndicator failed", error);
+    }
+  };
+
+  openView = function openViewStableMobileEOF(view) {
+    if (!isSyncLoggedIn() && view !== "sync") {
+      state.view = "sync";
+      render();
+      toast("NejdĹ™Ă­v se pĹ™ihlas.");
+      return;
+    }
+    state.view = view;
+    state.filter = "all";
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    if (els.search) els.search.value = "";
+    state.query = "";
+    closeSheet({ all: true });
+    render();
+  };
+
+  if (typeof stableOpenOrder === "function") {
+    openOrderSheet = stableOpenOrder;
+    globalThis.__akOpenOrderSheetFinal = stableOpenOrder;
+  }
+
+  rebindStaticControlsStable();
+  render();
+})();
+(() => {
+  function stableParseOrderLineName(line = "") {
+    return clean(line)
+      .replace(/\b\d+\s*x\b/gi, " ")
+      .replace(/\bx\s*\d+\b/gi, " ")
+      .replace(/\b\d+\s*(ks|kus|kusy|Ĺ™Ă­zkĹŻ|rizku|sazenic)\b/gi, " ")
+      .replace(/(?:-|â€“|â€”)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/(?:@|=)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/\b\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)\b/gi, " ")
+      .replace(/[=:@]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function stableParseOrderLines(text = "") {
+    return clean(text)
+      .split(/\n+/)
+      .map((rawLine) => {
+        const raw = clean(rawLine);
+        const name = stableParseOrderLineName(raw);
+        return {
+          raw,
+          name,
+          quantity: orderLineQuantity(raw),
+          explicitPrice: Number.isFinite(orderLineUnitPrice(raw)) ? normalizeAmount(orderLineUnitPrice(raw)) : "",
+          explicitCurrency: "CZK",
+        };
+      })
+      .filter((line) => line.name);
+  }
+
+  function stableBuildOrderLineText(name, quantity = 1, amount = "") {
+    const normalizedName = clean(name);
+    const normalizedQuantity = Math.max(wholeNumber(quantity, 1), 1);
+    const parsedAmount = number(amount);
+    return Number.isFinite(parsedAmount)
+      ? offerOrderLineText(normalizedName, normalizedQuantity, parsedAmount)
+      : `${normalizedName} ${normalizedQuantity}x`;
+  }
+
+  function stableNormalizeStornoLines(value = "") {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => ({
+          name: clean(entry?.name),
+          quantity: Math.max(wholeNumber(entry?.quantity, 1), 1),
+          unitPrice: normalizeAmount(entry?.unitPrice),
+          currency: clean(entry?.currency) || "CZK",
+          note: clean(entry?.note),
+          createdAt: clean(entry?.createdAt),
+        }))
+        .filter((entry) => entry.name);
+    }
+    if (!clean(value)) return [];
+    try {
+      return stableNormalizeStornoLines(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  function stableCurrentOrderLines(form) {
+    return stableParseOrderLines(form?.elements?.varietiesText?.value || "");
+  }
+
+  function stableReadStornoLines(form) {
+    return stableNormalizeStornoLines(form?.elements?.stornoLines?.value);
+  }
+
+  function stableWriteStornoLines(form, lines = []) {
+    if (!form?.elements?.stornoLines) return;
+    form.elements.stornoLines.value = JSON.stringify(stableNormalizeStornoLines(lines));
+  }
+
+  function stableDefaultPriceInfo(line = {}) {
+    if (clean(line.explicitPrice)) return { amount: line.explicitPrice, currency: "CZK" };
+    const variety = findVarietyByName(line.name);
+    if (clean(variety?.salePrice)) return { amount: variety.salePrice, currency: "CZK" };
+    return { amount: "", currency: "CZK" };
+  }
+
+  function stableLatestCustomerStorno(customerId = "") {
+    const orders = customerStornoOrders(customerId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    let note = clean(latest?.cancelledNote);
+    if (!note && latest) {
+      const stornoEntry = orderStornoLines(latest)
+        .slice()
+        .reverse()
+        .find((entry) => clean(entry.note));
+      note = clean(stornoEntry?.note);
+    }
+    return { count: orders.length, note, latest };
+  }
+
+  function stableRenderOrderVarietySelection(form = els.sheet.querySelector("#sheetForm")) {
+    const container = form?.querySelector("[data-order-variety-selection]");
+    if (!container) return;
+    const lines = stableCurrentOrderLines(form);
+    container.innerHTML = lines.length
+      ? lines.map((line) => `<span class="rest-variety-chip">${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  function stableAddVarietyToOrder(form = els.sheet.querySelector("#sheetForm")) {
+    if (!form?.elements) return;
+    const select = form.querySelector('[name="orderVarietySelect"]');
+    const varietyId = clean(select?.value);
+    const variety = findById("varieties", varietyId);
+    if (!variety) {
+      toast("Vyber odrĹŻdu.");
+      return;
+    }
+    const lines = stableCurrentOrderLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(variety.name));
+    if (existingIndex >= 0) {
+      const existing = lines[existingIndex];
+      lines[existingIndex] = {
+        ...existing,
+        quantity: Math.max(existing.quantity || 1, 1) + 1,
+        explicitPrice: clean(existing.explicitPrice) || clean(variety.salePrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: variety.name,
+        quantity: 1,
+        explicitPrice: clean(variety.salePrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => stableBuildOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    if (select) select.value = "";
+    recalculateOrderSheetPrice(form);
+    stableRenderOrderVarietySelection(form);
+    stableRenderOrderStornoBlock(form);
+    try {
+      syncOrderSheetAlternates();
+    } catch (error) {
+      console.error("syncOrderSheetAlternates failed", error);
+    }
+    toast("OdrĹŻda pĹ™idĂˇna do objednĂˇvky.");
+  }
+
+  function stableRenderOrderStornoBlock(form = els.sheet.querySelector("#sheetForm")) {
+    const block = form?.querySelector("[data-sheet-order-storno]");
+    if (!form?.elements || !block) return;
+    const activeLines = stableCurrentOrderLines(form);
+    const stornoLines = stableReadStornoLines(form);
+    if (activeLines.length && clean(form.elements.cancelledAt?.value)) {
+      form.elements.cancelledAt.value = "";
+      form.elements.cancelledNote.value = "";
+    }
+    const cancelledAt = clean(form.elements.cancelledAt?.value);
+    const cancelledNote = clean(form.elements.cancelledNote?.value);
+    const cancelledInfo = cancelledAt
+      ? `ObjednĂˇvka stornovĂˇna ${new Intl.DateTimeFormat("cs-CZ", { day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(cancelledAt))}${cancelledNote ? ` Â· ${cancelledNote}` : ""}`
+      : "";
+    block.innerHTML = `
+      <div class="order-storno-sheet-heading">
+        <div>
+          <strong>Storna</strong>
+          <small>Toto se nepoÄŤĂ­tĂˇ do ceny.</small>
+        </div>
+        <button class="button ghost" type="button" data-stable-order-cancel-all ${activeLines.length ? "" : "disabled"}>Stornovat celou objednĂˇvku</button>
+      </div>
+      ${cancelledInfo ? `<div class="order-storno-sheet-status">${escapeHtml(cancelledInfo)}</div>` : ""}
+      <div class="order-storno-sheet-list">
+        ${activeLines.map((line, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-stable-order-storno="${index}">Stornovat</button>
+          </div>
+        `).join("")}
+        ${stornoLines.map((entry, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>âś• ${escapeHtml(entry.quantity > 1 ? `${entry.name} Â· ${quantityText(entry.quantity)} ks` : entry.name)}</span>
+              ${clean(entry.note) ? `<small>${escapeHtml(entry.note)}</small>` : ""}
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-stable-order-restore="${index}">Obnovit</button>
+          </div>
+        `).join("")}
+        ${!activeLines.length && !stornoLines.length ? '<div class="order-storno-sheet-status">ZatĂ­m bez storna.</div>' : ""}
+      </div>
+    `;
+    block.querySelector("[data-stable-order-cancel-all]")?.addEventListener("click", () => stableCancelEntireOrder(form));
+    block.querySelectorAll("[data-stable-order-storno]").forEach((button) => {
+      button.addEventListener("click", () => stableStornoOrderLine(form, Number(button.dataset.stableOrderStorno)));
+    });
+    block.querySelectorAll("[data-stable-order-restore]").forEach((button) => {
+      button.addEventListener("click", () => stableRestoreOrderLine(form, Number(button.dataset.stableOrderRestore)));
+    });
+  }
+
+  function stableStornoOrderLine(form, index) {
+    const lines = stableCurrentOrderLines(form);
+    const line = lines[index];
+    if (!line) return;
+    const rawQuantity = window.prompt(`Kolik ks stornovat u ${line.name}?`, String(Math.max(line.quantity || 1, 1)));
+    if (rawQuantity === null) return;
+    const stornoQuantity = Number.parseInt(clean(rawQuantity), 10);
+    const maxQuantity = Math.max(line.quantity || 1, 1);
+    if (!Number.isFinite(stornoQuantity) || stornoQuantity < 1 || stornoQuantity > maxQuantity) {
+      toast("NapiĹˇ platnĂ˝ poÄŤet kusĹŻ ke storno.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna (volitelnÄ›):", "") ?? "";
+    const priceInfo = stableDefaultPriceInfo(line);
+    const stornoLines = stableReadStornoLines(form);
+    stornoLines.push({
+      name: line.name,
+      quantity: stornoQuantity,
+      unitPrice: priceInfo.amount,
+      currency: "CZK",
+      note: clean(note),
+      createdAt: new Date().toISOString(),
+    });
+    stableWriteStornoLines(form, stornoLines);
+    const nextLines = lines.flatMap((item, itemIndex) => {
+      if (itemIndex !== index) return [stableBuildOrderLineText(item.name, item.quantity, item.explicitPrice)];
+      const remaining = Math.max(maxQuantity - stornoQuantity, 0);
+      return remaining ? [stableBuildOrderLineText(item.name, remaining, clean(item.explicitPrice) || priceInfo.amount)] : [];
+    });
+    form.elements.varietiesText.value = nextLines.join("\n");
+    recalculateOrderSheetPrice(form);
+    stableRenderOrderVarietySelection(form);
+    stableRenderOrderStornoBlock(form);
+    try {
+      renderSheetRestWarning(form);
+    } catch (error) {
+      console.error("renderSheetRestWarning failed", error);
+    }
+    toast("PoloĹľka pĹ™esunuta do storna.");
+  }
+
+  function stableRestoreOrderLine(form, index) {
+    const stornoLines = stableReadStornoLines(form);
+    const entry = stornoLines[index];
+    if (!entry) return;
+    const lines = stableCurrentOrderLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(entry.name));
+    if (existingIndex >= 0) {
+      const existing = lines[existingIndex];
+      lines[existingIndex] = {
+        ...existing,
+        quantity: Math.max(existing.quantity || 1, 1) + Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(existing.explicitPrice) || clean(entry.unitPrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: entry.name,
+        quantity: Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(entry.unitPrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => stableBuildOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    stableWriteStornoLines(form, stornoLines.filter((_, itemIndex) => itemIndex !== index));
+    form.elements.cancelledAt.value = "";
+    form.elements.cancelledNote.value = "";
+    recalculateOrderSheetPrice(form);
+    stableRenderOrderVarietySelection(form);
+    stableRenderOrderStornoBlock(form);
+    try {
+      renderSheetRestWarning(form);
+    } catch (error) {
+      console.error("renderSheetRestWarning failed", error);
+    }
+    toast("Storno vrĂˇceno do objednĂˇvky.");
+  }
+
+  function stableCancelEntireOrder(form) {
+    const lines = stableCurrentOrderLines(form);
+    if (!lines.length) {
+      toast("ObjednĂˇvka uĹľ nemĂˇ ĹľĂˇdnĂ© aktivnĂ­ poloĹľky.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna celĂ© objednĂˇvky (volitelnÄ›):", clean(form.elements.cancelledNote?.value) || "");
+    if (note === null) return;
+    const stornoLines = stableReadStornoLines(form);
+    lines.forEach((line) => {
+      const priceInfo = stableDefaultPriceInfo(line);
+      stornoLines.push({
+        name: line.name,
+        quantity: Math.max(line.quantity || 1, 1),
+        unitPrice: clean(line.explicitPrice) || priceInfo.amount,
+        currency: "CZK",
+        note: clean(note),
+        createdAt: new Date().toISOString(),
+      });
+    });
+    stableWriteStornoLines(form, stornoLines);
+    form.elements.varietiesText.value = "";
+    form.elements.shippingFee.value = "";
+    form.elements.shippingFeeLabel.value = "";
+    form.elements.packingFee.value = "";
+    form.elements.codFee.value = "";
+    form.elements.cancelledAt.value = new Date().toISOString();
+    form.elements.cancelledNote.value = clean(note);
+    recalculateOrderSheetPrice(form);
+    stableRenderOrderVarietySelection(form);
+    stableRenderOrderStornoBlock(form);
+    try {
+      renderSheetRestWarning(form);
+    } catch (error) {
+      console.error("renderSheetRestWarning failed", error);
+    }
+    toast("CelĂˇ objednĂˇvka pĹ™esunuta do storna.");
+  }
+
+  function stableBindOrderSheet(form, order = {}) {
+    if (!form?.elements) return;
+    try {
+      bindToggles();
+    } catch (error) {
+      console.error("bindToggles failed", error);
+    }
+    try {
+      bindFees();
+    } catch (error) {
+      console.error("bindFees failed", error);
+    }
+    form.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+    syncOrderSheetCustomerValidity(form);
+    try {
+      syncOrderSheetAlternates();
+    } catch (error) {
+      console.error("syncOrderSheetAlternates failed", error);
+    }
+    try {
+      renderSheetRestWarning(form);
+    } catch (error) {
+      console.error("renderSheetRestWarning failed", error);
+    }
+    stableRenderOrderVarietySelection(form);
+    stableRenderOrderStornoBlock(form);
+    form.querySelector("[data-order-variety-add]")?.addEventListener("click", () => stableAddVarietyToOrder(form));
+    form.querySelector('[name="varietiesText"]')?.addEventListener("input", () => {
+      recalculateOrderSheetPrice(form);
+      stableRenderOrderVarietySelection(form);
+      stableRenderOrderStornoBlock(form);
+    });
+    form.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (form.elements.deliveryMethod?.value === "personal_pickup") {
+        clearOrderSheetFeeRestoreSnapshot(form);
+      } else {
+        syncOrderSheetCountryShippingPreset(form);
+      }
+      form.__syncFeeButtons?.();
+      try {
+        syncOrderSheetAlternates();
+      } catch (error) {
+        console.error("syncOrderSheetAlternates failed", error);
+      }
+      try {
+        renderSheetRestWarning(form);
+      } catch (error) {
+        console.error("renderSheetRestWarning failed", error);
+      }
+    });
+    form.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+      const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+      if (form.elements.deliveryMethod.value === "personal_pickup") {
+        if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+        els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+        form.elements.shippingFee.value = "";
+        form.elements.shippingFeeLabel.value = "";
+        form.elements.packingFee.value = "";
+        form.elements.codFee.value = "";
+        recalculateOrderSheetPrice(form);
+      } else if (previousDelivery === "personal_pickup") {
+        const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+        if (!restored) form.__syncFeeButtons?.();
+        recalculateOrderSheetPrice(form);
+      }
+      form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+      stableRenderOrderStornoBlock(form);
+    });
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (!clean(form.elements.customerId?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+    });
+    els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+      button.classList.toggle("active", sent);
+      button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+    });
+  }
+
+  function stableOpenOrderSheetImpl(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers || [];
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    const varietyOptions = ['<option value="">Vyber odrĹŻdu</option>']
+      .concat(
+        [...(state.data.varieties || [])]
+          .slice()
+          .sort((a, b) => clean(a.name).localeCompare(clean(b.name), "cs"))
+          .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`),
+      )
+      .join("");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna ČR" ? "active" : ""}" type="button" data-fee="shipping-cz">Zásilkovna ČR · ${escapeHtml(appSettings().shippingFeeCz || "89")} Kč</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Zásilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">Zásilkovna SK · ${escapeHtml(appSettings().shippingFeeSk || "99")} Kč</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "Balíkovna" ? "active" : ""}" type="button" data-fee="shipping-post">Balíkovna · ${escapeHtml(appSettings().postalFee || "")} Kč</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">Zásilkovna na adresu · ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} Kč</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">Balné · ${escapeHtml(appSettings().packingFee || "20")} Kč</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">Dobírka · ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} Kč</button>
+        ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "✓ Text odeslán" : "Text odeslán"}</button>` : ""}
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>PĹ™idat odrĹŻdu</span><select name="orderVarietySelect">${varietyOptions}</select></label>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-order-variety-add>PĹ™idat odrĹŻdu</button></div>
+      <div class="rest-variety-selection" data-order-variety-selection></div>
+      <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
+      <textarea name="stornoLines" hidden>${escapeHtml(JSON.stringify(orderStornoLines(order)))}</textarea>
+      <input name="cancelledAt" type="hidden" value="${escapeHtml(clean(order.cancelledAt))}">
+      <input name="cancelledNote" type="hidden" value="${escapeHtml(clean(order.cancelledNote))}">
+      <section class="order-storno-sheet-block" data-sheet-order-storno></section>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        stornoLines: stableNormalizeStornoLines(data.get("stornoLines")),
+        cancelledAt: clean(data.get("cancelledAt")),
+        cancelledNote: clean(data.get("cancelledNote")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    const form = els.sheet.querySelector("#sheetForm");
+    stableBindOrderSheet(form, order);
+  }
+
+  function stableOpenOrderSheetFallback(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers || [];
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    const form = els.sheet.querySelector("#sheetForm");
+    try {
+      bindToggles();
+      bindFees();
+      form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+      syncOrderSheetCustomerValidity(form);
+      form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => recalculateOrderSheetPrice(form));
+    } catch (error) {
+      console.error("fallback order sheet bind failed", error);
+    }
+  }
+
+  function stableOpenOrderSheet(id = "", customerId = "") {
+    try {
+      stableOpenOrderSheetImpl(id, customerId);
+    } catch (error) {
+      console.error("stableOpenOrderSheet failed", error);
+      toast("ObjednĂˇvka se otevĹ™ela v nouzovĂ©m reĹľimu.");
+      stableOpenOrderSheetFallback(id, customerId);
+    }
+  }
+
+  renderCustomers = function renderCustomersStableFinal() {
+    const customers = state.data.customers.filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoMeta = stableLatestCustomerStorno(customer.id);
+      const stornoText = stornoMeta.count
+        ? [`<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>`, stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""].filter(Boolean).join("")
+        : "";
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>") + stornoText,
+        pills: [...(customer.tags || []), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "âśŽ"], ["delete-customer", "Ă—"]],
+      });
+    }).join("");
+  };
+
+  renderOrders = function renderOrdersStableFinal() {
+    const orders = state.data.orders.filter(matchOrder).sort((a, b) => String(b.orderDate).localeCompare(String(a.orderDate)));
+    if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoMeta = stableLatestCustomerStorno(order.customerId);
+      const hasStorno = orderHasStorno(order);
+      const tone = stornoMeta.count || hasStorno
+        ? "reject"
+        : order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)
+          ? "done"
+          : order.paymentStatus === "zaplaceno"
+            ? "progress"
+            : "attention";
+      const stornoMarkup = stornoMeta.count
+        ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}`
+        : "";
+      return card({
+        id: order.id,
+        type: "order",
+        tone,
+        title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+        sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· ") + stornoMarkup,
+        price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `đźŚż ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`),
+          ...orderOfferAlternateEntries(order).map((item) => ({ label: `âš  NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+          ...orderStornoLines(order).map((item) => ({ label: `âś• Storno: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+        ],
+        badges: [
+          stornoMeta.count ? `Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}` : "",
+          hasStorno ? "Storno" : "",
+          paymentPill(order),
+          statusPill(order),
+          orderPaymentTextPill(order),
+        ].filter(Boolean),
+        actions: [["copy-order", "đź“‹"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "âś“Txt" : "Txt"], ["edit-order", "âśŽ"], ["delete-order", "Ă—"]],
+      });
+    }).join("");
+  };
+
+  globalThis.__akOpenOrderSheetStable84 = stableOpenOrderSheet;
+  globalThis.__akRenderCustomersStable84 = renderCustomers;
+  globalThis.__akRenderOrdersStable84 = renderOrders;
+  globalThis.__akOpenOrderSheetFinal = stableOpenOrderSheet;
+  openOrderSheet = stableOpenOrderSheet;
+  globalThis.__akRenderCustomersFinal = renderCustomers;
+
+  if (!globalThis.__akOrderCardClickBridgeFinal84) {
+    globalThis.__akOrderCardClickBridgeFinal84 = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const editOrderButton = target.closest('[data-action-row="edit-order"]');
+      if (editOrderButton?.dataset?.id) {
+        event.preventDefault();
+        event.stopPropagation();
+        stableOpenOrderSheet(editOrderButton.dataset.id);
+        return;
+      }
+      const orderCard = target.closest('[data-card="order"]');
+      if (!orderCard?.dataset?.id) return;
+      if (target.closest("button")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      stableOpenOrderSheet(orderCard.dataset.id);
+    }, true);
+  }
+
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => render(), 0);
+  }
+})();
+(() => {
+  const ak90BaseOfferSheet = openOfferSheet;
+  const ak90BaseOfferDetail = openOfferDetailSheet;
+  const ak90StableOpenOrder =
+    globalThis.__akOpenOrderSheetReal ||
+    globalThis.__akOpenOrderSheetStable84 ||
+    globalThis.__akOpenOrderSheetFinal ||
+    openOrderSheet;
+
+  function ak90RestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function ak90RestCustomerText(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez zĂˇkaznĂ­ka";
+  }
+
+  function ak90LatestStornoNote(orders = []) {
+    for (const order of orders) {
+      const cancelledNote = clean(order?.cancelledNote);
+      if (cancelledNote) return cancelledNote;
+      const lineNote = orderStornoLines(order)
+        .slice()
+        .reverse()
+        .find((entry) => clean(entry.note));
+      if (lineNote) return clean(lineNote.note);
+    }
+    return "";
+  }
+
+  function ak90CustomerStornoMeta(customerId = "") {
+    const stornoOrders = customerStornoOrders(customerId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.orderDate || "")));
+    return {
+      count: stornoOrders.length,
+      note: ak90LatestStornoNote(stornoOrders),
+    };
+  }
+
+  function ak90SafeOrderTone(order = {}) {
+    if (customerStornoOrders(order.customerId).length || orderHasStorno(order)) return "reject";
+    if (order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)) return "done";
+    if (order.paymentStatus === "zaplaceno") return "progress";
+    return "attention";
+  }
+
+  function ak90RenderOfferCard(offer) {
+    try {
+      if (isRestOffer(offer)) {
+        const names = ak90RestNames(offer);
+        const pills = names.slice(0, 4).map((name) => name);
+        if (names.length > 4) pills.push(`+${names.length - 4} dalĹˇĂ­`);
+        if (clean(offer.note)) pills.push({ label: clean(offer.note), className: "warn" });
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title,
+          sub: [formatDate(offer.date), ak90RestCustomerText(offer)].filter(Boolean).join(" Â· "),
+          pills,
+          badges: [{ label: "Resty", className: "warn" }],
+          actions: [["edit-offer", "Upr"], ["delete-offer", "X"]],
+        });
+      }
+
+      const offerItems = sortedOfferItems(offer);
+      const reserved = offerReservedCount(offer);
+      const total = offerTotalCount(offer);
+      const available = offerAvailableCount(offer);
+      const alternates = offerAlternateCount(offer);
+      const coverImage = offerItems.map((item) => offerItemImage(item)).find(Boolean) || "";
+      const itemPills = offerItems.slice(0, 4).map((item) => offerItemName(item));
+      if (offerItems.length > 4) itemPills.push(`+${offerItems.length - 4} dalĹˇĂ­`);
+      return card({
+        id: offer.id,
+        type: "offer",
+        title: offer.title,
+        sub: [formatDate(offer.date), offerTypeLabel(offer), offer.status].filter(Boolean).join(" Â· "),
+        pills: [
+          ...itemPills,
+          `VolnĂ© ${available}`,
+          `Rezervace ${reserved}/${total}`,
+          alternates ? `NĂˇhradnĂ­ci ${alternates}` : "",
+        ].filter(Boolean),
+        thumb: coverImage,
+        thumbText: initials(offer.title),
+        actions: [["facebook-offer", "FB"], ["edit-offer", "Upr"], ["delete-offer", "X"]],
+      });
+    } catch (error) {
+      console.error("AK90 offer card render failed", error, offer);
+      return card({
+        id: offer?.id || "",
+        type: "offer",
+        title: offer?.title || "NabĂ­dka",
+        sub: formatDate(offer?.date || ""),
+        pills: [isRestOffer(offer) ? "Resty" : "NabĂ­dka"],
+        actions: [["edit-offer", "Upr"], ["delete-offer", "X"]],
+      });
+    }
+  }
+
+  function ak90RenderOffers() {
+    const offers = (state.data.offers || [])
+      .filter(matchOffer)
+      .slice()
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+    const regularOffers = offers.filter((offer) => !isRestOffer(offer));
+    const restOffers = offers.filter((offer) => isRestOffer(offer));
+    const groups = [
+      regularOffers.length
+        ? `<div class="card-group-heading">NabĂ­dky</div>${regularOffers.map((offer) => ak90RenderOfferCard(offer)).join("")}`
+        : "",
+      restOffers.length
+        ? `<div class="card-group-heading">Resty</div>${restOffers.map((offer) => ak90RenderOfferCard(offer)).join("")}`
+        : "",
+    ].filter(Boolean);
+    return groups.join("");
+  }
+
+  function ak90RenderOrders() {
+    const orders = (state.data.orders || [])
+      .filter(matchOrder)
+      .slice()
+      .sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
+    if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoMeta = ak90CustomerStornoMeta(order.customerId);
+      return card({
+        id: order.id,
+        type: "order",
+        tone: ak90SafeOrderTone(order),
+        title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+        sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· ")
+          + (stornoMeta.count
+            ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}`
+            : ""),
+        price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name),
+          ...orderOfferAlternateEntries(order).map((item) => ({
+            label: `NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`,
+            className: "danger order-alternate-preview-pill",
+          })),
+          ...orderStornoLines(order).map((item) => ({
+            label: `Storno: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`,
+            className: "danger order-alternate-preview-pill",
+          })),
+        ],
+        badges: [
+          stornoMeta.count ? { label: `Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`, className: "danger" } : "",
+          orderHasStorno(order) ? { label: "Storno", className: "danger" } : "",
+          paymentPill(order),
+          statusPill(order),
+          orderPaymentTextPill(order),
+        ].filter(Boolean),
+        actions: [["copy-order", "Kop"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "Txtâś“" : "Txt"], ["edit-order", "Upr"], ["delete-order", "X"]],
+      });
+    }).join("");
+  }
+
+  function ak90RenderCustomers() {
+    const customers = (state.data.customers || [])
+      .filter(matchCustomer)
+      .slice()
+      .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoMeta = ak90CustomerStornoMeta(customer.id);
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>")
+          + (stornoMeta.count
+            ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}`
+            : ""),
+        pills: [...(customer.tags || []), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "Upr"], ["delete-customer", "X"]],
+      });
+    }).join("");
+  }
+
+  function ak90RenderVarieties() {
+    const varieties = (state.data.varieties || [])
+      .filter(matchVariety)
+      .slice()
+      .sort((a, b) => naturalCompare(a.name, b.name));
+    if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
+    return varieties.map((variety) => card({
+      id: variety.id,
+      type: "variety",
+      title: `đźŚ± ${variety.name}`,
+      sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} Â· ${varietyUsageCount(variety.name)} zĂˇznamĹŻ`,
+      price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
+      thumb: varietyImages(variety)[0],
+      thumbText: initials(variety.name),
+      pills: [variety.active === false ? "NeaktivnĂ­" : "AktivnĂ­"],
+      actions: [["edit-variety", "Upr"], ["delete-variety", "X"]],
+    })).join("");
+  }
+
+  function ak90RenderCrosses() {
+    const crosses = (state.data.crosses || [])
+      .filter(matchCross)
+      .slice()
+      .sort((a, b) => String(b.pollinatedAt || "").localeCompare(String(a.pollinatedAt || "")));
+    if (!crosses.length) return empty("Ĺ˝ĂˇdnĂˇ kĹ™Ă­ĹľenĂ­.");
+    return crosses.map((cross) => card({
+      id: cross.id,
+      type: "cross",
+      tone: cross.resultRating === "hnusna" ? "reject" : cross.stage === "hotovo" ? "done" : "attention",
+      title: crossLineage(cross),
+      sub: cross.seedlingName || "",
+      thumb: crossSeedlingImages(cross)[0],
+      thumbText: initials(crossLineage(cross)),
+      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `âś“ ${ratingLabels[cross.resultRating]}` : "Bez hodnocenĂ­", cross.seedlingName || "â€”"],
+      actions: [["download-cross", "Karta"], ["edit-cross", "Upr"], ["delete-cross", "X"]],
+    })).join("");
+  }
+
+  function ak90RenderSync() {
+    try {
+      return renderSync();
+    } catch (error) {
+      console.error("AK90 sync render failed", error);
+      return '<section class="sync-card"><strong class="title">NastavenĂ­</strong><p class="sub">Tahle sekce se nepodaĹ™ila otevĹ™Ă­t.</p></section>';
+    }
+  }
+
+  function ak90OpenRestDetail(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    state.activeOfferId = id;
+    const names = ak90RestNames(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>ZĂˇkaznĂ­k</small><strong>${escapeHtml(ak90RestCustomerText(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "OdrĹŻdy" : "OdrĹŻda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+        ${clean(offer.note) ? `<div class="rest-meta-card"><small>PoznĂˇmka</small><strong>${escapeHtml(offer.note)}</strong></div>` : ""}
+      </div>
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>ZavĹ™Ă­t</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoĹ™it objednĂˇvku</button>`;
+    openSheet(offer.title, body, null, footer, {
+      ...options,
+      restore: () => openOfferDetailSheet(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  }
+
+  openOfferDetailSheet = function openOfferDetailSheetAk90(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    if (isRestOffer(offer)) return ak90OpenRestDetail(id, options);
+    try {
+      return ak90BaseOfferDetail(id, options);
+    } catch (error) {
+      console.error("AK90 offer detail fallback failed", error);
+      try {
+        return ak90BaseOfferSheet(id);
+      } catch (sheetError) {
+        console.error("AK90 offer sheet fallback failed", sheetError);
+        toast("NabĂ­dka se nepodaĹ™ila otevĹ™Ă­t.");
+      }
+    }
+  };
+
+  function ak90BindSyncButtons() {
+    const bindClick = (selector, handler) => {
+      const node = document.querySelector(selector);
+      if (node) node.onclick = handler;
+    };
+    bindClick("#syncLogin", loginSync);
+    bindClick("#syncLogout", logoutSync);
+    bindClick("#syncPush", () => pushSync());
+    bindClick("#syncPull", () => pullSync());
+    bindClick("#syncAuto", toggleAutoSync);
+    ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
+      const node = document.querySelector(`#${id}`);
+      if (node) node.oninput = saveSyncConfigFromInputs;
+    });
+    const settingsButton = document.querySelector("#saveAppSettings");
+    if (settingsButton) settingsButton.onclick = saveAppSettingsFromInputs;
+  }
+
+  function ak90ReplaceListHost() {
+    if (!els.list || els.list.dataset.ak90Host === "1") return;
+    const clone = els.list.cloneNode(false);
+    clone.dataset.ak90Host = "1";
+    els.list.replaceWith(clone);
+    els.list = clone;
+  }
+
+  function ak90HandleRowAction(action, id) {
+    if (action === "edit-order") return ak90StableOpenOrder?.(id);
+    if (action === "order-customer") return ak90StableOpenOrder?.("", id);
+    return handleRowAction(action, id);
+  }
+
+  function ak90HandleListClick(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const actionButton = target.closest("[data-action-row]");
+    if (actionButton && els.list.contains(actionButton)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      return ak90HandleRowAction(actionButton.dataset.actionRow || "", actionButton.dataset.id || "");
+    }
+
+    const cardEl = target.closest("[data-card]");
+    if (!cardEl || !els.list.contains(cardEl) || target.closest("button")) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+
+    const type = cardEl.dataset.card;
+    const id = cardEl.dataset.id || "";
+    if (type === "offer") return openOfferDetailSheet(id);
+    if (type === "order") return ak90StableOpenOrder?.(id);
+    if (type === "customer") return openCustomerSheet(id);
+    if (type === "variety") return openVarietyDetailSheet(id);
+    if (type === "cross") return openCrossDetailSheet(id);
+  }
+
+  function ak90RunAction(action) {
+    if (action === "new-offer") return openOfferSheet();
+    if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
+    if (action === "new-order") return ak90StableOpenOrder?.();
+    if (action === "new-customer") return openCustomerSheet();
+    if (action === "new-variety") return openVarietySheet();
+    if (action === "new-cross") return openCrossSheet();
+  }
+
+  function ak90BindStaticButtons() {
+    document.querySelectorAll("[data-view], [data-action]").forEach((node) => {
+      if (!(node instanceof HTMLButtonElement)) return;
+      const clone = node.cloneNode(true);
+      clone.dataset.ak90Bound = "1";
+      node.replaceWith(clone);
+    });
+
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        ak90RunAction(button.dataset.action || "");
+      }, true);
+    });
+  }
+
+  renderOffers = ak90RenderOffers;
+  renderOrders = ak90RenderOrders;
+  renderCustomers = ak90RenderCustomers;
+  renderVarieties = ak90RenderVarieties;
+  renderCrosses = ak90RenderCrosses;
+  bindListActions = function bindListActionsAk90() {};
+  runAction = ak90RunAction;
+
+  render = function renderAk90() {
+    if (!isSyncLoggedIn()) state.view = "sync";
+    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
+
+    try {
+      renderFilters();
+    } catch (error) {
+      console.error("AK90 renderFilters failed", error);
+      if (els.filterRow) els.filterRow.innerHTML = "";
+    }
+
+    try {
+      renderSummary();
+    } catch (error) {
+      console.error("AK90 renderSummary failed", error);
+      if (els.summary) els.summary.innerHTML = "";
+    }
+
+    ak90ReplaceListHost();
+
+    const renderers = {
+      offers: ak90RenderOffers,
+      orders: ak90RenderOrders,
+      customers: ak90RenderCustomers,
+      varieties: ak90RenderVarieties,
+      crosses: ak90RenderCrosses,
+      sync: ak90RenderSync,
+    };
+
+    try {
+      els.list.innerHTML = renderers[state.view]?.() || "";
+    } catch (error) {
+      console.error("AK90 section render failed", error);
+      els.list.innerHTML = empty("Tahle sekce se nepodaĹ™ila otevĹ™Ă­t.");
+    }
+
+    try {
+      resolvePhotos(els.list);
+    } catch (error) {
+      console.error("AK90 resolvePhotos failed", error);
+    }
+
+    try {
+      ak90BindSyncButtons();
+    } catch (error) {
+      console.error("AK90 bindSyncButtons failed", error);
+    }
+
+    try {
+      updateSyncIndicator();
+    } catch (error) {
+      console.error("AK90 updateSyncIndicator failed", error);
+    }
+  };
+
+  openView = function openViewAk90(view) {
+    if (!isSyncLoggedIn() && view !== "sync") {
+      state.view = "sync";
+      render();
+      toast("NejdĹ™Ă­v se pĹ™ihlas.");
+      return;
+    }
+    state.view = view;
+    state.filter = "all";
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    if (els.search) els.search.value = "";
+    state.query = "";
+    closeSheet({ all: true });
+    render();
+  };
+
+  if (typeof ak90StableOpenOrder === "function") {
+    openOrderSheet = ak90StableOpenOrder;
+    globalThis.__akOpenOrderSheetFinal = ak90StableOpenOrder;
+  }
+
+  ak90ReplaceListHost();
+  if (!globalThis.__akMobileListDelegation90) {
+    globalThis.__akMobileListDelegation90 = true;
+    els.list.addEventListener("click", ak90HandleListClick, true);
+  }
+  ak90BindStaticButtons();
+  render();
+})();
+(() => {
+  function eof2LatestCustomerStorno(customerId = "") {
+    const orders = customerStornoOrders(customerId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    let note = clean(latest?.cancelledNote);
+    if (!note && latest) {
+      const entry = orderStornoLines(latest).slice().reverse().find((item) => clean(item.note));
+      note = clean(entry?.note);
+    }
+    return { count: orders.length, note, latest };
+  }
+
+  function eof2OrderTone(order = {}) {
+    if (customerStornoOrders(order.customerId).length || orderHasStorno(order)) return "reject";
+    if (order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)) return "done";
+    if (order.paymentStatus === "zaplaceno") return "progress";
+    return "attention";
+  }
+
+  function eof2RenderOffers() {
+    const offers = (state.data.offers || []).filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+    const groups = splitOffersByType(offers);
+    const renderGroup = (label, items) => {
+      if (!items.length) return "";
+      return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+        const items = sortedOfferItems(offer);
+        const reserved = offerReservedCount(offer);
+        const total = offerTotalCount(offer);
+        const available = offerAvailableCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const coverImage = items.map((item) => offerItemImage(item)).find(Boolean) || "";
+        const itemPills = items.slice(0, 4).map((item) => `đźŚż ${offerItemName(item)}`);
+        if (items.length > 4) itemPills.push(`+${items.length - 4} dalĹˇĂ­`);
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title,
+          sub: [formatDate(offer.date), offerTypeLabel(offer), offer.status].filter(Boolean).join(" Â· "),
+          pills: [...itemPills, `VolnĂ© ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `NĂˇhradnĂ­ci ${alternates}` : ""],
+          badges: isRestOffer(offer) ? [{ label: "Resty", className: "warn" }] : [],
+          thumb: coverImage,
+          thumbText: initials(offer.title),
+          actions: [["facebook-offer", "FB"], ["edit-offer", "Upr"], ["delete-offer", "X"]],
+        });
+      }).join("")}`;
+    };
+    return [renderGroup("NabĂ­dky", groups.offers), renderGroup("Resty", groups.rests)].filter(Boolean).join("");
+  }
+
+  function eof2RenderOrders() {
+    const orders = (state.data.orders || []).filter(matchOrder).sort((a, b) => String(b.orderDate).localeCompare(String(a.orderDate)));
+    if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoMeta = eof2LatestCustomerStorno(order.customerId);
+      const stornoText = stornoMeta.count
+        ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}`
+        : "";
+      return card({
+        id: order.id,
+        type: "order",
+        tone: eof2OrderTone(order),
+        title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+        sub: [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· ") + stornoText,
+        price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `đźŚż ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`),
+          ...orderOfferAlternateEntries(order).map((item) => ({ label: `âš  NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+          ...orderStornoLines(order).map((item) => ({ label: `âś• Storno: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+        ],
+        badges: [stornoMeta.count ? `Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}` : "", orderHasStorno(order) ? "Storno" : "", paymentPill(order), statusPill(order), orderPaymentTextPill(order)].filter(Boolean),
+        actions: [["copy-order", "Kop"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "Txtâś“" : "Txt"], ["edit-order", "Upr"], ["delete-order", "X"]],
+      });
+    }).join("");
+  }
+
+  function eof2RenderCustomers() {
+    const customers = (state.data.customers || []).filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoMeta = eof2LatestCustomerStorno(customer.id);
+      const stornoText = stornoMeta.count
+        ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}`
+        : "";
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>") + stornoText,
+        pills: [...(customer.tags || []), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "Upr"], ["delete-customer", "X"]],
+      });
+    }).join("");
+  }
+
+  function eof2RenderVarieties() {
+    const varieties = (state.data.varieties || []).filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
+    if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
+    return varieties.map((variety) => card({
+      id: variety.id,
+      type: "variety",
+      title: `đźŚ± ${variety.name}`,
+      sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} Â· ${varietyUsageCount(variety.name)} zĂˇznamĹŻ`,
+      price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
+      thumb: varietyImages(variety)[0],
+      thumbText: initials(variety.name),
+      pills: [variety.active === false ? "NeaktivnĂ­" : "AktivnĂ­"],
+      actions: [["edit-variety", "Upr"], ["delete-variety", "X"]],
+    })).join("");
+  }
+
+  function eof2RenderCrosses() {
+    const crosses = (state.data.crosses || []).filter(matchCross).sort((a, b) => String(b.pollinatedAt).localeCompare(String(a.pollinatedAt)));
+    if (!crosses.length) return empty("Ĺ˝ĂˇdnĂˇ kĹ™Ă­ĹľenĂ­.");
+    return crosses.map((cross) => {
+      const tone = cross.resultRating === "hnusna" ? "reject" : cross.stage === "hotovo" ? "done" : "attention";
+      return card({
+        id: cross.id,
+        type: "cross",
+        tone,
+        title: crossLineage(cross),
+        sub: cross.seedlingName || "",
+        thumb: crossSeedlingImages(cross)[0],
+        thumbText: initials(crossLineage(cross)),
+        pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `âś“ ${ratingLabels[cross.resultRating]}` : "Bez hodnocenĂ­", cross.seedlingName || "â€”"],
+        actions: [["download-cross", "Karta"], ["edit-cross", "Upr"], ["delete-cross", "X"]],
+      });
+    }).join("");
+  }
+
+  const previousOpenOfferDetailSheetEOF2 = openOfferDetailSheet;
+  openOfferDetailSheet = function openOfferDetailSheetStableEOF(id, options = {}) {
+    const offer = findById("offers", id);
+    if (offer && isRestOffer(offer)) {
+      return previousOpenOfferDetailSheetEOF2(id, options);
+    }
+    return previousOpenOfferDetailSheetEOF2(id, options);
+  };
+
+  function eof2BindStaticButtons() {
+    document.querySelectorAll("[data-view], [data-action]").forEach((node) => {
+      if (!(node instanceof HTMLButtonElement)) return;
+      if (node.dataset.eof2bound === "1") return;
+      const clone = node.cloneNode(true);
+      clone.dataset.eof2bound = "1";
+      node.replaceWith(clone);
+    });
+
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = button.dataset.action || "";
+        if (action === "new-offer") return openOfferSheet();
+        if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
+        if (action === "new-order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)();
+        if (action === "new-customer") return openCustomerSheet();
+        if (action === "new-variety") return openVarietySheet();
+        if (action === "new-cross") return openCrossSheet();
+      }, true);
+    });
+  }
+
+  if (!globalThis.__akMobileListDelegationFinal87) {
+    globalThis.__akMobileListDelegationFinal87 = true;
+    els.list.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const actionButton = target.closest("[data-action-row]");
+      if (actionButton?.dataset?.actionRow) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = actionButton.dataset.actionRow;
+        const id = actionButton.dataset.id || "";
+        if (action === "edit-order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+        if (action === "order-customer") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)("", id);
+        return handleRowAction(action, id);
+      }
+
+      const cardEl = target.closest("[data-card]");
+      if (!cardEl?.dataset?.card || target.closest("button")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      const type = cardEl.dataset.card;
+      const id = cardEl.dataset.id || "";
+      if (type === "order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+      if (type === "customer") return openCustomerSheet(id);
+      if (type === "variety") return openVarietyDetailSheet(id);
+      if (type === "cross") return openCrossDetailSheet(id);
+      if (type === "offer") return openOfferDetailSheet(id);
+    }, true);
+  }
+
+  bindListActions = function bindListActionsStableEOF2() {
+    document.querySelector("#syncLogin")?.addEventListener("click", loginSync, { capture: true });
+    document.querySelector("#syncLogout")?.addEventListener("click", logoutSync, { capture: true });
+    document.querySelector("#saveAppSettings")?.addEventListener("click", saveAppSettingsFromInputs, { capture: true });
+  };
+
+  renderCustomers = eof2RenderCustomers;
+  renderOrders = eof2RenderOrders;
+  renderOffers = eof2RenderOffers;
+  renderVarieties = eof2RenderVarieties;
+  renderCrosses = eof2RenderCrosses;
+
+  render = function renderStableEOF2() {
+    if (!isSyncLoggedIn()) state.view = "sync";
+    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
+    try {
+      renderFilters();
+    } catch (error) {
+      console.error("renderFilters failed", error);
+      els.filterRow.innerHTML = "";
+    }
+    try {
+      renderSummary();
+    } catch (error) {
+      console.error("renderSummary failed", error);
+      els.summary.innerHTML = "";
+    }
+    const renderers = {
+      offers: renderOffers,
+      orders: renderOrders,
+      customers: renderCustomers,
+      varieties: renderVarieties,
+      crosses: renderCrosses,
+      sync: renderSync,
+    };
+    els.list.innerHTML = "";
+    try {
+      els.list.innerHTML = renderers[state.view]?.() || "";
+    } catch (error) {
+      console.error("mobile eof2 render failed", error);
+      els.list.innerHTML = empty("Tahle sekce se nepodaĹ™ila otevĹ™Ă­t.");
+    }
+    try { resolvePhotos(els.list); } catch (error) { console.error("resolvePhotos failed", error); }
+    try { bindListActions(); } catch (error) { console.error("bindListActions failed", error); }
+    try { updateSyncIndicator(); } catch (error) { console.error("updateSyncIndicator failed", error); }
+  };
+
+  openView = function openViewStableEOF2(view) {
+    if (!isSyncLoggedIn() && view !== "sync") {
+      state.view = "sync";
+      render();
+      toast("NejdĹ™Ă­v se pĹ™ihlas.");
+      return;
+    }
+    state.view = view;
+    state.filter = "all";
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    if (els.search) els.search.value = "";
+    state.query = "";
+    closeSheet({ all: true });
+    render();
+  };
+
+  eof2BindStaticButtons();
+  render();
+})();
+(() => {
+  function eof3CustomerStornoMeta(customerId = "") {
+    const orders = customerStornoOrders(customerId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    let note = clean(latest?.cancelledNote);
+    if (!note && latest) {
+      const latestLine = orderStornoLines(latest).slice().reverse().find((entry) => clean(entry.note));
+      note = clean(latestLine?.note);
+    }
+    return { count: orders.length, note };
+  }
+
+  function eof3RenderOffers() {
+    const offers = (state.data.offers || []).filter(matchOffer).sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+    const groups = splitOffersByType(offers);
+    const renderGroup = (label, items) => {
+      if (!items.length) return "";
+      return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+        const itemCount = Array.isArray(offer.items) ? offer.items.length : 0;
+        const available = offerAvailableCount(offer);
+        const reserved = offerReservedCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const coverImage = (Array.isArray(offer.items) ? offer.items : []).map((item) => offerItemImage(item)).find(Boolean) || "";
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title || (isRestOffer(offer) ? "Resty" : "NabĂ­dka"),
+          sub: [formatDate(offer.date), offer.status].filter(Boolean).join(" Â· "),
+          pills: [
+            itemCount ? `${itemCount} poloĹľek` : "Bez poloĹľek",
+            !isRestOffer(offer) ? `VolnĂ© ${available}` : "",
+            !isRestOffer(offer) ? `Rezervace ${reserved}` : "",
+            !isRestOffer(offer) && alternates ? `NĂˇhradnĂ­ci ${alternates}` : "",
+          ].filter(Boolean),
+          badges: isRestOffer(offer) ? [{ label: "Resty", className: "warn" }] : [],
+          thumb: coverImage,
+          thumbText: initials(offer.title || "N"),
+          actions: [["edit-offer", "Upr"], ["delete-offer", "X"]],
+        });
+      }).join("")}`;
+    };
+    return [renderGroup("NabĂ­dky", groups.offers), renderGroup("Resty", groups.rests)].filter(Boolean).join("");
+  }
+
+  function eof3RenderOrders() {
+    const orders = (state.data.orders || []).filter(matchOrder).sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
+    if (!orders.length) return empty("Ĺ˝ĂˇdnĂ© objednĂˇvky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoMeta = eof3CustomerStornoMeta(order.customerId);
+      const sub = [formatDate(order.orderDate), customer?.country].filter(Boolean).join(" Â· ")
+        + (stornoMeta.count ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}` : "");
+      return card({
+        id: order.id,
+        type: "order",
+        tone: customerStornoOrders(order.customerId).length || orderHasStorno(order)
+          ? "reject"
+          : order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)
+            ? "done"
+            : order.paymentStatus === "zaplaceno"
+              ? "progress"
+              : "attention",
+        title: compactName(customerName(customer) || "Bez zĂˇkaznĂ­ka"),
+        sub,
+        price: `${formatMoney(order.price || orderTotalFromText(order.varietiesText), "CZK")}`,
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => `đźŚż ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`),
+          ...orderOfferAlternateEntries(order).map((item) => ({ label: `âš  NĂˇhradnĂ­k: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+          ...orderStornoLines(order).map((item) => ({ label: `âś• Storno: ${item.quantity > 1 ? `${item.name} Â· ${quantityText(item.quantity)} ks` : item.name}`, className: "danger order-alternate-preview-pill" })),
+        ],
+        badges: [
+          stornoMeta.count ? `Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}` : "",
+          orderHasStorno(order) ? "Storno" : "",
+          paymentPill(order),
+          statusPill(order),
+          orderPaymentTextPill(order),
+        ].filter(Boolean),
+        actions: [["copy-order", "Kop"], ["toggle-order-text-sent", clean(order.paymentTextSentAt) ? "Txtâś“" : "Txt"], ["edit-order", "Upr"], ["delete-order", "X"]],
+      });
+    }).join("");
+  }
+
+  function eof3RenderCustomers() {
+    const customers = (state.data.customers || []).filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoMeta = eof3CustomerStornoMeta(customer.id);
+      const sub = [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>")
+        + (stornoMeta.count ? `<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>${stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""}` : "");
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub,
+        pills: [...(customer.tags || []), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "Upr"], ["delete-customer", "X"]],
+      });
+    }).join("");
+  }
+
+  function eof3RenderVarieties() {
+    const varieties = (state.data.varieties || []).filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
+    if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
+    return varieties.map((variety) => card({
+      id: variety.id,
+      type: "variety",
+      title: `đźŚ± ${variety.name}`,
+      sub: `${varietyImages(variety).length ? `${varietyImages(variety).length} fotek` : "Bez fotky"} Â· ${varietyUsageCount(variety.name)} zĂˇznamĹŻ`,
+      price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
+      thumb: varietyImages(variety)[0],
+      thumbText: initials(variety.name),
+      pills: [variety.active === false ? "NeaktivnĂ­" : "AktivnĂ­"],
+      actions: [["edit-variety", "Upr"], ["delete-variety", "X"]],
+    })).join("");
+  }
+
+  function eof3RenderCrosses() {
+    const crosses = (state.data.crosses || []).filter(matchCross).sort((a, b) => String(b.pollinatedAt || "").localeCompare(String(a.pollinatedAt || "")));
+    if (!crosses.length) return empty("Ĺ˝ĂˇdnĂˇ kĹ™Ă­ĹľenĂ­.");
+    return crosses.map((cross) => card({
+      id: cross.id,
+      type: "cross",
+      tone: cross.resultRating === "hnusna" ? "reject" : cross.stage === "hotovo" ? "done" : "attention",
+      title: crossLineage(cross),
+      sub: cross.seedlingName || "",
+      thumb: crossSeedlingImages(cross)[0],
+      thumbText: initials(crossLineage(cross)),
+      pills: [crossStageText(cross.stage), ratingLabels[cross.resultRating] ? `âś“ ${ratingLabels[cross.resultRating]}` : "Bez hodnocenĂ­", cross.seedlingName || "â€”"],
+      actions: [["download-cross", "Karta"], ["edit-cross", "Upr"], ["delete-cross", "X"]],
+    })).join("");
+  }
+
+  const previousOpenOfferDetailEOF3 = openOfferDetailSheet;
+  openOfferDetailSheet = function openOfferDetailSheetEOF3(id, options = {}) {
+    const offer = findById("offers", id);
+    if (offer && isRestOffer(offer)) return openMobileRestOfferSheet(id);
+    return previousOpenOfferDetailEOF3(id, options);
+  };
+
+  if (!globalThis.__akMobileDelegationEOF3) {
+    globalThis.__akMobileDelegationEOF3 = true;
+    els.list.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const actionButton = target.closest("[data-action-row]");
+      if (actionButton?.dataset?.actionRow) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = actionButton.dataset.actionRow;
+        const id = actionButton.dataset.id || "";
+        if (action === "edit-order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+        if (action === "order-customer") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)("", id);
+        return handleRowAction(action, id);
+      }
+
+      const cardEl = target.closest("[data-card]");
+      if (!cardEl?.dataset?.card || target.closest("button")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      const type = cardEl.dataset.card;
+      const id = cardEl.dataset.id || "";
+      if (type === "order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+      if (type === "customer") return openCustomerSheet(id);
+      if (type === "variety") return openVarietyDetailSheet(id);
+      if (type === "cross") return openCrossDetailSheet(id);
+      if (type === "offer") return openOfferDetailSheet(id);
+    }, true);
+  }
+
+  renderOffers = eof3RenderOffers;
+  renderOrders = eof3RenderOrders;
+  renderCustomers = eof3RenderCustomers;
+  renderVarieties = eof3RenderVarieties;
+  renderCrosses = eof3RenderCrosses;
+
+  render = function renderEOF3() {
+    if (!isSyncLoggedIn()) state.view = "sync";
+    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
+    try {
+      renderFilters();
+    } catch (error) {
+      console.error("EOF3 renderFilters failed", error);
+      els.filterRow.innerHTML = "";
+    }
+    try {
+      renderSummary();
+    } catch (error) {
+      console.error("EOF3 renderSummary failed", error);
+      els.summary.innerHTML = "";
+    }
+    const renderers = {
+      offers: renderOffers,
+      orders: renderOrders,
+      customers: renderCustomers,
+      varieties: renderVarieties,
+      crosses: renderCrosses,
+      sync: renderSync,
+    };
+    els.list.innerHTML = "";
+    try {
+      els.list.innerHTML = renderers[state.view]?.() || "";
+    } catch (error) {
+      console.error("EOF3 section render failed", error);
+      els.list.innerHTML = empty("Tahle sekce se nepodaĹ™ila otevĹ™Ă­t.");
+    }
+    try { resolvePhotos(els.list); } catch (error) { console.error("EOF3 resolvePhotos failed", error); }
+    try { bindListActions(); } catch (error) { console.error("EOF3 bindListActions failed", error); }
+    try { updateSyncIndicator(); } catch (error) { console.error("EOF3 updateSyncIndicator failed", error); }
+  };
+
+  openView = function openViewEOF3(view) {
+    if (!isSyncLoggedIn() && view !== "sync") {
+      state.view = "sync";
+      render();
+      toast("NejdĹ™Ă­v se pĹ™ihlas.");
+      return;
+    }
+    state.view = view;
+    state.filter = "all";
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+    if (els.search) els.search.value = "";
+    state.query = "";
+    closeSheet({ all: true });
+    render();
+  };
+
+  document.querySelectorAll("[data-view], [data-action]").forEach((node) => {
+    if (!(node instanceof HTMLButtonElement)) return;
+    const clone = node.cloneNode(true);
+    node.replaceWith(clone);
+  });
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      openView(button.dataset.view || "offers");
+    }, true);
+  });
+  document.querySelectorAll("[data-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      const action = button.dataset.action || "";
+      if (action === "new-offer") return openOfferSheet();
+      if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
+      if (action === "new-order") return (globalThis.__akOpenOrderSheetFinal || openOrderSheet)();
+      if (action === "new-customer") return openCustomerSheet();
+      if (action === "new-variety") return openVarietySheet();
+      if (action === "new-cross") return openCrossSheet();
+    }, true);
+  });
+
+  render();
+})();
+(() => {
+  const stableOpenOrderSheet = globalThis.__akOpenOrderSheetStable84 || globalThis.__akOpenOrderSheetFinal || openOrderSheet;
+  const stableRenderCustomers = globalThis.__akRenderCustomersStable84 || renderCustomers;
+  const stableRenderOrders = globalThis.__akRenderOrdersStable84 || renderOrders;
+
+  if (typeof stableOpenOrderSheet === "function") {
+    openOrderSheet = stableOpenOrderSheet;
+    globalThis.__akOpenOrderSheetFinal = stableOpenOrderSheet;
+  }
+  if (typeof stableRenderCustomers === "function") {
+    renderCustomers = stableRenderCustomers;
+  }
+  if (typeof stableRenderOrders === "function") {
+    renderOrders = stableRenderOrders;
+  }
+
+  function rebindStaticButtonsStable() {
+    document.querySelectorAll("[data-view], [data-action]").forEach((button) => {
+      if (!(button instanceof HTMLButtonElement)) return;
+      if (button.dataset.stableStaticBound === "1") return;
+      const clone = button.cloneNode(true);
+      clone.dataset.stableStaticBound = "1";
+      button.replaceWith(clone);
+    });
+
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        runAction(button.dataset.action || "");
+      }, true);
+    });
+  }
+
+  if (!globalThis.__akMobileListDelegation85) {
+    globalThis.__akMobileListDelegation85 = true;
+    els.list.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const actionButton = target.closest("[data-action-row]");
+      if (actionButton?.dataset?.actionRow) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        const action = actionButton.dataset.actionRow;
+        const id = actionButton.dataset.id || "";
+        if (action === "edit-order") {
+          (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+          return;
+        }
+        handleRowAction(action, id);
+        return;
+      }
+
+      const cardEl = target.closest("[data-card]");
+      if (!cardEl?.dataset?.card || target.closest("button")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+
+      const type = cardEl.dataset.card;
+      const id = cardEl.dataset.id || "";
+      if (type === "order") {
+        (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(id);
+        return;
+      }
+      if (type === "customer") return openCustomerSheet(id);
+      if (type === "variety") return openVarietyDetailSheet(id);
+      if (type === "cross") return openCrossDetailSheet(id);
+      if (type === "offer") return openOfferDetailSheet(id);
+    }, true);
+  }
+
+  bindListActions = function bindListActionsStableEOF() {
+    document.querySelector("#syncLogin")?.replaceWith(document.querySelector("#syncLogin")?.cloneNode(true));
+    document.querySelector("#syncLogout")?.replaceWith(document.querySelector("#syncLogout")?.cloneNode(true));
+    document.querySelector("#saveAppSettings")?.replaceWith(document.querySelector("#saveAppSettings")?.cloneNode(true));
+    document.querySelector("#syncLogin")?.addEventListener("click", loginSync, { capture: true });
+    document.querySelector("#syncLogout")?.addEventListener("click", logoutSync, { capture: true });
+    document.querySelector("#saveAppSettings")?.addEventListener("click", saveAppSettingsFromInputs, { capture: true });
+  };
+
+  rebindStaticButtonsStable();
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => {
+      rebindStaticButtonsStable();
+      render();
+    }, 0);
+  }
+})();
+(() => {
+  const stableOpen = globalThis.__akOpenOrderSheetStable84;
+  const stableRenderCustomers = globalThis.__akRenderCustomersStable84;
+  const stableRenderOrders = globalThis.__akRenderOrdersStable84;
+  if (typeof stableOpen === "function") {
+    const safeStableOpen = function safeStableOpenOrderSheet(id = "", customerId = "") {
+      try {
+        return stableOpen(id, customerId);
+      } catch (error) {
+        console.error("stable mobile order reopen failed", error);
+        toast("ObjednĂˇvku se nepodaĹ™ilo otevĹ™Ă­t.");
+        return undefined;
+      }
+    };
+    globalThis.__akOpenOrderSheetFinal = safeStableOpen;
+    openOrderSheet = safeStableOpen;
+  }
+  if (typeof stableRenderCustomers === "function") {
+    renderCustomers = stableRenderCustomers;
+  }
+  if (typeof stableRenderOrders === "function") {
+    renderOrders = stableRenderOrders;
+  }
+  const previousBindListActions = bindListActions;
+  bindListActions = function bindListActionsStableFinal() {
+    previousBindListActions();
+    els.list.querySelectorAll('[data-action-row="edit-order"]').forEach((button) => {
+      if (button.dataset.stableOrderBound === "1") return;
+      button.dataset.stableOrderBound = "1";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(button.dataset.id || "");
+      }, true);
+    });
+    els.list.querySelectorAll('[data-card="order"]').forEach((cardEl) => {
+      if (cardEl.dataset.stableOrderBound === "1") return;
+      cardEl.dataset.stableOrderBound = "1";
+      cardEl.addEventListener("click", (event) => {
+        if (event.target instanceof Element && event.target.closest("button")) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(cardEl.dataset.id || "");
+      }, true);
+    });
+  };
+  if (!globalThis.__akOrderCardClickBridgeFinal85) {
+    globalThis.__akOrderCardClickBridgeFinal85 = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const editOrderButton = target.closest('[data-action-row="edit-order"]');
+      if (editOrderButton?.dataset?.id) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(editOrderButton.dataset.id);
+        return;
+      }
+      const orderCard = target.closest('[data-card="order"]');
+      if (!orderCard?.dataset?.id || target.closest("button")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      (globalThis.__akOpenOrderSheetFinal || openOrderSheet)(orderCard.dataset.id);
+    }, true);
+  }
+  if (!globalThis.__akViewBridgeFinal85) {
+    globalThis.__akViewBridgeFinal85 = true;
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+  }
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => render(), 0);
+  }
+})();
+(() => {
+  if (globalThis.__akOrderCardClickBridgeBound) return;
+  globalThis.__akOrderCardClickBridgeBound = true;
+  document.addEventListener("click", (event) => {
+    const stableOpenOrderSheet = globalThis.__akOpenOrderSheetFinal || openOrderSheet;
+    const orderAction = event.target.closest('[data-action-row="edit-order"]');
+    if (orderAction?.dataset?.id) {
+      event.preventDefault();
+      event.stopPropagation();
+      stableOpenOrderSheet(orderAction.dataset.id);
+      return;
+    }
+    const orderCard = event.target.closest('[data-card="order"]');
+    if (!orderCard || event.target.closest("button")) return;
+    const id = orderCard.dataset.id;
+    if (!id) return;
+    event.preventDefault();
+    stableOpenOrderSheet(id);
+  }, true);
+})();
+(() => {
+  function openOrderSheetEmergency(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers;
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    bindToggles();
+    bindFees();
+    const form = els.sheet.querySelector("#sheetForm");
+    form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+    syncOrderSheetCustomerValidity(form);
+    form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => recalculateOrderSheetPrice(form));
+    form?.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+        clearOrderSheetFeeRestoreSnapshot(form);
+      } else {
+        syncOrderSheetCountryShippingPreset(form);
+      }
+      form?.__syncFeeButtons?.();
+    });
+    form?.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+      if (!form?.elements) return;
+      const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+      if (form.elements.deliveryMethod.value === "personal_pickup") {
+        if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+        els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+        form.elements.shippingFee.value = "";
+        form.elements.shippingFeeLabel.value = "";
+        form.elements.packingFee.value = "";
+        form.elements.codFee.value = "";
+        recalculateOrderSheetPrice(form);
+      } else if (previousDelivery === "personal_pickup") {
+        const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+        if (!restored) form.__syncFeeButtons?.();
+        recalculateOrderSheetPrice(form);
+      }
+      form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+    });
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (!clean(form?.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+    });
+    els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+      button.classList.toggle("active", sent);
+      button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+    });
+    toast("ObjednĂˇvka se otevĹ™ela v nouzovĂ©m reĹľimu.");
+  }
+
+  globalThis.__akOpenOrderSheetReal = globalThis.__akOpenOrderSheetFinal || openOrderSheet;
+  globalThis.__akOpenOrderSheetFinal = function mobileOrderSheetSafe(id = "", customerId = "") {
+    try {
+      return (globalThis.__akOpenOrderSheetReal || openOrderSheet)(id, customerId);
+    } catch (error) {
+      console.error("Order sheet fallback", error);
+      return openOrderSheetEmergency(id, customerId);
+    }
+  };
+  openOrderSheet = globalThis.__akOpenOrderSheetFinal;
+})();
+(() => {
+  function eofOrderLineName(line = "") {
+    return clean(line)
+      .replace(/\b\d+\s*x\b/gi, " ")
+      .replace(/\bx\s*\d+\b/gi, " ")
+      .replace(/\b\d+\s*(ks|kus|kusy|Ĺ™Ă­zkĹŻ|rizku|sazenic)\b/gi, " ")
+      .replace(/(?:-|â€“|â€”)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/(?:@|=)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/\b\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)\b/gi, " ")
+      .replace(/[=:@]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function eofOrderLines(text = "") {
+    return clean(text)
+      .split(/\n+/)
+      .map((rawLine) => {
+        const raw = clean(rawLine);
+        const name = eofOrderLineName(raw);
+        return {
+          raw,
+          name,
+          quantity: orderLineQuantity(raw),
+          explicitPrice: Number.isFinite(orderLineUnitPrice(raw)) ? normalizeAmount(orderLineUnitPrice(raw)) : "",
+          explicitCurrency: "CZK",
+        };
+      })
+      .filter((line) => line.name);
+  }
+
+  function eofOrderLineText(name, quantity = 1, amount = "") {
+    const parsedAmount = number(amount);
+    return Number.isFinite(parsedAmount)
+      ? offerOrderLineText(clean(name), Math.max(wholeNumber(quantity, 1), 1), parsedAmount)
+      : `${clean(name)} ${Math.max(wholeNumber(quantity, 1), 1)}x`;
+  }
+
+  function eofParseStornoLines(value = "") {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => ({
+          name: clean(entry?.name),
+          quantity: Math.max(wholeNumber(entry?.quantity, 1), 1),
+          unitPrice: normalizeAmount(entry?.unitPrice),
+          currency: clean(entry?.currency) || "CZK",
+          note: clean(entry?.note),
+          createdAt: clean(entry?.createdAt),
+        }))
+        .filter((entry) => entry.name);
+    }
+    if (!clean(value)) return [];
+    try {
+      return eofParseStornoLines(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  function eofReadStorno(form) {
+    return eofParseStornoLines(form?.elements?.stornoLines?.value);
+  }
+
+  function eofWriteStorno(form, lines = []) {
+    if (!form?.elements?.stornoLines) return;
+    form.elements.stornoLines.value = JSON.stringify(eofParseStornoLines(lines));
+  }
+
+  function eofCurrentLines(form) {
+    return eofOrderLines(form?.elements?.varietiesText?.value || "");
+  }
+
+  function eofLinePriceInfo(line = {}) {
+    if (clean(line.explicitPrice)) return { amount: line.explicitPrice, currency: "CZK" };
+    const variety = findVarietyByName(line.name);
+    if (clean(variety?.salePrice)) return { amount: variety.salePrice, currency: "CZK" };
+    return { amount: "", currency: "CZK" };
+  }
+
+  function eofRenderOrderVarietySelection(form) {
+    const container = form?.querySelector("[data-order-variety-selection]");
+    if (!container) return;
+    const lines = eofCurrentLines(form);
+    container.innerHTML = lines.length
+      ? lines.map((line) => `<span class="rest-variety-chip">${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  function eofRenderStornoBlock(form) {
+    const block = form?.querySelector("[data-sheet-order-storno]");
+    if (!form?.elements || !block) return;
+    const activeLines = eofCurrentLines(form);
+    const stornoLines = eofReadStorno(form);
+    if (activeLines.length && clean(form.elements.cancelledAt?.value)) {
+      form.elements.cancelledAt.value = "";
+      form.elements.cancelledNote.value = "";
+    }
+    const cancelledAt = clean(form.elements.cancelledAt?.value);
+    const cancelledNote = clean(form.elements.cancelledNote?.value);
+    const cancelledInfo = cancelledAt
+      ? `ObjednĂˇvka stornovĂˇna ${new Intl.DateTimeFormat("cs-CZ", { day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(cancelledAt))}${cancelledNote ? ` Â· ${cancelledNote}` : ""}`
+      : "";
+    block.innerHTML = `
+      <div class="order-storno-sheet-heading">
+        <div>
+          <strong>Storna</strong>
+          <small>Toto se nepoÄŤĂ­tĂˇ do ceny.</small>
+        </div>
+        <button class="button ghost" type="button" data-eof-cancel-all ${activeLines.length ? "" : "disabled"}>Stornovat celou objednĂˇvku</button>
+      </div>
+      ${cancelledInfo ? `<div class="order-storno-sheet-status">${escapeHtml(cancelledInfo)}</div>` : ""}
+      <div class="order-storno-sheet-list">
+        ${activeLines.map((line, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-eof-storno="${index}">Stornovat</button>
+          </div>
+        `).join("")}
+        ${stornoLines.map((entry, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>âś• ${escapeHtml(entry.quantity > 1 ? `${entry.name} Â· ${quantityText(entry.quantity)} ks` : entry.name)}</span>
+              ${clean(entry.note) ? `<small>${escapeHtml(entry.note)}</small>` : ""}
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-eof-restore="${index}">Obnovit</button>
+          </div>
+        `).join("")}
+        ${!activeLines.length && !stornoLines.length ? '<div class="order-storno-sheet-status">ZatĂ­m bez storna.</div>' : ""}
+      </div>
+    `;
+    block.querySelector("[data-eof-cancel-all]")?.addEventListener("click", () => eofCancelAll(form));
+    block.querySelectorAll("[data-eof-storno]").forEach((button) => {
+      button.addEventListener("click", () => eofStornoLine(form, Number(button.dataset.eofStorno)));
+    });
+    block.querySelectorAll("[data-eof-restore]").forEach((button) => {
+      button.addEventListener("click", () => eofRestoreLine(form, Number(button.dataset.eofRestore)));
+    });
+  }
+
+  function eofStornoLine(form, index) {
+    const lines = eofCurrentLines(form);
+    const line = lines[index];
+    if (!line) return;
+    const rawQuantity = window.prompt(`Kolik ks stornovat u ${line.name}?`, String(Math.max(line.quantity || 1, 1)));
+    if (rawQuantity === null) return;
+    const stornoQuantity = Number.parseInt(clean(rawQuantity), 10);
+    const maxQuantity = Math.max(line.quantity || 1, 1);
+    if (!Number.isFinite(stornoQuantity) || stornoQuantity < 1 || stornoQuantity > maxQuantity) {
+      toast("NapiĹˇ platnĂ˝ poÄŤet kusĹŻ ke storno.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna (volitelnÄ›):", "") ?? "";
+    const priceInfo = eofLinePriceInfo(line);
+    const stornoLines = eofReadStorno(form);
+    stornoLines.push({
+      name: line.name,
+      quantity: stornoQuantity,
+      unitPrice: priceInfo.amount,
+      currency: "CZK",
+      note: clean(note),
+      createdAt: new Date().toISOString(),
+    });
+    eofWriteStorno(form, stornoLines);
+    const nextLines = lines.flatMap((item, itemIndex) => {
+      if (itemIndex !== index) return [eofOrderLineText(item.name, item.quantity, item.explicitPrice)];
+      const remaining = Math.max(maxQuantity - stornoQuantity, 0);
+      return remaining ? [eofOrderLineText(item.name, remaining, clean(item.explicitPrice) || priceInfo.amount)] : [];
+    });
+    form.elements.varietiesText.value = nextLines.join("\n");
+    recalculateOrderSheetPrice(form);
+    eofRenderOrderVarietySelection(form);
+    eofRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("PoloĹľka pĹ™esunuta do storna.");
+  }
+
+  function eofRestoreLine(form, index) {
+    const stornoLines = eofReadStorno(form);
+    const entry = stornoLines[index];
+    if (!entry) return;
+    const lines = eofCurrentLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(entry.name));
+    if (existingIndex >= 0) {
+      const current = lines[existingIndex];
+      lines[existingIndex] = {
+        ...current,
+        quantity: Math.max(current.quantity || 1, 1) + Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(current.explicitPrice) || clean(entry.unitPrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: entry.name,
+        quantity: Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(entry.unitPrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => eofOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    eofWriteStorno(form, stornoLines.filter((_, itemIndex) => itemIndex !== index));
+    form.elements.cancelledAt.value = "";
+    form.elements.cancelledNote.value = "";
+    recalculateOrderSheetPrice(form);
+    eofRenderOrderVarietySelection(form);
+    eofRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("Storno vrĂˇceno do objednĂˇvky.");
+  }
+
+  function eofCancelAll(form) {
+    const lines = eofCurrentLines(form);
+    if (!lines.length) {
+      toast("ObjednĂˇvka uĹľ nemĂˇ ĹľĂˇdnĂ© aktivnĂ­ poloĹľky.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna celĂ© objednĂˇvky (volitelnÄ›):", clean(form.elements.cancelledNote?.value) || "");
+    if (note === null) return;
+    const stornoLines = eofReadStorno(form);
+    lines.forEach((line) => {
+      const priceInfo = eofLinePriceInfo(line);
+      stornoLines.push({
+        name: line.name,
+        quantity: Math.max(line.quantity || 1, 1),
+        unitPrice: clean(line.explicitPrice) || priceInfo.amount,
+        currency: "CZK",
+        note: clean(note),
+        createdAt: new Date().toISOString(),
+      });
+    });
+    eofWriteStorno(form, stornoLines);
+    form.elements.varietiesText.value = "";
+    form.elements.shippingFee.value = "";
+    form.elements.shippingFeeLabel.value = "";
+    form.elements.packingFee.value = "";
+    form.elements.codFee.value = "";
+    form.elements.cancelledAt.value = new Date().toISOString();
+    form.elements.cancelledNote.value = clean(note);
+    recalculateOrderSheetPrice(form);
+    eofRenderOrderVarietySelection(form);
+    eofRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("CelĂˇ objednĂˇvka pĹ™esunuta do storna.");
+  }
+
+  function eofAddVariety(form) {
+    const varietyId = clean(form?.querySelector('[name="orderVarietySelect"]')?.value);
+    const variety = findById("varieties", varietyId);
+    if (!variety) {
+      toast("Vyber odrĹŻdu.");
+      return;
+    }
+    const lines = eofCurrentLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(variety.name));
+    if (existingIndex >= 0) {
+      const current = lines[existingIndex];
+      lines[existingIndex] = {
+        ...current,
+        quantity: Math.max(current.quantity || 1, 1) + 1,
+        explicitPrice: clean(current.explicitPrice) || clean(variety.salePrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: variety.name,
+        quantity: 1,
+        explicitPrice: clean(variety.salePrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => eofOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    form.querySelector('[name="orderVarietySelect"]').value = "";
+    recalculateOrderSheetPrice(form);
+    eofRenderOrderVarietySelection(form);
+    eofRenderStornoBlock(form);
+    syncOrderSheetAlternates();
+    toast("OdrĹŻda pĹ™idĂˇna do objednĂˇvky.");
+  }
+
+  openOrderSheet = function openOrderSheetEOF(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers;
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    const varietyOptions = ['<option value="">Vyber odrĹŻdu</option>']
+      .concat(
+        [...state.data.varieties]
+          .slice()
+          .sort((a, b) => clean(a.name).localeCompare(clean(b.name), "cs"))
+          .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`),
+      )
+      .join("");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>PĹ™idat odrĹŻdu</span><select name="orderVarietySelect">${varietyOptions}</select></label>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-order-variety-add>PĹ™idat odrĹŻdu</button></div>
+      <div class="rest-variety-selection" data-order-variety-selection></div>
+      <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
+      <textarea name="stornoLines" hidden>${escapeHtml(JSON.stringify(orderStornoLines(order)))}</textarea>
+      <input name="cancelledAt" type="hidden" value="${escapeHtml(clean(order.cancelledAt))}">
+      <input name="cancelledNote" type="hidden" value="${escapeHtml(clean(order.cancelledNote))}">
+      <section class="order-storno-sheet-block" data-sheet-order-storno></section>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        stornoLines: eofParseStornoLines(data.get("stornoLines")),
+        cancelledAt: clean(data.get("cancelledAt")),
+        cancelledNote: clean(data.get("cancelledNote")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    bindToggles();
+    bindFees();
+    const form = els.sheet.querySelector("#sheetForm");
+    form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+    syncOrderSheetCustomerValidity(form);
+    syncOrderSheetAlternates();
+    renderSheetRestWarning(form);
+    eofRenderOrderVarietySelection(form);
+    eofRenderStornoBlock(form);
+    form?.querySelector("[data-order-variety-add]")?.addEventListener("click", () => eofAddVariety(form));
+    form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => {
+      recalculateOrderSheetPrice(form);
+      eofRenderOrderVarietySelection(form);
+      eofRenderStornoBlock(form);
+    });
+    form?.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+        clearOrderSheetFeeRestoreSnapshot(form);
+      } else {
+        syncOrderSheetCountryShippingPreset(form);
+      }
+      form?.__syncFeeButtons?.();
+      syncOrderSheetAlternates();
+      renderSheetRestWarning(form);
+    });
+    form?.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+      if (!form?.elements) return;
+      const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+      if (form.elements.deliveryMethod.value === "personal_pickup") {
+        if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+        els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+        form.elements.shippingFee.value = "";
+        form.elements.shippingFeeLabel.value = "";
+        form.elements.packingFee.value = "";
+        form.elements.codFee.value = "";
+        recalculateOrderSheetPrice(form);
+      } else if (previousDelivery === "personal_pickup") {
+        const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+        if (!restored) form.__syncFeeButtons?.();
+        recalculateOrderSheetPrice(form);
+      }
+      form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+      eofRenderStornoBlock(form);
+    });
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (!clean(form?.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+    });
+    els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+      button.classList.toggle("active", sent);
+      button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+    });
+  };
+
+  globalThis.__akOpenOrderSheetFinal = openOrderSheet;
+  globalThis.__akRenderCustomersFinal = renderCustomers;
+  if (globalThis.__akOpenOrderSheetFinal) openOrderSheet = globalThis.__akOpenOrderSheetFinal;
+  if (globalThis.__akRenderCustomersFinal) renderCustomers = globalThis.__akRenderCustomersFinal;
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => render(), 0);
+  }
+})();
+(() => {
+  function finalParseOrderLineName(line = "") {
+    return clean(line)
+      .replace(/\b\d+\s*x\b/gi, " ")
+      .replace(/\bx\s*\d+\b/gi, " ")
+      .replace(/\b\d+\s*(ks|kus|kusy|Ĺ™Ă­zkĹŻ|rizku|sazenic)\b/gi, " ")
+      .replace(/(?:-|â€“|â€”)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/(?:@|=)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/\b\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)\b/gi, " ")
+      .replace(/[=:@]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function finalParseOrderLines(text = "") {
+    return clean(text)
+      .split(/\n+/)
+      .map((rawLine) => {
+        const raw = clean(rawLine);
+        const name = finalParseOrderLineName(raw);
+        return {
+          raw,
+          name,
+          quantity: orderLineQuantity(raw),
+          explicitPrice: Number.isFinite(orderLineUnitPrice(raw)) ? normalizeAmount(orderLineUnitPrice(raw)) : "",
+          explicitCurrency: "CZK",
+        };
+      })
+      .filter((line) => line.name);
+  }
+
+  function finalBuildOrderLineText(name, quantity = 1, amount = "") {
+    const parsedAmount = number(amount);
+    return Number.isFinite(parsedAmount)
+      ? offerOrderLineText(clean(name), Math.max(wholeNumber(quantity, 1), 1), parsedAmount)
+      : `${clean(name)} ${Math.max(wholeNumber(quantity, 1), 1)}x`;
+  }
+
+  function finalParseStornoLines(value = "") {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => ({
+          name: clean(entry?.name),
+          quantity: Math.max(wholeNumber(entry?.quantity, 1), 1),
+          unitPrice: normalizeAmount(entry?.unitPrice),
+          currency: clean(entry?.currency) || "CZK",
+          note: clean(entry?.note),
+          createdAt: clean(entry?.createdAt),
+        }))
+        .filter((entry) => entry.name);
+    }
+    if (!clean(value)) return [];
+    try {
+      return finalParseStornoLines(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  function finalCurrentSheetLines(form) {
+    return finalParseOrderLines(form?.elements?.varietiesText?.value || "");
+  }
+
+  function finalReadSheetStornoLines(form) {
+    return finalParseStornoLines(form?.elements?.stornoLines?.value);
+  }
+
+  function finalWriteSheetStornoLines(form, lines = []) {
+    if (!form?.elements?.stornoLines) return;
+    form.elements.stornoLines.value = JSON.stringify(finalParseStornoLines(lines));
+  }
+
+  function finalDefaultPriceInfo(line = {}) {
+    if (clean(line.explicitPrice)) return { amount: line.explicitPrice, currency: "CZK" };
+    const variety = findVarietyByName(line.name);
+    if (clean(variety?.salePrice)) return { amount: variety.salePrice, currency: "CZK" };
+    return { amount: "", currency: "CZK" };
+  }
+
+  function finalLatestCustomerStorno(customerId = "") {
+    const orders = customerStornoOrders(customerId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    let note = clean(latest?.cancelledNote);
+    if (!note && latest) {
+      const entry = orderStornoLines(latest)
+        .slice()
+        .reverse()
+        .find((item) => clean(item.note));
+      note = clean(entry?.note);
+    }
+    return { count: orders.length, note, latest };
+  }
+
+  function finalRenderSheetVarietySelection(form) {
+    const container = form?.querySelector("[data-order-variety-selection]");
+    if (!container) return;
+    const lines = finalCurrentSheetLines(form);
+    container.innerHTML = lines.length
+      ? lines.map((line) => `<span class="rest-variety-chip">${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  function finalRenderStornoBlock(form) {
+    const block = form?.querySelector("[data-sheet-order-storno]");
+    if (!form?.elements || !block) return;
+    const activeLines = finalCurrentSheetLines(form);
+    const stornoLines = finalReadSheetStornoLines(form);
+    if (activeLines.length && clean(form.elements.cancelledAt?.value)) {
+      form.elements.cancelledAt.value = "";
+      form.elements.cancelledNote.value = "";
+    }
+    const cancelledAt = clean(form.elements.cancelledAt?.value);
+    const cancelledNote = clean(form.elements.cancelledNote?.value);
+    const cancelledInfo = cancelledAt
+      ? `ObjednĂˇvka stornovĂˇna ${new Intl.DateTimeFormat("cs-CZ", { day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(cancelledAt))}${cancelledNote ? ` Â· ${cancelledNote}` : ""}`
+      : "";
+    block.innerHTML = `
+      <div class="order-storno-sheet-heading">
+        <div>
+          <strong>Storna</strong>
+          <small>Toto se nepoÄŤĂ­tĂˇ do ceny.</small>
+        </div>
+        <button class="button ghost" type="button" data-final-order-cancel-all ${activeLines.length ? "" : "disabled"}>Stornovat celou objednĂˇvku</button>
+      </div>
+      ${cancelledInfo ? `<div class="order-storno-sheet-status">${escapeHtml(cancelledInfo)}</div>` : ""}
+      <div class="order-storno-sheet-list">
+        ${activeLines.map((line, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-final-order-storno="${index}">Stornovat</button>
+          </div>
+        `).join("")}
+        ${stornoLines.map((entry, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>âś• ${escapeHtml(entry.quantity > 1 ? `${entry.name} Â· ${quantityText(entry.quantity)} ks` : entry.name)}</span>
+              ${clean(entry.note) ? `<small>${escapeHtml(entry.note)}</small>` : ""}
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-final-order-restore="${index}">Obnovit</button>
+          </div>
+        `).join("")}
+        ${!activeLines.length && !stornoLines.length ? '<div class="order-storno-sheet-status">ZatĂ­m bez storna.</div>' : ""}
+      </div>
+    `;
+    block.querySelector("[data-final-order-cancel-all]")?.addEventListener("click", () => finalCancelEntireOrder(form));
+    block.querySelectorAll("[data-final-order-storno]").forEach((button) => {
+      button.addEventListener("click", () => finalStornoOrderLine(form, Number(button.dataset.finalOrderStorno)));
+    });
+    block.querySelectorAll("[data-final-order-restore]").forEach((button) => {
+      button.addEventListener("click", () => finalRestoreOrderLine(form, Number(button.dataset.finalOrderRestore)));
+    });
+  }
+
+  function finalStornoOrderLine(form, index) {
+    const lines = finalCurrentSheetLines(form);
+    const line = lines[index];
+    if (!line) return;
+    const rawQuantity = window.prompt(`Kolik ks stornovat u ${line.name}?`, String(Math.max(line.quantity || 1, 1)));
+    if (rawQuantity === null) return;
+    const stornoQuantity = Number.parseInt(clean(rawQuantity), 10);
+    const maxQuantity = Math.max(line.quantity || 1, 1);
+    if (!Number.isFinite(stornoQuantity) || stornoQuantity < 1 || stornoQuantity > maxQuantity) {
+      toast("NapiĹˇ platnĂ˝ poÄŤet kusĹŻ ke storno.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna (volitelnÄ›):", "") ?? "";
+    const priceInfo = finalDefaultPriceInfo(line);
+    const stornoLines = finalReadSheetStornoLines(form);
+    stornoLines.push({
+      name: line.name,
+      quantity: stornoQuantity,
+      unitPrice: priceInfo.amount,
+      currency: "CZK",
+      note: clean(note),
+      createdAt: new Date().toISOString(),
+    });
+    finalWriteSheetStornoLines(form, stornoLines);
+    const nextLines = lines.flatMap((item, itemIndex) => {
+      if (itemIndex !== index) return [finalBuildOrderLineText(item.name, item.quantity, item.explicitPrice)];
+      const remaining = Math.max(maxQuantity - stornoQuantity, 0);
+      return remaining ? [finalBuildOrderLineText(item.name, remaining, clean(item.explicitPrice) || priceInfo.amount)] : [];
+    });
+    form.elements.varietiesText.value = nextLines.join("\n");
+    recalculateOrderSheetPrice(form);
+    finalRenderSheetVarietySelection(form);
+    finalRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("PoloĹľka pĹ™esunuta do storna.");
+  }
+
+  function finalRestoreOrderLine(form, index) {
+    const stornoLines = finalReadSheetStornoLines(form);
+    const entry = stornoLines[index];
+    if (!entry) return;
+    const lines = finalCurrentSheetLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(entry.name));
+    if (existingIndex >= 0) {
+      const current = lines[existingIndex];
+      lines[existingIndex] = {
+        ...current,
+        quantity: Math.max(current.quantity || 1, 1) + Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(current.explicitPrice) || clean(entry.unitPrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: entry.name,
+        quantity: Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(entry.unitPrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => finalBuildOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    finalWriteSheetStornoLines(form, stornoLines.filter((_, itemIndex) => itemIndex !== index));
+    form.elements.cancelledAt.value = "";
+    form.elements.cancelledNote.value = "";
+    recalculateOrderSheetPrice(form);
+    finalRenderSheetVarietySelection(form);
+    finalRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("Storno vrĂˇceno do objednĂˇvky.");
+  }
+
+  function finalCancelEntireOrder(form) {
+    const lines = finalCurrentSheetLines(form);
+    if (!lines.length) {
+      toast("ObjednĂˇvka uĹľ nemĂˇ ĹľĂˇdnĂ© aktivnĂ­ poloĹľky.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna celĂ© objednĂˇvky (volitelnÄ›):", clean(form.elements.cancelledNote?.value) || "");
+    if (note === null) return;
+    const stornoLines = finalReadSheetStornoLines(form);
+    lines.forEach((line) => {
+      const priceInfo = finalDefaultPriceInfo(line);
+      stornoLines.push({
+        name: line.name,
+        quantity: Math.max(line.quantity || 1, 1),
+        unitPrice: clean(line.explicitPrice) || priceInfo.amount,
+        currency: "CZK",
+        note: clean(note),
+        createdAt: new Date().toISOString(),
+      });
+    });
+    finalWriteSheetStornoLines(form, stornoLines);
+    form.elements.varietiesText.value = "";
+    form.elements.shippingFee.value = "";
+    form.elements.shippingFeeLabel.value = "";
+    form.elements.packingFee.value = "";
+    form.elements.codFee.value = "";
+    form.elements.cancelledAt.value = new Date().toISOString();
+    form.elements.cancelledNote.value = clean(note);
+    recalculateOrderSheetPrice(form);
+    finalRenderSheetVarietySelection(form);
+    finalRenderStornoBlock(form);
+    renderSheetRestWarning(form);
+    toast("CelĂˇ objednĂˇvka pĹ™esunuta do storna.");
+  }
+
+  function finalAddVarietyToOrder(form) {
+    const varietyId = clean(form?.querySelector('[name="orderVarietySelect"]')?.value);
+    const variety = findById("varieties", varietyId);
+    if (!variety) {
+      toast("Vyber odrĹŻdu.");
+      return;
+    }
+    const lines = finalCurrentSheetLines(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(variety.name));
+    if (existingIndex >= 0) {
+      const current = lines[existingIndex];
+      lines[existingIndex] = {
+        ...current,
+        quantity: Math.max(current.quantity || 1, 1) + 1,
+        explicitPrice: clean(current.explicitPrice) || clean(variety.salePrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: variety.name,
+        quantity: 1,
+        explicitPrice: clean(variety.salePrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => finalBuildOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    form.querySelector('[name="orderVarietySelect"]').value = "";
+    recalculateOrderSheetPrice(form);
+    finalRenderSheetVarietySelection(form);
+    finalRenderStornoBlock(form);
+    syncOrderSheetAlternates();
+    toast("OdrĹŻda pĹ™idĂˇna do objednĂˇvky.");
+  }
+
+  openOrderSheet = function openOrderSheetFinal(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers;
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    const varietyOptions = ['<option value="">Vyber odrĹŻdu</option>']
+      .concat(
+        [...state.data.varieties]
+          .slice()
+          .sort((a, b) => clean(a.name).localeCompare(clean(b.name), "cs"))
+          .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`),
+      )
+      .join("");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>PĹ™idat odrĹŻdu</span><select name="orderVarietySelect">${varietyOptions}</select></label>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-order-variety-add>PĹ™idat odrĹŻdu</button></div>
+      <div class="rest-variety-selection" data-order-variety-selection></div>
+      <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
+      <textarea name="stornoLines" hidden>${escapeHtml(JSON.stringify(orderStornoLines(order)))}</textarea>
+      <input name="cancelledAt" type="hidden" value="${escapeHtml(clean(order.cancelledAt))}">
+      <input name="cancelledNote" type="hidden" value="${escapeHtml(clean(order.cancelledNote))}">
+      <section class="order-storno-sheet-block" data-sheet-order-storno></section>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        stornoLines: finalParseStornoLines(data.get("stornoLines")),
+        cancelledAt: clean(data.get("cancelledAt")),
+        cancelledNote: clean(data.get("cancelledNote")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    bindToggles();
+    bindFees();
+    const form = els.sheet.querySelector("#sheetForm");
+    form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+    syncOrderSheetCustomerValidity(form);
+    syncOrderSheetAlternates();
+    renderSheetRestWarning(form);
+    finalRenderSheetVarietySelection(form);
+    finalRenderStornoBlock(form);
+    form?.querySelector("[data-order-variety-add]")?.addEventListener("click", () => finalAddVarietyToOrder(form));
+    form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => {
+      recalculateOrderSheetPrice(form);
+      finalRenderSheetVarietySelection(form);
+      finalRenderStornoBlock(form);
+    });
+    form?.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+        clearOrderSheetFeeRestoreSnapshot(form);
+      } else {
+        syncOrderSheetCountryShippingPreset(form);
+      }
+      form?.__syncFeeButtons?.();
+      syncOrderSheetAlternates();
+      renderSheetRestWarning(form);
+    });
+    form?.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+      if (!form?.elements) return;
+      const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+      if (form.elements.deliveryMethod.value === "personal_pickup") {
+        if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+        els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+        form.elements.shippingFee.value = "";
+        form.elements.shippingFeeLabel.value = "";
+        form.elements.packingFee.value = "";
+        form.elements.codFee.value = "";
+        recalculateOrderSheetPrice(form);
+      } else if (previousDelivery === "personal_pickup") {
+        const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+        if (!restored) form.__syncFeeButtons?.();
+        recalculateOrderSheetPrice(form);
+      }
+      form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+      finalRenderStornoBlock(form);
+    });
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (!clean(form?.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+    });
+    els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+      button.classList.toggle("active", sent);
+      button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+    });
+  };
+
+  renderCustomers = function renderCustomersFinalWithStorno() {
+    const customers = state.data.customers.filter(matchCustomer).sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"));
+    if (!customers.length) return empty("Ĺ˝ĂˇdnĂ­ zĂˇkaznĂ­ci.");
+    return customers.map((customer) => {
+      const stornoMeta = finalLatestCustomerStorno(customer.id);
+      const stornoText = stornoMeta.count
+        ? [`<span class="customer-storno-mobile">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>`, stornoMeta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(stornoMeta.note)}</span>` : ""].filter(Boolean).join("")
+        : "";
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: customerName(customer),
+        sub: [customer.email, customer.phone, customer.country].filter(Boolean).join("<br>") + stornoText,
+        pills: [...(customer.tags || []), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", "+"], ["edit-customer", "âśŽ"], ["delete-customer", "Ă—"]],
+      });
+    }).join("");
+  };
+
+  globalThis.__akOpenOrderSheetFinal = openOrderSheet;
+  globalThis.__akRenderCustomersFinal = renderCustomers;
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => render(), 0);
+  }
+})();
+
+(() => {
+  function parseSheetOrderLineName(line = "") {
+    return clean(line)
+      .replace(/\b\d+\s*x\b/gi, " ")
+      .replace(/\bx\s*\d+\b/gi, " ")
+      .replace(/\b\d+\s*(ks|kus|kusy|Ĺ™Ă­zkĹŻ|rizku|sazenic)\b/gi, " ")
+      .replace(/(?:-|â€“|â€”)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/(?:@|=)\s*\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i, " ")
+      .replace(/\b\d+(?:[,.]\d+)?\s*(KÄŤ|kc|czk|eur|â‚¬)\b/gi, " ")
+      .replace(/[=:@]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function parseSheetOrderLines(text = "") {
+    return clean(text)
+      .split(/\n+/)
+      .map((rawLine) => {
+        const raw = clean(rawLine);
+        const name = parseSheetOrderLineName(raw);
+        return {
+          raw,
+          name,
+          quantity: orderLineQuantity(raw),
+          explicitPrice: Number.isFinite(orderLineUnitPrice(raw)) ? normalizeAmount(orderLineUnitPrice(raw)) : "",
+          explicitCurrency: "CZK",
+        };
+      })
+      .filter((line) => line.name);
+  }
+
+  function buildMobileOrderLineText(name, quantity = 1, amount = "") {
+    const normalizedName = clean(name);
+    const normalizedQuantity = Math.max(wholeNumber(quantity, 1), 1);
+    const parsedAmount = number(amount);
+    return Number.isFinite(parsedAmount)
+      ? offerOrderLineText(normalizedName, normalizedQuantity, parsedAmount)
+      : `${normalizedName} ${normalizedQuantity}x`;
+  }
+
+  function parseMobileOrderStornoLinesSafe(value) {
+    if (Array.isArray(value)) return value.map((entry) => ({
+      name: clean(entry?.name),
+      quantity: Math.max(wholeNumber(entry?.quantity, 1), 1),
+      unitPrice: normalizeAmount(entry?.unitPrice),
+      currency: clean(entry?.currency) || "CZK",
+      note: clean(entry?.note),
+      createdAt: clean(entry?.createdAt),
+    })).filter((entry) => entry.name);
+    if (!clean(value)) return [];
+    try {
+      return parseMobileOrderStornoLinesSafe(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  function currentOrderSheetLinesSafe(form) {
+    return parseSheetOrderLines(form?.elements?.varietiesText?.value || "");
+  }
+
+  function readOrderSheetStornoLinesSafe(form) {
+    return parseMobileOrderStornoLinesSafe(form?.elements?.stornoLines?.value);
+  }
+
+  function writeOrderSheetStornoLinesSafe(form, lines = []) {
+    if (!form?.elements?.stornoLines) return;
+    form.elements.stornoLines.value = JSON.stringify(parseMobileOrderStornoLinesSafe(lines));
+  }
+
+  function clearOrderSheetCancellationSafe(form) {
+    if (!form?.elements) return;
+    if (form.elements.cancelledAt) form.elements.cancelledAt.value = "";
+    if (form.elements.cancelledNote) form.elements.cancelledNote.value = "";
+  }
+
+  function defaultMobileOrderLinePriceInfo(line = {}) {
+    if (clean(line.explicitPrice)) return { amount: line.explicitPrice, currency: "CZK" };
+    const variety = findVarietyByName(line.name);
+    if (clean(variety?.salePrice)) return { amount: variety.salePrice, currency: "CZK" };
+    return { amount: "", currency: "CZK" };
+  }
+
+  function renderOrderSheetVarietySelection(form = els.sheet.querySelector("#sheetForm")) {
+    const container = form?.querySelector("[data-order-variety-selection]");
+    if (!container) return;
+    const lines = currentOrderSheetLinesSafe(form);
+    container.innerHTML = lines.length
+      ? lines.map((line) => `<span class="rest-variety-chip">${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  function addSelectedVarietyToOrderSheet(form = els.sheet.querySelector("#sheetForm")) {
+    if (!form?.elements) return;
+    const select = form.querySelector('[name="orderVarietySelect"]');
+    const varietyId = clean(select?.value);
+    const variety = findById("varieties", varietyId);
+    if (!variety) {
+      toast("Vyber odrĹŻdu.");
+      return;
+    }
+    const lines = currentOrderSheetLinesSafe(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(variety.name));
+    if (existingIndex >= 0) {
+      const existing = lines[existingIndex];
+      const price = clean(existing.explicitPrice) || clean(variety.salePrice);
+      lines[existingIndex] = {
+        ...existing,
+        quantity: Math.max(existing.quantity || 1, 1) + 1,
+        explicitPrice: price,
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: variety.name,
+        quantity: 1,
+        explicitPrice: clean(variety.salePrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => buildMobileOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    if (select) select.value = "";
+    recalculateOrderSheetPrice(form);
+    renderOrderSheetVarietySelection(form);
+    syncOrderSheetAlternates();
+    renderOrderSheetStornoBlockSafe(form);
+    toast("OdrĹŻda pĹ™idĂˇna do objednĂˇvky.");
+  }
+
+  function renderOrderSheetStornoBlockSafe(form = els.sheet.querySelector("#sheetForm")) {
+    const block = form?.querySelector("[data-sheet-order-storno]");
+    if (!form?.elements || !block) return;
+    const activeLines = currentOrderSheetLinesSafe(form);
+    const stornoLines = readOrderSheetStornoLinesSafe(form);
+    if (activeLines.length && clean(form.elements.cancelledAt?.value)) clearOrderSheetCancellationSafe(form);
+    const cancelledAt = clean(form.elements.cancelledAt?.value);
+    const cancelledNote = clean(form.elements.cancelledNote?.value);
+    const cancelledInfo = cancelledAt
+      ? `ObjednĂˇvka stornovĂˇna ${new Intl.DateTimeFormat("cs-CZ", { day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(cancelledAt))}${cancelledNote ? ` Â· ${cancelledNote}` : ""}`
+      : "";
+    block.innerHTML = `
+      <div class="order-storno-sheet-heading">
+        <div>
+          <strong>Storna</strong>
+          <small>Toto se nepoÄŤĂ­tĂˇ do ceny.</small>
+        </div>
+        <button class="button ghost" type="button" data-sheet-order-cancel-all ${activeLines.length ? "" : "disabled"}>Stornovat celou objednĂˇvku</button>
+      </div>
+      ${cancelledInfo ? `<div class="order-storno-sheet-status">${escapeHtml(cancelledInfo)}</div>` : ""}
+      <div class="order-storno-sheet-list">
+        ${activeLines.map((line, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>${escapeHtml(line.quantity > 1 ? `${line.name} Â· ${quantityText(line.quantity)} ks` : line.name)}</span>
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-sheet-order-storno="${index}">Stornovat</button>
+          </div>
+        `).join("")}
+        ${stornoLines.map((entry, index) => `
+          <div class="order-storno-sheet-item">
+            <div class="order-storno-sheet-copy">
+              <span>âś• ${escapeHtml(entry.quantity > 1 ? `${entry.name} Â· ${quantityText(entry.quantity)} ks` : entry.name)}</span>
+              ${clean(entry.note) ? `<small>${escapeHtml(entry.note)}</small>` : ""}
+            </div>
+            <button class="button order-storno-sheet-action" type="button" data-sheet-order-restore="${index}">Obnovit</button>
+          </div>
+        `).join("")}
+        ${!activeLines.length && !stornoLines.length ? '<div class="order-storno-sheet-status">ZatĂ­m bez storna.</div>' : ""}
+      </div>
+    `;
+    block.querySelector("[data-sheet-order-cancel-all]")?.addEventListener("click", () => cancelEntireOrderSheetSafe(form));
+    block.querySelectorAll("[data-sheet-order-storno]").forEach((button) => {
+      button.addEventListener("click", () => stornoOrderSheetLineSafe(form, Number(button.dataset.sheetOrderStorno)));
+    });
+    block.querySelectorAll("[data-sheet-order-restore]").forEach((button) => {
+      button.addEventListener("click", () => restoreOrderSheetStornoLineSafe(form, Number(button.dataset.sheetOrderRestore)));
+    });
+  }
+
+  function stornoOrderSheetLineSafe(form, index) {
+    const lines = currentOrderSheetLinesSafe(form);
+    const line = lines[index];
+    if (!line) return;
+    const rawQuantity = window.prompt(`Kolik ks stornovat u ${line.name}?`, String(Math.max(line.quantity || 1, 1)));
+    if (rawQuantity === null) return;
+    const stornoQuantity = Number.parseInt(clean(rawQuantity), 10);
+    const maxQuantity = Math.max(line.quantity || 1, 1);
+    if (!Number.isFinite(stornoQuantity) || stornoQuantity < 1 || stornoQuantity > maxQuantity) {
+      toast("NapiĹˇ platnĂ˝ poÄŤet kusĹŻ ke storno.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna (volitelnÄ›):", "") ?? "";
+    const priceInfo = defaultMobileOrderLinePriceInfo(line);
+    const stornoLines = readOrderSheetStornoLinesSafe(form);
+    stornoLines.push({
+      name: line.name,
+      quantity: stornoQuantity,
+      unitPrice: priceInfo.amount,
+      currency: "CZK",
+      note: clean(note),
+      createdAt: new Date().toISOString(),
+    });
+    writeOrderSheetStornoLinesSafe(form, stornoLines);
+    const nextLines = lines.flatMap((item, itemIndex) => {
+      if (itemIndex !== index) return [buildMobileOrderLineText(item.name, item.quantity, item.explicitPrice)];
+      const remaining = Math.max(maxQuantity - stornoQuantity, 0);
+      return remaining ? [buildMobileOrderLineText(item.name, remaining, clean(item.explicitPrice) || priceInfo.amount)] : [];
+    });
+    form.elements.varietiesText.value = nextLines.join("\n");
+    recalculateOrderSheetPrice(form);
+    renderOrderSheetVarietySelection(form);
+    renderOrderSheetStornoBlockSafe(form);
+    renderSheetRestWarning(form);
+    toast("PoloĹľka pĹ™esunuta do storna.");
+  }
+
+  function restoreOrderSheetStornoLineSafe(form, index) {
+    const stornoLines = readOrderSheetStornoLinesSafe(form);
+    const entry = stornoLines[index];
+    if (!entry) return;
+    const lines = currentOrderSheetLinesSafe(form);
+    const existingIndex = lines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(entry.name));
+    if (existingIndex >= 0) {
+      const current = lines[existingIndex];
+      lines[existingIndex] = {
+        ...current,
+        quantity: Math.max(current.quantity || 1, 1) + Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(current.explicitPrice) || clean(entry.unitPrice),
+      };
+    } else {
+      lines.push({
+        raw: "",
+        name: entry.name,
+        quantity: Math.max(entry.quantity || 1, 1),
+        explicitPrice: clean(entry.unitPrice),
+        explicitCurrency: "CZK",
+      });
+    }
+    form.elements.varietiesText.value = lines.map((line) => buildMobileOrderLineText(line.name, line.quantity, line.explicitPrice)).join("\n");
+    writeOrderSheetStornoLinesSafe(form, stornoLines.filter((_, itemIndex) => itemIndex !== index));
+    clearOrderSheetCancellationSafe(form);
+    recalculateOrderSheetPrice(form);
+    renderOrderSheetVarietySelection(form);
+    renderOrderSheetStornoBlockSafe(form);
+    renderSheetRestWarning(form);
+    toast("Storno vrĂˇceno do objednĂˇvky.");
+  }
+
+  function cancelEntireOrderSheetSafe(form) {
+    const lines = currentOrderSheetLinesSafe(form);
+    if (!lines.length) {
+      toast("ObjednĂˇvka uĹľ nemĂˇ ĹľĂˇdnĂ© aktivnĂ­ poloĹľky.");
+      return;
+    }
+    const note = window.prompt("DĹŻvod storna celĂ© objednĂˇvky (volitelnÄ›):", clean(form.elements.cancelledNote?.value) || "");
+    if (note === null) return;
+    const stornoLines = readOrderSheetStornoLinesSafe(form);
+    lines.forEach((line) => {
+      const priceInfo = defaultMobileOrderLinePriceInfo(line);
+      stornoLines.push({
+        name: line.name,
+        quantity: Math.max(line.quantity || 1, 1),
+        unitPrice: clean(line.explicitPrice) || priceInfo.amount,
+        currency: "CZK",
+        note: clean(note),
+        createdAt: new Date().toISOString(),
+      });
+    });
+    writeOrderSheetStornoLinesSafe(form, stornoLines);
+    form.elements.varietiesText.value = "";
+    form.elements.shippingFee.value = "";
+    form.elements.shippingFeeLabel.value = "";
+    form.elements.packingFee.value = "";
+    form.elements.codFee.value = "";
+    if (form.elements.cancelledAt) form.elements.cancelledAt.value = new Date().toISOString();
+    if (form.elements.cancelledNote) form.elements.cancelledNote.value = clean(note);
+    recalculateOrderSheetPrice(form);
+    renderOrderSheetVarietySelection(form);
+    renderOrderSheetStornoBlockSafe(form);
+    renderSheetRestWarning(form);
+    toast("CelĂˇ objednĂˇvka pĹ™esunuta do storna.");
+  }
+
+  openOrderSheet = function openOrderSheetWithVarietyPickerAndStorno(id = "", customerId = "") {
+    const order = findById("orders", id) || {};
+    const customers = state.data.customers;
+    const selectedCustomerId = clean(order.customerId || customerId);
+    const selectedCustomer = findCustomer(selectedCustomerId);
+    const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+    const varietyOptions = ['<option value="">Vyber odrĹŻdu</option>']
+      .concat(
+        [...state.data.varieties]
+          .slice()
+          .sort((a, b) => clean(a.name).localeCompare(clean(b.name), "cs"))
+          .map((variety) => `<option value="${escapeHtml(variety.id)}">${escapeHtml(variety.name)}</option>`),
+      )
+      .join("");
+    openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+      <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+        .slice()
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
+      <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+      ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+      <div class="toggle-grid">
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+        <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+        ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
+      </div>
+      <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+      <label class="field"><span>PĹ™idat odrĹŻdu</span><select name="orderVarietySelect">${varietyOptions}</select></label>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-order-variety-add>PĹ™idat odrĹŻdu</button></div>
+      <div class="rest-variety-selection" data-order-variety-selection></div>
+      <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
+      <textarea name="stornoLines" hidden>${escapeHtml(JSON.stringify(orderStornoLines(order)))}</textarea>
+      <input name="cancelledAt" type="hidden" value="${escapeHtml(clean(order.cancelledAt))}">
+      <input name="cancelledNote" type="hidden" value="${escapeHtml(clean(order.cancelledNote))}">
+      <section class="order-storno-sheet-block" data-sheet-order-storno></section>
+      <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+      <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+      <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+      <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+      <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const item = normalizeOrder({
+        ...order,
+        id: order.id || uid(),
+        offerId: clean(data.get("offerId")),
+        customerId: clean(data.get("customerId")),
+        orderDate: clean(data.get("orderDate")) || todayInput(),
+        paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+        shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+        deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+        varietiesText: clean(data.get("varietiesText")),
+        stornoLines: parseMobileOrderStornoLinesSafe(data.get("stornoLines")),
+        cancelledAt: clean(data.get("cancelledAt")),
+        cancelledNote: clean(data.get("cancelledNote")),
+        price: clean(data.get("price")),
+        shippingFee: clean(data.get("shippingFee")),
+        shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+        packingFee: clean(data.get("packingFee")),
+        codFee: clean(data.get("codFee")),
+        note: clean(data.get("note")),
+        createdAt: order.createdAt || now,
+        updatedAt: now,
+      });
+      upsert("orders", item);
+    });
+    bindToggles();
+    bindFees();
+    const form = els.sheet.querySelector("#sheetForm");
+    form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+    syncOrderSheetCustomerValidity(form);
+    syncOrderSheetAlternates();
+    renderSheetRestWarning(form);
+    renderOrderSheetVarietySelection(form);
+    renderOrderSheetStornoBlockSafe(form);
+    form?.querySelector('[data-order-variety-add]')?.addEventListener("click", () => addSelectedVarietyToOrderSheet(form));
+    form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => {
+      recalculateOrderSheetPrice(form);
+      renderOrderSheetVarietySelection(form);
+      renderOrderSheetStornoBlockSafe(form);
+    });
+    form?.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+        clearOrderSheetFeeRestoreSnapshot(form);
+      } else {
+        syncOrderSheetCountryShippingPreset(form);
+      }
+      form?.__syncFeeButtons?.();
+      syncOrderSheetAlternates();
+      renderSheetRestWarning(form);
+    });
+    form?.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+      if (!form?.elements) return;
+      const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+      if (form.elements.deliveryMethod.value === "personal_pickup") {
+        if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+        els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+        form.elements.shippingFee.value = "";
+        form.elements.shippingFeeLabel.value = "";
+        form.elements.packingFee.value = "";
+        form.elements.codFee.value = "";
+        recalculateOrderSheetPrice(form);
+      } else if (previousDelivery === "personal_pickup") {
+        const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+        if (!restored) form.__syncFeeButtons?.();
+        recalculateOrderSheetPrice(form);
+      }
+      form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+      renderOrderSheetStornoBlockSafe(form);
+    });
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+      syncOrderSheetCustomerValidity(form);
+      if (!clean(form?.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+    });
+    els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      const button = event.currentTarget;
+      const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+      button.classList.toggle("active", sent);
+      button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+    });
+  };
+
+  if (typeof render === "function") {
+    render();
+    setTimeout(() => render(), 0);
+  }
+})();
+(() => {
+  window.__akRestPatchVersion = "20260531-73";
+  const baseOpenOfferSheet = openOfferSheet;
+
+  function renderRestSelectionEof(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>Ă—</span></button>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  function setupRestSheetPickerEof(form, initialValue = "") {
+    if (!form) return;
+    const picker = form.elements.restVarietyPicker;
+    const hidden = form.elements.restVarietyName;
+    const list = form.querySelector("[data-rest-variety-list]");
+    const addButton = form.querySelector("[data-rest-variety-add]");
+    if (!picker || !hidden || !list || !addButton) return;
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odrĹŻdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) picker.value = previousValue;
+    };
+
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestSelectionEof(list, form.__restVarietyNames);
+      renderPicker();
+    };
+
+    addButton.onclick = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      picker.value = "";
+      sync();
+    };
+
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+
+    sync();
+  }
+
+  openOfferSheet = function openOfferSheetRestEof(id = "", defaults = {}) {
+    const offer = findById("offers", id) || {};
+    const isRest = offer.id ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    if (!isRest) return baseOpenOfferSheet(id, defaults);
+    const initialDate = offer.date || clean(defaults.date) || todayInput();
+    const names = restFormVarietyNames(offer.restVarietyName);
+    const customers = [...(state.data.customers || [])].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    openSheet(offer.id ? "Upravit resty" : "NovĂ© resty", `<form class="form-grid" id="sheetForm">
+      <input name="type" type="hidden" value="rests">
+      <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+      <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+      <input name="facebookPublishTime" type="hidden" value="20:00">
+      <input name="status" type="hidden" value="pĹ™ipravenĂˇ">
+      <input name="restVarietyId" type="hidden" value="">
+      <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+      <label class="field"><span>ZĂˇkaznĂ­k</span><select name="restCustomerId"><option value="">Bez zĂˇkaznĂ­ka</option>${customers
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>OdrĹŻdy</span><select name="restVarietyPicker"></select></label>
+      <textarea name="restVarietyName" hidden aria-hidden="true">${escapeHtml(names.join("\n"))}</textarea>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-rest-variety-add>PĹ™idat odrĹŻdu</button></div>
+      <div class="rest-variety-selection" data-rest-variety-list></div>
+      <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const nextDate = clean(data.get("date")) || todayInput();
+      const nextNames = restFormVarietyNames(data.get("restVarietyName"));
+      const matchedVariety = nextNames.length === 1 ? findVarietyByName(nextNames[0]) : null;
+      upsert("offers", normalizeOffer({
+        ...offer,
+        id: offer.id || uid(),
+        title: defaultOfferTitle("rests", nextDate),
+        date: nextDate,
+        facebookPublishDate: nextDate,
+        facebookPublishTime: "20:00",
+        type: "rests",
+        status: "pĹ™ipravenĂˇ",
+        note: clean(data.get("note")),
+        restCustomerId: clean(data.get("restCustomerId")),
+        restVarietyId: clean(matchedVariety?.id),
+        restVarietyName: nextNames.join("\n"),
+        items: offer.items || [],
+        createdAt: offer.createdAt || now,
+        updatedAt: now,
+      }));
+    });
+    setupRestSheetPickerEof(els.sheet.querySelector("#sheetForm"), names.join("\n"));
+  };
+
+  function hardRebindRestActionButtons() {
+    document.querySelectorAll('[data-action="new-rest-offer"]').forEach((button) => {
+      const next = button.cloneNode(true);
+      next.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openOfferSheet("", { type: "rests" });
+      });
+      button.replaceWith(next);
+    });
+  }
+
+  hardRebindRestActionButtons();
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="new-rest-offer"]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    openOfferSheet("", { type: "rests" });
+  }, true);
+})();
+(() => {
+  function renderRestVarietySelectionSafe(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>Ă—</span></button>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  }
+
+  const originalOpenOfferSheet = openOfferSheet;
+  openOfferSheet = function openOfferSheetSafeRest(id = "", defaults = {}) {
+    const originalRender = typeof renderRestVarietySelection === "function" ? renderRestVarietySelection : null;
+    renderRestVarietySelection = renderRestVarietySelectionSafe;
+    try {
+      return originalOpenOfferSheet(id, defaults);
+    } finally {
+      if (originalRender) renderRestVarietySelection = originalRender;
+    }
+  };
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest('[data-action="new-rest-offer"]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    openOfferSheet("", { type: "rests" });
+  }, true);
+})();
+(() => {
+  const previousOpenOfferSheet = openOfferSheet;
+  const previousOpenOfferDetailSheet = openOfferDetailSheet;
+
+  function mobileRestNamesFinal(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function mobileRestCustomerFinal(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez z\u00e1kazn\u00edka";
+  }
+
+  function setupRestSheetSelectPickerFinal(form, initialValue = "") {
+    if (!form) return;
+    const picker = form.elements.restVarietyPicker;
+    const hidden = form.elements.restVarietyName;
+    const list = form.querySelector("[data-rest-variety-list]");
+    const addButton = form.querySelector("[data-rest-variety-add]");
+    if (!picker || !hidden || !list || !addButton) return;
+
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odr\u016fdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) picker.value = previousValue;
+    };
+
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(list, form.__restVarietyNames);
+      renderPicker();
+    };
+
+    addButton.onclick = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      picker.value = "";
+      sync();
+      picker.focus();
+    };
+
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+
+    sync();
+  }
+
+  function openMobileRestOfferSheet(id = "", defaults = {}) {
+    const offer = findById("offers", id) || {};
+    const initialDate = offer.date || clean(defaults.date) || todayInput();
+    const names = mobileRestNamesFinal(offer);
+    const customers = [...(state.data.customers || [])].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    openSheet(offer.id ? "Upravit resty" : "Nov\u00e9 resty", `<form class="form-grid" id="sheetForm">
+      <input name="type" type="hidden" value="rests">
+      <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+      <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+      <input name="facebookPublishTime" type="hidden" value="20:00">
+      <input name="status" type="hidden" value="p\u0159ipraven\u00e1">
+      <input name="restVarietyId" type="hidden" value="">
+      <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+      <label class="field"><span>Z\u00e1kazn\u00edk</span><select name="restCustomerId"><option value="">Bez z\u00e1kazn\u00edka</option>${customers
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>Odr\u016fdy</span><select name="restVarietyPicker"></select></label>
+      <textarea name="restVarietyName" hidden aria-hidden="true">${escapeHtml(names.join("\n"))}</textarea>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-rest-variety-add>P\u0159idat odr\u016fdu</button></div>
+      <div class="rest-variety-selection" data-rest-variety-list></div>
+      <label class="field"><span>Pozn\u00e1mka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const nextDate = clean(data.get("date")) || todayInput();
+      const nextNames = restFormVarietyNames(data.get("restVarietyName"));
+      const matchedVariety = nextNames.length === 1 ? findVarietyByName(nextNames[0]) : null;
+      upsert("offers", normalizeOffer({
+        ...offer,
+        id: offer.id || uid(),
+        title: defaultOfferTitle("rests", nextDate),
+        date: nextDate,
+        facebookPublishDate: nextDate,
+        facebookPublishTime: "20:00",
+        type: "rests",
+        status: "p\u0159ipraven\u00e1",
+        note: clean(data.get("note")),
+        restCustomerId: clean(data.get("restCustomerId")),
+        restVarietyId: clean(matchedVariety?.id),
+        restVarietyName: nextNames.join("\n"),
+        items: offer.items || [],
+        createdAt: offer.createdAt || now,
+        updatedAt: now,
+      }));
+    });
+    setupRestSheetSelectPickerFinal(els.sheet.querySelector("#sheetForm"), names.join("\n"));
+  }
+
+  function openMobileRestOfferDetailSheet(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    state.activeOfferId = id;
+    const names = mobileRestNamesFinal(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>Z\u00e1kazn\u00edk</small><strong>${escapeHtml(mobileRestCustomerFinal(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "Odr\u016fdy" : "Odr\u016fda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+      </div>
+      ${clean(offer.note) ? `<div class="rest-meta-stack"><div class="rest-meta-card"><small>Pozn\u00e1mka</small><strong>${escapeHtml(offer.note)}</strong></div></div>` : ""}
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>Zav\u0159\u00edt</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvo\u0159it objedn\u00e1vku</button>`;
+    openSheet(offer.title, body, null, footer, {
+      ...options,
+      restore: () => openOfferDetailSheet(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openMobileRestOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  }
+
+  openOfferSheet = function openOfferSheetRestDirect(id = "", defaults = {}) {
+    const offer = findById("offers", id);
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    if (isRest) return openMobileRestOfferSheet(id, defaults);
+    return previousOpenOfferSheet(id, defaults);
+  };
+
+  openOfferDetailSheet = function openOfferDetailSheetRestDirect(id, options = {}) {
+    const offer = findById("offers", id);
+    if (offer && isRestOffer(offer)) return openMobileRestOfferDetailSheet(id, options);
+    return previousOpenOfferDetailSheet(id, options);
+  };
+
+  document.querySelectorAll('[data-action="new-rest-offer"]').forEach((button) => {
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMobileRestOfferSheet("", { type: "rests" });
+    };
+  });
+})();
+
 function offerItemDetailMarkup(offer, item) {
   const reserved = offerItemReservedCount(item);
   const alternate = offerItemAlternateCount(item);
@@ -975,29 +5110,29 @@ function offerItemDetailMarkup(offer, item) {
   const itemId = escapeHtml(item.id);
   const orderProgress = offerItemOrderProgress(offer, item);
   const orderFlag = orderProgress.label
-    ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">→ OBJ</span>`
+    ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">â†’ OBJ</span>`
     : "";
   return `<article class="offer-item ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
     <div class="offer-item-head">
       <span class="thumb offer-thumb-wrap">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(offerItemName(item)))}${orderFlag}</span>
       <div>
         <strong>${escapeHtml(offerItemName(item))}</strong>
-        <small>${total || 0} ks · ${formatMoney(item.price, item.currency || "CZK")} / ks</small>
+        <small>${total || 0} ks Â· ${formatMoney(item.price, item.currency || "CZK")} / ks</small>
       </div>
     </div>
     <div class="pill-row">
-      <span class="pill">Volné ${available}</span>
+      <span class="pill">VolnĂ© ${available}</span>
       <span class="pill">Potvrzeno ${confirmed}</span>
-      ${alternate ? `<span class="pill">Náhradník ${alternate}</span>` : ""}
+      ${alternate ? `<span class="pill">NĂˇhradnĂ­k ${alternate}</span>` : ""}
     </div>
     <div class="offer-item-actions">
       <button class="button primary" type="button" data-offer-id="${offerId}" data-reserve-offer-item="${itemId}" ${available <= 0 ? "disabled" : ""}>Rezervovat</button>
-      <button class="button" type="button" data-offer-id="${offerId}" data-alternate-offer-item="${itemId}">Náhradník</button>
+      <button class="button" type="button" data-offer-id="${offerId}" data-alternate-offer-item="${itemId}">NĂˇhradnĂ­k</button>
       <button class="button" type="button" data-offer-id="${offerId}" data-edit-offer-item="${itemId}">Upravit</button>
       <button class="button danger" type="button" data-offer-id="${offerId}" data-delete-offer-item="${itemId}">Smazat</button>
     </div>
     <div class="reservation-list">
-      ${(item.reservations || []).length ? sortedReservations(item).map((reservation) => reservationLineMarkup(offer, item, reservation)).join("") : `<small class="sub">Zatím bez rezervací.</small>`}
+      ${(item.reservations || []).length ? sortedReservations(item).map((reservation) => reservationLineMarkup(offer, item, reservation)).join("") : `<small class="sub">ZatĂ­m bez rezervacĂ­.</small>`}
     </div>
   </article>`;
 }
@@ -1009,14 +5144,14 @@ function reservationLineMarkup(offer, item, reservation) {
   const itemId = escapeHtml(item.id);
   const reservationId = escapeHtml(reservation.id);
   return `<div class="reservation-line">
-    <strong>${escapeHtml(customerName(customer) || "Bez zákazníka")}</strong>
+    <strong>${escapeHtml(customerName(customer) || "Bez zĂˇkaznĂ­ka")}</strong>
     <span>${number(reservation.quantity) || 1} ks</span>
-    <span class="pill ${status === "alternate" ? "warn" : "ok"}">${status === "alternate" ? "Náhradník" : "Potvrzeno"}</span>
-    ${reservationLinkedToOrder(offer, item, reservation) ? `<span class="pill ok">Objednávka</span>` : ""}
+    <span class="pill ${status === "alternate" ? "warn" : "ok"}">${status === "alternate" ? "NĂˇhradnĂ­k" : "Potvrzeno"}</span>
+    ${reservationLinkedToOrder(offer, item, reservation) ? `<span class="pill ok">ObjednĂˇvka</span>` : ""}
     ${reservation.note ? `<small>${escapeHtml(reservation.note)}</small>` : ""}
     <span class="reservation-line-actions">
-      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-edit-reservation="${reservationId}" title="Upravit rezervaci">✎</button>
-      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-delete-reservation="${reservationId}" title="Smazat rezervaci">×</button>
+      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-edit-reservation="${reservationId}" title="Upravit rezervaci">âśŽ</button>
+      <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-delete-reservation="${reservationId}" title="Smazat rezervaci">Ă—</button>
     </span>
   </div>`;
 }
@@ -1028,19 +5163,19 @@ function openOfferItemSheet(offerId, itemId = "") {
   const matchedVariety = findById("varieties", item?.varietyId) || findVarietyByName(item?.varietyName);
   const visibleVarietyName = matchedVariety?.name || item?.varietyName || "";
   const selectedCurrency = clean(item?.currency || matchedVariety?.saleCurrency || "CZK");
-  openSheet(item ? "Upravit odřezek" : "Přidat odřezek", `<form class="form-grid" id="sheetForm">
+  openSheet(item ? "Upravit odĹ™ezek" : "PĹ™idat odĹ™ezek", `<form class="form-grid" id="sheetForm">
     <input type="hidden" name="varietyId" value="${escapeHtml(matchedVariety?.id || item?.varietyId || "")}">
-    <label class="field"><span>Odrůda</span><input name="varietyName" data-offer-variety-input required autocomplete="off" value="${escapeHtml(visibleVarietyName)}" placeholder="Název odrůdy"></label>
+    <label class="field"><span>OdrĹŻda</span><input name="varietyName" data-offer-variety-input required autocomplete="off" value="${escapeHtml(visibleVarietyName)}" placeholder="NĂˇzev odrĹŻdy"></label>
     <div class="offer-variety-picker" data-offer-variety-picker></div>
-    <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(item?.quantity || "1")}"></label>
+    <label class="field"><span>PoÄŤet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(item?.quantity || "1")}"></label>
     <label class="field"><span>Cena za ks</span><input name="price" inputmode="decimal" value="${escapeHtml(item?.price || matchedVariety?.salePrice || "")}"></label>
-    <label class="field"><span>Měna</span><select name="currency">
-      <option value="CZK" ${selectedCurrency === "CZK" ? "selected" : ""}>Kč</option>
+    <label class="field"><span>MÄ›na</span><select name="currency">
+      <option value="CZK" ${selectedCurrency === "CZK" ? "selected" : ""}>KÄŤ</option>
       <option value="EUR" ${selectedCurrency === "EUR" ? "selected" : ""}>EUR</option>
     </select></label>
-    ${photoPickerFields("Fotka odřezku (volitelně)")}
+    ${photoPickerFields("Fotka odĹ™ezku (volitelnÄ›)")}
     <div class="photo-grid" id="photoGrid">${photoTiles(clean(item?.photoUrl) ? [item.photoUrl] : [])}</div>
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(item?.note || "")}</textarea></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(item?.note || "")}</textarea></label>
   </form>`, async () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
@@ -1115,7 +5250,7 @@ function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
   const matches = varieties
     .filter((variety) => !query || normalize(variety.name).includes(query));
   if (!matches.length) {
-    picker.innerHTML = `<div class="offer-variety-empty">Žádná odrůda nenalezena. Můžeš napsat nový název.</div>`;
+    picker.innerHTML = `<div class="offer-variety-empty">Ĺ˝ĂˇdnĂˇ odrĹŻda nenalezena. MĹŻĹľeĹˇ napsat novĂ˝ nĂˇzev.</div>`;
     return;
   }
   picker.innerHTML = matches.map((variety) => {
@@ -1123,7 +5258,7 @@ function renderOfferItemVarietyPicker(form, offer, currentItem = null) {
     const used = usedKeys.has(clean(variety.id)) || usedKeys.has(key);
     const selected = selectedKey && key === selectedKey;
     const price = clean(variety.salePrice) ? formatMoney(variety.salePrice, variety.saleCurrency || "CZK") : "";
-    const meta = [used ? "Už v nabídce" : "", price].filter(Boolean).join(" · ");
+    const meta = [used ? "UĹľ v nabĂ­dce" : "", price].filter(Boolean).join(" Â· ");
     return `<button class="offer-variety-option ${used ? "used" : ""} ${selected ? "selected" : ""}" type="button" data-offer-variety-id="${escapeHtml(variety.id)}">
       <span>${escapeHtml(variety.name)}</span>
       ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
@@ -1160,20 +5295,20 @@ function openReservationSheet(offerId, itemId, reservationId = "", preferredStat
   const reservation = reservationId ? item.reservations.find((entry) => entry.id === reservationId) : null;
   const status = reservationStatusValue(reservation?.status || preferredStatus);
   const selectedCustomerId = reservation?.customerId || "";
-  openSheet(reservation ? "Upravit rezervaci" : (status === "alternate" ? "Přidat náhradníka" : "Nová rezervace"), `<form class="form-grid" id="sheetForm">
+  openSheet(reservation ? "Upravit rezervaci" : (status === "alternate" ? "PĹ™idat nĂˇhradnĂ­ka" : "NovĂˇ rezervace"), `<form class="form-grid" id="sheetForm">
     <div class="offer-reservation-context">
       <strong>${escapeHtml(offerItemName(item))}</strong>
-      <small>${escapeHtml(offer.title)} · volné ${reservationAvailableQuantity(item, reservation?.id)} ks</small>
+      <small>${escapeHtml(offer.title)} Â· volnĂ© ${reservationAvailableQuantity(item, reservation?.id)} ks</small>
     </div>
-    <label class="field"><span>Zákazník</span><select name="customerId">
-      <option value="">Vybrat zákazníka</option>
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId">
+      <option value="">Vybrat zĂˇkaznĂ­ka</option>
       ${state.data.customers.slice().sort((a, b) => customerName(a).localeCompare(customerName(b), "cs")).map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`).join("")}
     </select></label>
-    <label class="field"><span>Nebo nový zákazník</span><input name="newCustomerName" value="" placeholder="Jméno nebo FB jméno"></label>
-    <label class="field"><span>Telefon nového zákazníka</span><input name="newCustomerPhone" value="" inputmode="tel"></label>
-    <label class="field"><span>Počet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(reservation?.quantity || "1")}"></label>
-    ${toggle("status", [["confirmed", "Potvrzeno"], ["alternate", "Náhradník"]], status)}
-    <label class="field"><span>Poznámka</span><textarea name="note">${escapeHtml(reservation?.note || "")}</textarea></label>
+    <label class="field"><span>Nebo novĂ˝ zĂˇkaznĂ­k</span><input name="newCustomerName" value="" placeholder="JmĂ©no nebo FB jmĂ©no"></label>
+    <label class="field"><span>Telefon novĂ©ho zĂˇkaznĂ­ka</span><input name="newCustomerPhone" value="" inputmode="tel"></label>
+    <label class="field"><span>PoÄŤet ks</span><input name="quantity" inputmode="numeric" required value="${escapeHtml(reservation?.quantity || "1")}"></label>
+    ${toggle("status", [["confirmed", "Potvrzeno"], ["alternate", "NĂˇhradnĂ­k"]], status)}
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(reservation?.note || "")}</textarea></label>
   </form>`, () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
@@ -1182,7 +5317,7 @@ function openReservationSheet(offerId, itemId, reservationId = "", preferredStat
     let customerId = clean(data.get("customerId"));
     if (!customerId) {
       if (!newCustomerName) {
-        toast("Vyber zákazníka nebo napiš nového.");
+        toast("Vyber zĂˇkaznĂ­ka nebo napiĹˇ novĂ©ho.");
         return false;
       }
     }
@@ -1193,9 +5328,9 @@ function openReservationSheet(offerId, itemId, reservationId = "", preferredStat
     const availableQuantity = reservationAvailableQuantity(item, existing?.id);
     if (nextStatus === "confirmed" && availableQuantity <= 0) {
       nextStatus = "alternate";
-      toast("Položka je plná, ukládám jako náhradníka.");
+      toast("PoloĹľka je plnĂˇ, uklĂˇdĂˇm jako nĂˇhradnĂ­ka.");
     } else if (nextStatus === "confirmed" && requestedQuantity > availableQuantity) {
-      toast(`Volné jsou jen ${availableQuantity} ks. Zmenši počet nebo zvol náhradníka.`);
+      toast(`VolnĂ© jsou jen ${availableQuantity} ks. ZmenĹˇi poÄŤet nebo zvol nĂˇhradnĂ­ka.`);
       return false;
     }
     if (!customerId && newCustomerName) {
@@ -1231,13 +5366,13 @@ function deleteOfferItem(offerId, itemId) {
   const offer = findById("offers", offerId);
   if (!offer) return;
   const item = offer.items.find((entry) => entry.id === itemId);
-  if (!item || !confirm(`Smazat odřezek ${offerItemName(item)}?`)) return;
+  if (!item || !confirm(`Smazat odĹ™ezek ${offerItemName(item)}?`)) return;
   offer.items = offer.items.filter((entry) => entry.id !== itemId);
   offer.updatedAt = new Date().toISOString();
   saveData();
   render();
   openOfferDetailSheet(offer.id, { replace: true });
-  toast("Odřezek smazán.");
+  toast("OdĹ™ezek smazĂˇn.");
 }
 
 function deleteReservation(offerId, itemId, reservationId) {
@@ -1249,7 +5384,7 @@ function deleteReservation(offerId, itemId, reservationId) {
   saveData();
   render();
   openOfferDetailSheet(offer.id, { replace: true });
-  toast("Rezervace smazána.");
+  toast("Rezervace smazĂˇna.");
 }
 
 function createOrdersFromOffer(id) {
@@ -1264,11 +5399,11 @@ function createOrdersFromOffer(id) {
     });
   });
   if (!reservations.length) {
-    toast("Nabídka nemá žádné potvrzené rezervace.");
+    toast("NabĂ­dka nemĂˇ ĹľĂˇdnĂ© potvrzenĂ© rezervace.");
     return;
   }
-  if (state.data.orders.some((order) => order.offerId === offer.id) && !confirm("Z této nabídky už objednávky vznikly. Vytvořit další?")) return;
-  if (!confirm(`Vytvořit objednávky z nabídky ${offer.title}?`)) return;
+  if (state.data.orders.some((order) => order.offerId === offer.id) && !confirm("Z tĂ©to nabĂ­dky uĹľ objednĂˇvky vznikly. VytvoĹ™it dalĹˇĂ­?")) return;
+  if (!confirm(`VytvoĹ™it objednĂˇvky z nabĂ­dky ${offer.title}?`)) return;
 
   const grouped = new Map();
   reservations.forEach(({ item, reservation }) => {
@@ -1310,13 +5445,13 @@ function createOrdersFromOffer(id) {
       orderDate: offer.date || todayInput(),
       varietiesText: lines.join("\n"),
       price: normalizeAmount(group.total + feeTotal),
-      paymentStatus: "čeká",
-      shippingStatus: "nová",
+      paymentStatus: "ÄŤekĂˇ",
+      shippingStatus: "novĂˇ",
       deliveryMethod: "ship",
       shippingFee: Number.isFinite(shippingFee) ? fees.shippingFee : "",
       shippingFeeLabel: Number.isFinite(shippingFee) ? fees.shippingFeeLabel : "",
       packingFee: Number.isFinite(packingFee) ? fees.packingFee : "",
-      note: `Z nabídky: ${offer.title}`,
+      note: `Z nabĂ­dky: ${offer.title}`,
       createdAt: now,
       updatedAt: now,
     }));
@@ -1327,17 +5462,17 @@ function createOrdersFromOffer(id) {
     count += 1;
   });
 
-  offer.status = "uzavřená";
+  offer.status = "uzavĹ™enĂˇ";
   offer.updatedAt = now;
   saveData();
   closeSheet({ all: true });
   state.view = "orders";
   render();
-  toast(`Vytvořeno ${count} objednávek.`);
+  toast(`VytvoĹ™eno ${count} objednĂˇvek.`);
 }
 
 function offerOrderLineText(name, quantity, unitPrice) {
-  return `${clean(name)} ${wholeNumber(quantity, 1)}x - ${normalizeAmount(unitPrice)} Kč`.trim();
+  return `${clean(name)} ${wholeNumber(quantity, 1)}x - ${normalizeAmount(unitPrice)} KÄŤ`.trim();
 }
 
 async function prepareFacebookOffer(id) {
@@ -1345,40 +5480,40 @@ async function prepareFacebookOffer(id) {
     const offerId = clean(id || state.activeOfferId);
     const offer = findById("offers", offerId) || (state.data.offers.length === 1 ? state.data.offers[0] : null);
     if (!offer) {
-      toast("Nabídku se nepodařilo najít.");
+      toast("NabĂ­dku se nepodaĹ™ilo najĂ­t.");
       return;
     }
     state.activeOfferId = offer.id;
-    toast("Otevírám Facebook text...");
+    toast("OtevĂ­rĂˇm Facebook text...");
     offer.facebookPublishDate = clean(offer.facebookPublishDate || offer.date || todayInput());
     offer.facebookPublishTime = clean(offer.facebookPublishTime || "20:00");
     offer.updatedAt = new Date().toISOString();
     try {
       saveData();
     } catch {
-      // Text se má otevřít i pokud prohlížeč právě odmítne zápis do úložiště.
+      // Text se mĂˇ otevĹ™Ă­t i pokud prohlĂ­ĹľeÄŤ prĂˇvÄ› odmĂ­tne zĂˇpis do ĂşloĹľiĹˇtÄ›.
     }
     openFacebookOfferSheet(offer.id);
   } catch (error) {
     console.error(error);
-    toast(`Facebook chyba: ${clean(error?.message || error).slice(0, 80) || "neznámá chyba"}`);
+    toast(`Facebook chyba: ${clean(error?.message || error).slice(0, 80) || "neznĂˇmĂˇ chyba"}`);
   }
 }
 
 function openFacebookOfferSheet(id, options = {}) {
   const offer = findById("offers", id || state.activeOfferId);
   if (!offer) {
-    toast("Nabídku se nepodařilo najít.");
+    toast("NabĂ­dku se nepodaĹ™ilo najĂ­t.");
     return;
   }
   const text = state.facebookDraftTextByOffer.get(offer.id) || safeBuildFacebookOfferText(offer);
   const photoCount = facebookOfferZipEntries(offer).length;
-  const photoStatus = photoCount ? `Fotky k uložení: ${photoCount}` : "Tahle nabídka zatím nemá volné fotky.";
-  openSheet("Facebook příspěvek", `<div class="form-grid">
-    <p class="sub">Text můžeš upravit. Appka si ho uloží jako šablonu; odřezky, kusy a ceny doplní příště automaticky.</p>
-    <label class="field"><span>Text příspěvku</span><textarea data-facebook-offer-text rows="14">${escapeHtml(text)}</textarea></label>
+  const photoStatus = photoCount ? `Fotky k uloĹľenĂ­: ${photoCount}` : "Tahle nabĂ­dka zatĂ­m nemĂˇ volnĂ© fotky.";
+  openSheet("Facebook pĹ™Ă­spÄ›vek", `<div class="form-grid">
+    <p class="sub">Text mĹŻĹľeĹˇ upravit. Appka si ho uloĹľĂ­ jako Ĺˇablonu; odĹ™ezky, kusy a ceny doplnĂ­ pĹ™Ă­ĹˇtÄ› automaticky.</p>
+    <label class="field"><span>Text pĹ™Ă­spÄ›vku</span><textarea data-facebook-offer-text rows="14">${escapeHtml(text)}</textarea></label>
     ${facebookZipProgressMarkup(photoStatus)}
-  </div>`, null, `<button class="button" type="button" data-close-sheet>Zpět</button><button class="button" type="button" data-save-facebook-template>Uložit text</button><button class="button" type="button" data-copy-facebook-offer>Kopírovat text</button><button class="button primary" type="button" data-download-facebook-zip="${escapeHtml(id)}">Stáhnout fotky ZIP</button>`, {
+  </div>`, null, `<button class="button" type="button" data-close-sheet>ZpÄ›t</button><button class="button" type="button" data-save-facebook-template>UloĹľit text</button><button class="button" type="button" data-copy-facebook-offer>KopĂ­rovat text</button><button class="button primary" type="button" data-download-facebook-zip="${escapeHtml(id)}">StĂˇhnout fotky ZIP</button>`, {
     ...options,
     restore: () => openFacebookOfferSheet(id, { replace: true }),
   });
@@ -1401,7 +5536,7 @@ function updateFacebookZipProgress(current, total, message = "") {
   const percent = safeTotal ? Math.round((safeCurrent / safeTotal) * 100) : 0;
   const label = root.querySelector("[data-facebook-zip-progress-label]");
   const fill = root.querySelector("[data-facebook-zip-progress-fill]");
-  if (label) label.textContent = message || (safeTotal ? `Fotka ${safeCurrent} z ${safeTotal}` : "Bez fotek k uložení");
+  if (label) label.textContent = message || (safeTotal ? `Fotka ${safeCurrent} z ${safeTotal}` : "Bez fotek k uloĹľenĂ­");
   if (fill) fill.style.width = `${percent}%`;
 }
 
@@ -1418,42 +5553,42 @@ async function downloadFacebookOfferZip(id, button) {
   const previousLabel = button?.textContent;
   if (button) {
     button.disabled = true;
-    button.textContent = "Připravuji ZIP...";
+    button.textContent = "PĹ™ipravuji ZIP...";
   }
   try {
     const entries = [{ name: "facebook-text.txt", blob: new Blob([text], { type: "text/plain;charset=utf-8" }) }];
     const photoEntries = facebookOfferZipEntries(offer);
-    updateFacebookZipProgress(0, photoEntries.length, photoEntries.length ? `Začínám připravovat ${photoEntries.length} fotek...` : "Bez fotek k uložení.");
+    updateFacebookZipProgress(0, photoEntries.length, photoEntries.length ? `ZaÄŤĂ­nĂˇm pĹ™ipravovat ${photoEntries.length} fotek...` : "Bez fotek k uloĹľenĂ­.");
     await waitForUiPaint();
     for (let index = 0; index < photoEntries.length; index += 1) {
       const entry = photoEntries[index];
-      updateFacebookZipProgress(index, photoEntries.length, `Načítám fotku ${index + 1} z ${photoEntries.length}`);
+      updateFacebookZipProgress(index, photoEntries.length, `NaÄŤĂ­tĂˇm fotku ${index + 1} z ${photoEntries.length}`);
       await waitForUiPaint();
       const file = await photoRefToFacebookFile(entry.ref, entry.name);
       if (!file) {
-        updateFacebookZipProgress(index + 1, photoEntries.length, `Fotka ${index + 1} se přeskočila`);
+        updateFacebookZipProgress(index + 1, photoEntries.length, `Fotka ${index + 1} se pĹ™eskoÄŤila`);
         continue;
       }
-      updateFacebookZipProgress(index, photoEntries.length, `Přidávám text do fotky ${index + 1} z ${photoEntries.length}`);
+      updateFacebookZipProgress(index, photoEntries.length, `PĹ™idĂˇvĂˇm text do fotky ${index + 1} z ${photoEntries.length}`);
       await waitForUiPaint();
       const labeledFile = await createFacebookLabeledPhotoFile(file, entry);
       entries.push({ name: `${entry.name}${photoExtension(labeledFile)}`, blob: labeledFile });
       updateFacebookZipProgress(index + 1, photoEntries.length, `Hotovo ${index + 1} z ${photoEntries.length}`);
     }
-    updateFacebookZipProgress(photoEntries.length, photoEntries.length, "Balím ZIP...");
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, "BalĂ­m ZIP...");
     await waitForUiPaint();
     const zip = await createZipBlob(entries);
     downloadBlob(zip, `${safeFileName(offer.title || "nabidka", "nabidka")}-fotky.zip`);
-    updateFacebookZipProgress(photoEntries.length, photoEntries.length, `ZIP hotový: ${Math.max(0, entries.length - 1)} fotek.`);
-    toast(`ZIP hotový: ${Math.max(0, entries.length - 1)} fotek. Text je zkopírovaný.`);
+    updateFacebookZipProgress(photoEntries.length, photoEntries.length, `ZIP hotovĂ˝: ${Math.max(0, entries.length - 1)} fotek.`);
+    toast(`ZIP hotovĂ˝: ${Math.max(0, entries.length - 1)} fotek. Text je zkopĂ­rovanĂ˝.`);
   } catch (error) {
     console.error(error);
-    updateFacebookZipProgress(0, facebookOfferZipEntries(offer).length, "ZIP se nepodařilo vytvořit.");
-    toast("ZIP se nepodařilo vytvořit.");
+    updateFacebookZipProgress(0, facebookOfferZipEntries(offer).length, "ZIP se nepodaĹ™ilo vytvoĹ™it.");
+    toast("ZIP se nepodaĹ™ilo vytvoĹ™it.");
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = previousLabel || "Stáhnout fotky ZIP";
+      button.textContent = previousLabel || "StĂˇhnout fotky ZIP";
     }
   }
 }
@@ -1638,23 +5773,23 @@ async function shareFacebookOffer(id, button) {
       try {
         await navigator.share({ title: offer.title, text });
       } catch {
-        toast("Text zkopírovaný. Sdílení zrušeno.");
+        toast("Text zkopĂ­rovanĂ˝. SdĂ­lenĂ­ zruĹˇeno.");
       }
     } else {
-      toast("Text zkopírovaný. Fotky nejsou v nabídce.");
+      toast("Text zkopĂ­rovanĂ˝. Fotky nejsou v nabĂ­dce.");
     }
     return;
   }
   if (!navigator.share) {
-    toast("Text zkopírovaný. Na počítači vlož text do Facebooku ručně.");
+    toast("Text zkopĂ­rovanĂ˝. Na poÄŤĂ­taÄŤi vloĹľ text do Facebooku ruÄŤnÄ›.");
     return;
   }
   const previousLabel = button?.textContent;
   if (button) {
     button.disabled = true;
-    button.textContent = "Připravuji...";
+    button.textContent = "PĹ™ipravuji...";
   }
-  toast("Připravuji fotky...");
+  toast("PĹ™ipravuji fotky...");
   const files = [];
   try {
     for (const [index, ref] of photoRefs.entries()) {
@@ -1663,18 +5798,18 @@ async function shareFacebookOffer(id, button) {
     }
     if (files.length && (!navigator.canShare || navigator.canShare({ files }))) {
       await navigator.share({ title: offer.title, text, files });
-      toast(`Text i fotky ${photoOffset + 1}-${photoOffset + files.length} připravené.`);
+      toast(`Text i fotky ${photoOffset + 1}-${photoOffset + files.length} pĹ™ipravenĂ©.`);
       return;
     }
     await navigator.share({ title: offer.title, text });
-    toast("Text připravený, fotky vyber ručně.");
+    toast("Text pĹ™ipravenĂ˝, fotky vyber ruÄŤnÄ›.");
   } catch (error) {
-    if (error?.name === "AbortError") toast("Text zkopírovaný, sdílení zrušeno.");
-    else toast("Text zkopírovaný. Sdílení fotek funguje hlavně na mobilu.");
+    if (error?.name === "AbortError") toast("Text zkopĂ­rovanĂ˝, sdĂ­lenĂ­ zruĹˇeno.");
+    else toast("Text zkopĂ­rovanĂ˝. SdĂ­lenĂ­ fotek funguje hlavnÄ› na mobilu.");
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = previousLabel || "Sdílet";
+      button.textContent = previousLabel || "SdĂ­let";
     }
   }
 }
@@ -1682,22 +5817,22 @@ async function shareFacebookOffer(id, button) {
 async function copyPreparedFacebookText() {
   const text = els.sheet.querySelector("[data-facebook-offer-text]")?.value;
   if (!text) {
-    toast("Text se nepodařilo najít.");
+    toast("Text se nepodaĹ™ilo najĂ­t.");
     return;
   }
   rememberFacebookDraftText();
   await copyTextToClipboard(text);
-  toast("Text pro Facebook zkopírovaný.");
+  toast("Text pro Facebook zkopĂ­rovanĂ˝.");
 }
 
 function savePreparedFacebookText() {
   const text = els.sheet.querySelector("[data-facebook-offer-text]")?.value;
   if (!text) {
-    toast("Text se nepodařilo najít.");
+    toast("Text se nepodaĹ™ilo najĂ­t.");
     return;
   }
   rememberFacebookDraftText();
-  toast("Text uložený jako šablona.");
+  toast("Text uloĹľenĂ˝ jako Ĺˇablona.");
 }
 
 function rememberFacebookDraftText(id) {
@@ -1719,18 +5854,18 @@ function safeBuildFacebookOfferText(offer) {
 
 function fallbackFacebookOfferText(offer = {}) {
   return [
-    "🌿 Nabídka afrických kopřiv (Coleus) 🌿",
+    "đźŚż NabĂ­dka africkĂ˝ch kopĹ™iv (Coleus) đźŚż",
     "",
-    "📅 Kdy?",
+    "đź“… Kdy?",
     facebookOfferDateLine(offer),
     "",
-    "Fotky jednotlivých rostlin budu postupně přidávat do komentářů pod tento příspěvek.",
+    "Fotky jednotlivĂ˝ch rostlin budu postupnÄ› pĹ™idĂˇvat do komentĂˇĹ™ĹŻ pod tento pĹ™Ă­spÄ›vek.",
     "",
     FACEBOOK_ITEMS_TOKEN,
     "",
-    "Pokud máte o některou rostlinu zájem, napište prosím pod konkrétní fotku: „zájem“ nebo „kupuji“.",
+    "Pokud mĂˇte o nÄ›kterou rostlinu zĂˇjem, napiĹˇte prosĂ­m pod konkrĂ©tnĂ­ fotku: â€žzĂˇjemâ€ś nebo â€žkupujiâ€ś.",
     "",
-    "Přeji krásný rostlinný lov 🌿💚",
+    "PĹ™eji krĂˇsnĂ˝ rostlinnĂ˝ lov đźŚżđź’š",
   ].join("\n").trim();
 }
 
@@ -1798,7 +5933,7 @@ function offerItemNameSafe(item) {
   try {
     return offerItemName(item);
   } catch {
-    return clean(item?.varietyName || item?.name || "Odřezek");
+    return clean(item?.varietyName || item?.name || "OdĹ™ezek");
   }
 }
 
@@ -1825,7 +5960,8 @@ function defaultFacebookOfferTemplate(settings = appSettings()) {
     `• balné: ${formatMoney(settings.packingFee || 20, "CZK")}`,
     `• Zásilkovna ČR: ${formatMoney(settings.shippingFeeCz || 89, "CZK")}`,
     `• Zásilkovna SK: ${formatMoney(settings.shippingFeeSk || 99, "CZK")}`,
-    clean(settings.shippingFeeAddress) ? `• Zásilkovna na adresu: ${formatMoney(settings.shippingFeeAddress, "CZK")}` : "",
+    clean(settings.shippingFeeAddressCz) ? `• Zásilkovna na adresu ČR: ${formatMoney(settings.shippingFeeAddressCz, "CZK")}` : "",
+    clean(settings.shippingFeeAddressSk) ? `• Zásilkovna na adresu Slovensko: ${formatMoney(settings.shippingFeeAddressSk, "CZK")}` : "",
     clean(settings.postalFee) ? `• Balíkovna: ${formatMoney(settings.postalFee, "CZK")}` : "",
     clean(settings.codFeeCz) ? `• dobírka ČR: ${formatMoney(settings.codFeeCz, "CZK")}` : "",
     clean(settings.codFeeSk) ? `• dobírka Slovensko: ${formatMoney(settings.codFeeSk, "CZK")}` : "",
@@ -1913,7 +6049,7 @@ async function copyTextToClipboard(text) {
       return;
     }
   } catch {
-    // Fallback níže funguje i ve starším webview.
+    // Fallback nĂ­Ĺľe funguje i ve starĹˇĂ­m webview.
   }
   fallbackCopyText(text);
 }
@@ -1962,13 +6098,17 @@ async function supabasePhotoRefToFile(ref, ownerName = "fotka") {
 function defaultOfferOrderFees(customerId) {
   const settings = appSettings();
   const customer = findCustomer(customerId);
-  const country = normalize(customer?.country);
-  const shippingFee = country.includes("slovensko")
+  const countryMode = mobileCustomerCountryMode(customer);
+  const shippingFee = countryMode === "sk"
     ? settings.shippingFeeSk
-    : country.includes("cesko") || country.includes("česko")
+    : countryMode === "cz"
       ? settings.shippingFeeCz
       : "";
-  return { shippingFee: shippingFee || "", shippingFeeLabel: shippingLabel(customer), packingFee: settings.packingFee || "" };
+  return {
+    shippingFee: shippingFee || "",
+    shippingFeeLabel: shippingLabel(customer),
+    packingFee: defaultPackingFeeValue(settings),
+  };
 }
 
 function openSheet(title, body, onSave, customFooter = "", options = {}) {
@@ -1979,9 +6119,9 @@ function openSheet(title, body, onSave, customFooter = "", options = {}) {
   state.currentSheetRestore = typeof options.restore === "function" ? options.restore : null;
   els.sheet.hidden = false;
   els.sheet.innerHTML = `<section class="sheet" role="dialog" aria-modal="true">
-    <header class="sheet-header"><h2>${escapeHtml(title)}</h2><button class="round" type="button" data-close-sheet>×</button></header>
+    <header class="sheet-header"><h2>${escapeHtml(title)}</h2><button class="round" type="button" data-close-sheet>Ă—</button></header>
     <div class="sheet-body">${body}</div>
-    <footer class="sheet-footer">${customFooter || `<button class="button" type="button" data-close-sheet>Zrušit</button><button class="button primary" type="button" data-save-sheet>Uložit</button>`}</footer>
+    <footer class="sheet-footer">${customFooter || `<button class="button" type="button" data-close-sheet>ZruĹˇit</button><button class="button primary" type="button" data-save-sheet>UloĹľit</button>`}</footer>
   </section>`;
   els.sheet.querySelectorAll("[data-close-sheet]").forEach((button) => button.addEventListener("click", closeSheet));
   els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", async () => {
@@ -1992,7 +6132,7 @@ function openSheet(title, body, onSave, customFooter = "", options = {}) {
     const previousLabel = saveButton?.textContent;
     if (saveButton) {
       saveButton.disabled = true;
-      saveButton.textContent = "Ukládám...";
+      saveButton.textContent = "UklĂˇdĂˇm...";
     }
     try {
       const result = await onSave?.();
@@ -2000,13 +6140,13 @@ function openSheet(title, body, onSave, customFooter = "", options = {}) {
       saveData();
       closeSheet();
       render();
-      toast("Uloženo.");
+      toast("UloĹľeno.");
     } catch (error) {
       console.error(error);
-      toast("Uložení se nepodařilo.");
+      toast("UloĹľenĂ­ se nepodaĹ™ilo.");
       if (saveButton) {
         saveButton.disabled = false;
-        saveButton.textContent = previousLabel || "Uložit";
+        saveButton.textContent = previousLabel || "UloĹľit";
       }
     }
   });
@@ -2036,7 +6176,7 @@ function toggle(name, values, current) {
 }
 
 function toggleTitle(name) {
-  return { paymentStatus: "Platba", shippingStatus: "Objednávka", deliveryMethod: "Doprava", stage: "Fáze", resultRating: "Výsledek", status: "Stav" }[name] || name;
+  return { paymentStatus: "Platba", shippingStatus: "ObjednĂˇvka", deliveryMethod: "Doprava", stage: "FĂˇze", resultRating: "VĂ˝sledek", status: "Stav" }[name] || name;
 }
 
 function setSheetToggleValue(name, value) {
@@ -2065,16 +6205,20 @@ function bindToggles() {
 
 function bindFees() {
   const shippingPresets = {
-    "shipping-cz": { amountKey: "shippingFeeCz", label: "Zásilkovna ČR" },
-    "shipping-sk": { amountKey: "shippingFeeSk", label: "Zásilkovna Slovensko" },
-    "shipping-post": { amountKey: "postalFee", label: "Balíkovna" },
-    "shipping-address": { amountKey: "shippingFeeAddress", label: "Zásilkovna na adresu" },
+    "shipping-cz": { resolveAmount: (settings) => settings.shippingFeeCz || "", resolveLabel: () => "Zásilkovna ČR" },
+    "shipping-sk": { resolveAmount: (settings) => settings.shippingFeeSk || "", resolveLabel: () => "Zásilkovna Slovensko" },
+    "shipping-post": { resolveAmount: (settings) => settings.postalFee || "", resolveLabel: () => "Balíkovna" },
+    "shipping-address": {
+      resolveAmount: (settings, customer) => defaultShippingAddressFeeForCustomer(settings, customer) || "",
+      resolveLabel: (customer) => shippingAddressLabel(customer),
+    },
   };
   const syncFees = () => {
     const form = document.querySelector("#sheetForm");
     if (!form) return;
     const settings = appSettings();
     const customer = findCustomer(form.elements.customerId?.value);
+    syncOrderSheetCountryShippingPreset(form);
     const activeButtons = [...els.sheet.querySelectorAll("[data-fee].active")];
     if (activeButtons.length && form.elements.deliveryMethod?.value === "personal_pickup") {
       setSheetToggleValue("deliveryMethod", "ship");
@@ -2082,13 +6226,13 @@ function bindFees() {
     const activeShippingPreset = activeButtons.find((item) => shippingPresets[item.dataset.fee || ""]);
     if (activeShippingPreset) {
       const preset = shippingPresets[activeShippingPreset.dataset.fee];
-      form.elements.shippingFee.value = settings[preset.amountKey] || "";
-      form.elements.shippingFeeLabel.value = preset.label;
+      form.elements.shippingFee.value = preset.resolveAmount(settings, customer);
+      form.elements.shippingFeeLabel.value = preset.resolveLabel(customer);
     } else {
       form.elements.shippingFee.value = "";
       form.elements.shippingFeeLabel.value = "";
     }
-    form.elements.packingFee.value = activeButtons.some((item) => item.dataset.fee === "packing") ? (settings.packingFee || "20") : "";
+    form.elements.packingFee.value = activeButtons.some((item) => item.dataset.fee === "packing") ? defaultPackingFeeValue(settings) : "";
     form.elements.codFee.value = activeButtons.some((item) => item.dataset.fee === "cod") ? (defaultCodFeeForCustomer(settings, customer) || "") : "";
     recalculateOrderSheetPrice(form);
   };
@@ -2212,7 +6356,7 @@ function photoPickerFields(label) {
 function photoTiles(images) {
   return images.map((image) => {
     const previewRef = thumbPreviewRef(image);
-    return `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(previewRef)}" alt=""><button type="button" data-remove-photo>×</button></span>`;
+    return `<span class="photo-tile" data-photo-tile="${escapeHtml(image)}"><img data-photo-ref="${escapeHtml(previewRef)}" alt=""><button type="button" data-remove-photo>Ă—</button></span>`;
   }).join("");
 }
 
@@ -2233,12 +6377,12 @@ function renderCrossPreviewInSheet() {
 function crossPreviewMarkup(cross) {
   const mother = findById("varieties", cross.motherVarietyId);
   const pollen = findById("varieties", cross.pollenVarietyId);
-  const seedlingName = clean(cross.seedlingName) || "Semenáč";
+  const seedlingName = clean(cross.seedlingName) || "SemenĂˇÄŤ";
   return `${crossFlowCard("Matka", mother?.name || "Matka", varietyImages(mother)[0], "parent")}
-    <div class="cross-symbol">×</div>
+    <div class="cross-symbol">Ă—</div>
     ${crossFlowCard("Pyl", pollen?.name || "Pyl", varietyImages(pollen)[0], "parent")}
     <div class="cross-symbol">=</div>
-    ${crossFlowCard("Semenáč", seedlingName, cross.seedlingPhotoUrl, "seedling")}`;
+    ${crossFlowCard("SemenĂˇÄŤ", seedlingName, cross.seedlingPhotoUrl, "seedling")}`;
 }
 
 function crossFlowCard(label, title, image, role = "parent") {
@@ -2267,9 +6411,9 @@ async function downloadCrossCard(id) {
     document.body.append(link);
     link.click();
     link.remove();
-    toast("Obrázek křížení stažen.");
+    toast("ObrĂˇzek kĹ™Ă­ĹľenĂ­ staĹľen.");
   } catch {
-    toast("Obrázek křížení se nepodařilo vytvořit.");
+    toast("ObrĂˇzek kĹ™Ă­ĹľenĂ­ se nepodaĹ™ilo vytvoĹ™it.");
   }
 }
 
@@ -2301,18 +6445,18 @@ async function downloadVarietyPhoto(id) {
     link.remove();
     if (revokeAfterDownload) window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   } catch {
-    toast("Fotku se nepodařilo stáhnout.");
+    toast("Fotku se nepodaĹ™ilo stĂˇhnout.");
   }
 }
 
 async function renderCrossCardCanvas(cross) {
   const mother = findById("varieties", cross.motherVarietyId);
   const pollen = findById("varieties", cross.pollenVarietyId);
-  const seedlingName = clean(cross.seedlingName) || "Semenáč";
+  const seedlingName = clean(cross.seedlingName) || "SemenĂˇÄŤ";
   const cards = [
     { role: "MATKA", name: mother?.name || "Matka", image: varietyImages(mother)[0] },
     { role: "PYL", name: pollen?.name || "Pyl", image: varietyImages(pollen)[0] },
-    { role: "SEMENÁČ", name: seedlingName, image: crossSeedlingImages(cross)[0], accent: true },
+    { role: "SEMENĂÄŚ", name: seedlingName, image: crossSeedlingImages(cross)[0], accent: true },
   ];
   const loadedCards = await Promise.all(cards.map(async (card) => ({ ...card, imageNode: await loadCanvasPhoto(card.image) })));
   const logo = await loadCanvasImage(BRAND_LOGO_IMAGE_DATA_URI);
@@ -2337,7 +6481,7 @@ async function renderCrossCardCanvas(cross) {
   context.fillStyle = "#15563d";
   context.font = "800 58px 'Segoe UI', Arial, sans-serif";
   context.textAlign = "center";
-  context.fillText("×", 540, 275);
+  context.fillText("Ă—", 540, 275);
   context.fillText("=", 540, 505);
   context.textAlign = "left";
   return canvas;
@@ -2411,7 +6555,7 @@ function drawHeroSeedling(context, card, x, y, width, height) {
   const hasCustomName = normalize(card.name) !== "semenac";
   context.fillStyle = "#123629";
   context.font = "900 58px 'Segoe UI', Arial, sans-serif";
-  wrapCanvasText(context, hasCustomName ? card.name : "Semenáč", width - 80).slice(0, 2).forEach((line, index) => {
+  wrapCanvasText(context, hasCustomName ? card.name : "SemenĂˇÄŤ", width - 80).slice(0, 2).forEach((line, index) => {
     context.fillText(line, x + width / 2, y + imageH + 58 + index * 64);
   });
   context.textAlign = "left";
@@ -2483,7 +6627,8 @@ function upsert(collection, item) {
 }
 
 function deleteItem(collection, id, label) {
-  if (!confirm(`${label} smazat?`)) return;
+  const fixedLabel = typeof ak93DisplayText === "function" ? ak93DisplayText(label, label) : label;
+  if (!confirm(`${fixedLabel} smazat?`)) return;
   state.data[collection] = state.data[collection].filter((item) => item.id !== id);
   saveData();
   render();
@@ -2496,7 +6641,7 @@ async function copyOrderText(id) {
   const text = buildCustomerOrderText(order, customer);
   if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
   else fallbackCopyText(text);
-  toast("Text zkopírovaný.");
+  toast("Text zkopĂ­rovanĂ˝.");
 }
 
 function toggleOrderPaymentTextSent(id, options = {}) {
@@ -2504,10 +6649,10 @@ function toggleOrderPaymentTextSent(id, options = {}) {
   if (!order) return;
   if (clean(order.paymentTextSentAt)) {
     order.paymentTextSentAt = "";
-    toast("Příznak odeslaného textu zrušen.");
+    toast("PĹ™Ă­znak odeslanĂ©ho textu zruĹˇen.");
   } else {
     order.paymentTextSentAt = new Date().toISOString();
-    toast("Text k zaplacení označen jako odeslaný.");
+    toast("Text k zaplacenĂ­ oznaÄŤen jako odeslanĂ˝.");
   }
   order.updatedAt = new Date().toISOString();
   saveData();
@@ -2522,23 +6667,23 @@ function buildCustomerOrderText(order, customer) {
   const totalCzk = orderFinalTotal(order);
   const eur = shouldShowEur(customer) ? orderPriceEur(order, totalCzk) : null;
   const paymentLines = [
-    clean(settings.paymentAccountName) ? `Jméno a příjmení: ${settings.paymentAccountName}` : "",
-    clean(settings.paymentAccountNumber) ? `Číslo účtu: ${settings.paymentAccountNumber}` : "",
+    clean(settings.paymentAccountName) ? `JmĂ©no a pĹ™Ă­jmenĂ­: ${settings.paymentAccountName}` : "",
+    clean(settings.paymentAccountNumber) ? `ÄŚĂ­slo ĂşÄŤtu: ${settings.paymentAccountNumber}` : "",
     clean(settings.paymentIban) ? `IBAN: ${settings.paymentIban}` : "",
     clean(settings.paymentSwift) ? `SWIFT / BIC: ${settings.paymentSwift}` : "",
   ].filter(Boolean);
   const parts = [
-    "Dobrý den,",
-    "posílám přehled objednávky:",
+    "DobrĂ˝ den,",
+    "posĂ­lĂˇm pĹ™ehled objednĂˇvky:",
     "",
     lines.join("\n"),
     "",
     `Celkem v CZK: ${formatMoney(totalCzk, "CZK")}`,
-    eur ? `K úhradě v EUR: ${formatMoney(eur, "EUR")}` : "",
-    paymentLines.length ? "\nÚdaje k platbě:" : "",
+    eur ? `K ĂşhradÄ› v EUR: ${formatMoney(eur, "EUR")}` : "",
+    paymentLines.length ? "\nĂšdaje k platbÄ›:" : "",
     paymentLines.join("\n"),
     "",
-    "Děkuji.",
+    "DÄ›kuji.",
   ];
   return parts.filter((part, index) => part || parts[index - 1] !== "").join("\n").trim();
 }
@@ -2550,8 +6695,8 @@ function orderFeeLines(order, customer) {
   const cod = number(order.codFee);
   const parts = [];
   if (Number.isFinite(shipping) && shipping > 0) parts.push(`${orderShippingLabel(order, customer)} ${formatMoney(shipping, currency)}`);
-  if (Number.isFinite(packing) && packing > 0) parts.push(`Balné ${formatMoney(packing, currency)}`);
-  if (Number.isFinite(cod) && cod > 0) parts.push(`Dobírka ${formatMoney(cod, currency)}`);
+  if (Number.isFinite(packing) && packing > 0) parts.push(`BalnĂ© ${formatMoney(packing, currency)}`);
+  if (Number.isFinite(cod) && cod > 0) parts.push(`DobĂ­rka ${formatMoney(cod, currency)}`);
   normalizeNamedFees(order.extraFees).forEach((fee) => {
     const amount = number(fee.amount);
     if (clean(fee.name) && Number.isFinite(amount) && amount > 0) parts.push(`${fee.name} ${formatMoney(amount, currency)}`);
@@ -2560,17 +6705,30 @@ function orderFeeLines(order, customer) {
 }
 
 function orderFinalTotal(order) {
-  const price = number(order.price);
-  if (Number.isFinite(price)) return price;
-  return orderTotalFromText(order.varietiesText) + orderFeeLines(order, findCustomer(order.customerId)).reduce((sum, line) => {
-    const match = line.match(/(\d+(?:[,.]\d+)?)\s*Kč/i);
-    return sum + (match ? number(match[1]) : 0);
+  const stored = number(order.price);
+  const shipping = number(order.shippingFee);
+  const packing = number(order.packingFee);
+  const cod = number(order.codFee);
+  const extra = normalizeNamedFees(order.extraFees).reduce((sum, fee) => {
+    const amount = number(fee.amount);
+    return sum + (Number.isFinite(amount) && amount > 0 ? amount : 0);
   }, 0);
+  const derived = orderTotalFromText(order.varietiesText)
+    + (Number.isFinite(shipping) && shipping > 0 ? shipping : 0)
+    + (Number.isFinite(packing) && packing > 0 ? packing : 0)
+    + (Number.isFinite(cod) && cod > 0 ? cod : 0)
+    + extra;
+  if (Number.isFinite(derived) && derived > 0) {
+    if (!Number.isFinite(stored)) return derived;
+    if (orderHasStorno(order) && Math.abs(stored - derived) > 0.0001) return derived;
+  }
+  if (Number.isFinite(stored)) return stored;
+  return Number.isFinite(derived) ? derived : 0;
 }
 
 function shouldShowEur(customer) {
   const country = normalize(clean(customer?.country || ""));
-  return country && !country.includes("cesko") && !country.includes("česko");
+  return country && !country.includes("cesko") && !country.includes("ÄŤesko");
 }
 
 function orderPriceEur(order, totalCzk) {
@@ -2657,7 +6815,8 @@ function appSettings() {
     shippingFeeCz: normalizeAmount(settings.shippingFeeCz ?? settings.shippingFee),
     shippingFeeSk: normalizeAmount(settings.shippingFeeSk),
     postalFee: normalizeAmount(settings.postalFee ?? settings.postageFee),
-    shippingFeeAddress: normalizeAmount(settings.shippingFeeAddress ?? settings.shippingFeeHome ?? settings.shippingFeeAddressHome),
+    shippingFeeAddressCz: normalizeAmount(settings.shippingFeeAddressCz ?? settings.shippingFeeAddress ?? settings.shippingFeeHome ?? settings.shippingFeeAddressHome),
+    shippingFeeAddressSk: normalizeAmount(settings.shippingFeeAddressSk ?? settings.shippingFeeAddress ?? settings.shippingFeeHome ?? settings.shippingFeeAddressHome),
     packingFee: normalizeAmount(settings.packingFee),
     codFeeCz: normalizeAmount(settings.codFeeCz ?? settings.codFee),
     codFeeSk: normalizeAmount(settings.codFeeSk),
@@ -2678,7 +6837,8 @@ function saveAppSettingsFromInputs() {
     shippingFeeCz: normalizeAmount(document.querySelector("#settingShippingCz")?.value),
     shippingFeeSk: normalizeAmount(document.querySelector("#settingShippingSk")?.value),
     postalFee: normalizeAmount(document.querySelector("#settingPostal")?.value),
-    shippingFeeAddress: normalizeAmount(document.querySelector("#settingShippingAddress")?.value),
+    shippingFeeAddressCz: normalizeAmount(document.querySelector("#settingShippingAddressCz")?.value),
+    shippingFeeAddressSk: normalizeAmount(document.querySelector("#settingShippingAddressSk")?.value),
     packingFee: normalizeAmount(document.querySelector("#settingPacking")?.value),
     codFeeCz: normalizeAmount(document.querySelector("#settingCodCz")?.value),
     codFeeSk: normalizeAmount(document.querySelector("#settingCodSk")?.value),
@@ -2691,7 +6851,7 @@ function saveAppSettingsFromInputs() {
   };
   saveData();
   render();
-  toast("Nastavení uloženo.");
+  toast("NastavenĂ­ uloĹľeno.");
 }
 
 function normalizeCustomer(customer = {}) {
@@ -2699,11 +6859,11 @@ function normalizeCustomer(customer = {}) {
   const firstName = collapseRepeatedName(customer.firstName || fullName);
   const lastName = collapseRepeatedName(customer.lastName);
   const lastNameAlreadyInFirstName = lastName && normalize(firstName).includes(normalize(lastName));
-  return { ...customer, id: clean(customer.id) || uid(), fullName: "", firstName: firstName || "Bez jména", lastName: lastNameAlreadyInFirstName ? "" : lastName, phone: clean(customer.phone), email: clean(customer.email), fbName: clean(customer.fbName), street: clean(customer.street), postalCode: clean(customer.postalCode), city: clean(customer.city), country: clean(customer.country), note: clean(customer.note), tags: Array.isArray(customer.tags) ? customer.tags : [] };
+  return { ...customer, id: clean(customer.id) || uid(), fullName: "", firstName: firstName || "Bez jmĂ©na", lastName: lastNameAlreadyInFirstName ? "" : lastName, phone: clean(customer.phone), email: clean(customer.email), fbName: clean(customer.fbName), street: clean(customer.street), postalCode: clean(customer.postalCode), city: clean(customer.city), country: clean(customer.country), note: clean(customer.note), tags: Array.isArray(customer.tags) ? customer.tags : [] };
 }
 
 function normalizeOrder(order = {}) {
-  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "čeká", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["nová", "připraveno", "odesláno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "nová", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
+  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "ÄŤekĂˇ", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["novĂˇ", "pĹ™ipraveno", "odeslĂˇno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "novĂˇ", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
 }
 
 function normalizeVariety(variety = {}) {
@@ -2715,7 +6875,7 @@ function normalizeCross(cross = {}) {
 }
 
 function normalizeOffer(offer = {}) {
-  return { ...offer, id: clean(offer.id) || uid(), title: clean(offer.title) || `Nabídka ${formatDate(offer.date || todayInput())}`, date: clean(offer.date) || todayInput(), facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || todayInput(), facebookPublishTime: clean(offer.facebookPublishTime) || "20:00", status: clean(offer.status) || "připravená", items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [], note: clean(offer.note) };
+  return { ...offer, id: clean(offer.id) || uid(), title: clean(offer.title) || `NabĂ­dka ${formatDate(offer.date || todayInput())}`, date: clean(offer.date) || todayInput(), facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || todayInput(), facebookPublishTime: clean(offer.facebookPublishTime) || "20:00", type: normalizeOfferType(offer.type), status: clean(offer.status) || "pĹ™ipravenĂˇ", items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [], note: clean(offer.note) };
 }
 
 function normalizeOfferItem(item = {}) {
@@ -2785,7 +6945,7 @@ function varietyNameMatchKey(name) {
 }
 
 function offerItemName(item = {}) {
-  return clean(findById("varieties", item.varietyId)?.name || item.varietyName || item.name || "Odřezek");
+  return clean(findById("varieties", item.varietyId)?.name || item.varietyName || item.name || "OdĹ™ezek");
 }
 
 function offerItemImage(item = {}) {
@@ -2928,11 +7088,11 @@ function syncOrderSheetAlternates() {
   container.hidden = false;
   container.innerHTML = `
     <div class="order-alternate-sheet-heading">
-      <strong>Náhradníci z nabídky</strong>
-      <small>Toto se nepočítá do ceny.</small>
+      <strong>NĂˇhradnĂ­ci z nabĂ­dky</strong>
+      <small>Toto se nepoÄŤĂ­tĂˇ do ceny.</small>
     </div>
     <div class="order-alternate-sheet-list">
-      ${entries.map((entry) => `<div class="order-alternate-sheet-item"><span>⚠ Náhradník: ${escapeHtml(entry.name)} · ${escapeHtml(quantityText(entry.quantity))} ks</span><button class="round order-alternate-sheet-add" type="button" data-add-sheet-order-alternate="${escapeHtml(entry.itemId)}">+</button></div>`).join("")}
+      ${entries.map((entry) => `<div class="order-alternate-sheet-item"><span>âš  NĂˇhradnĂ­k: ${escapeHtml(entry.name)} Â· ${escapeHtml(quantityText(entry.quantity))} ks</span><button class="round order-alternate-sheet-add" type="button" data-add-sheet-order-alternate="${escapeHtml(entry.itemId)}">+</button></div>`).join("")}
     </div>
   `;
   container.querySelectorAll("[data-add-sheet-order-alternate]").forEach((button) => {
@@ -2979,7 +7139,7 @@ function addAlternateReservationToOrderSheet(itemId) {
   const orderTotal = orderTotalFromText(form.elements.varietiesText.value);
   form.elements.price.value = normalizeAmount(orderTotal + feesTotal);
   syncOrderSheetAlternates();
-  toast("Náhradník přidán do objednávky.");
+  toast("NĂˇhradnĂ­k pĹ™idĂˇn do objednĂˇvky.");
 }
 
 function offerItemOrderProgress(offer = {}, item = {}) {
@@ -2987,8 +7147,8 @@ function offerItemOrderProgress(offer = {}, item = {}) {
   const confirmedQuantity = confirmed.reduce((sum, reservation) => sum + wholeNumber(reservation.quantity, 0), 0);
   const orderedQuantity = offerItemOrderedQuantity(offer, item);
   if (!confirmedQuantity || !orderedQuantity) return { state: "", label: "" };
-  if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednávce" };
-  return { state: "partial", label: "Částečně v objednávce" };
+  if (orderedQuantity >= confirmedQuantity) return { state: "done", label: "V objednĂˇvce" };
+  return { state: "partial", label: "ÄŚĂˇsteÄŤnÄ› v objednĂˇvce" };
 }
 
 function offerItemAlternateCount(item = {}) {
@@ -3023,7 +7183,7 @@ function ensureVarietyFromCross(cross) {
     existing.gallery = unique([...(existing.gallery || []), ...images.slice(existing.photoUrl ? 0 : 1)]);
     return existing.id;
   }
-  const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `Semenáč z křížení ${crossLineage(cross)}` });
+  const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `SemenĂˇÄŤ z kĹ™Ă­ĹľenĂ­ ${crossLineage(cross)}` });
   state.data.varieties.push(variety);
   return variety.id;
 }
@@ -3039,17 +7199,420 @@ function syncFinishedCrossVarieties() {
   return changed;
 }
 
+function normalizeOfferType(value) {
+  return clean(value) === "rests" ? "rests" : "offer";
+}
+
+function isRestOffer(offer) {
+  return normalizeOfferType(offer?.type) === "rests";
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty"
+    : "NabĂ­dka";
+}
+
+function splitOffersByType(offers = []) {
+  return offers.reduce((groups, offer) => {
+    if (isRestOffer(offer)) groups.rests.push(offer);
+    else groups.offers.push(offer);
+    return groups;
+  }, { offers: [], rests: [] });
+}
+
+function defaultOfferTitle(type = "offer", date = todayInput()) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty ${formatDate(date)}`
+    : `NabĂ­dka ${formatDate(date)}`;
+}
+
+function adjustedOfferTitleForType(title, currentType, nextType, date = todayInput()) {
+  const normalizedCurrentType = normalizeOfferType(currentType);
+  const normalizedNextType = normalizeOfferType(nextType);
+  const cleanTitle = clean(title);
+  if (!cleanTitle) return defaultOfferTitle(normalizedNextType, date);
+  return cleanTitle === defaultOfferTitle(normalizedCurrentType, date)
+    ? defaultOfferTitle(normalizedNextType, date)
+    : cleanTitle;
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty/poznĂˇmky"
+    : "NabÄ‚Â­dka";
+}
+
+function defaultOfferTitle(type = "offer", date = todayInput()) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty/poznĂˇmky ${formatDate(date)}`
+    : `NabÄ‚Â­dka ${formatDate(date)}`;
+}
+
+function setOfferType(id, nextType, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  const normalizedCurrentType = normalizeOfferType(offer.type);
+  const normalizedNextType = normalizeOfferType(nextType);
+  if (normalizedCurrentType === normalizedNextType) return;
+  const offerDate = clean(offer.date) || todayInput();
+  upsert("offers", normalizeOffer({
+    ...offer,
+    title: adjustedOfferTitleForType(offer.title, normalizedCurrentType, normalizedNextType, offerDate),
+    type: normalizedNextType,
+    updatedAt: new Date().toISOString(),
+  }));
+  saveData();
+  render();
+  openOfferDetailSheet(id, { replace: true });
+  if (!options.quiet) {
+    toast(normalizedNextType === "rests" ? "NabĂ­dka pĹ™esunuta do restĹŻ/poznĂˇmek." : "Resty/poznĂˇmky pĹ™esunuty do nabĂ­dek.");
+  }
+}
+
+function openOfferSheet(id = "", defaults = {}) {
+  const offer = findById("offers", id) || {};
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  const sheetTitle = offer.id
+    ? (initialType === "rests" ? "Upravit resty/poznĂˇmky" : "Upravit nabÄ‚Â­dku")
+    : (initialType === "rests" ? "NovÄ‚Â© resty/poznĂˇmky" : "NovÄ‚Ë‡ nabÄ‚Â­dka");
+  openSheet(sheetTitle, `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>NÄ‚Ë‡zev</span><input name="title" required value="${escapeHtml(offer.title || defaultOfferTitle(initialType, initialDate))}"></label>
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || initialDate)}"></label>
+    <label class="field"><span>Ă„Ĺšas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
+    <label class="field"><span>Typ</span><select name="type"><option value="offer" ${initialType === "offer" ? "selected" : ""}>NabÄ‚Â­dka</option><option value="rests" ${initialType === "rests" ? "selected" : ""}>Resty/poznĂˇmky</option></select></label>
+    ${toggle("status", [["pÄąâ„˘ipravenÄ‚Ë‡", "PÄąâ„˘ipravenÄ‚Ë‡"], ["zveÄąâ„˘ejnĂ„â€şnÄ‚Ë‡", "ZveÄąâ„˘ejnĂ„â€şnÄ‚Ë‡"], ["uzavÄąâ„˘enÄ‚Ë‡", "UzavÄąâ„˘enÄ‚Ë‡"]], offer.status || "pÄąâ„˘ipravenÄ‚Ë‡")}
+    <label class="field"><span>PoznÄ‚Ë‡mka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const nextType = normalizeOfferType(data.get("type"));
+    const sourceType = offer.id ? normalizeOfferType(offer.type) : nextType;
+    upsert("offers", normalizeOffer({
+      ...offer,
+      id: offer.id || uid(),
+      title: adjustedOfferTitleForType(clean(data.get("title")), sourceType, nextType, nextDate),
+      date: nextDate,
+      facebookPublishDate: clean(data.get("facebookPublishDate")) || nextDate,
+      facebookPublishTime: clean(data.get("facebookPublishTime")) || "20:00",
+      type: nextType,
+      status: form.querySelector('[name="status"]').value,
+      note: clean(data.get("note")),
+      items: offer.items || [],
+      createdAt: offer.createdAt || now,
+      updatedAt: now,
+    }));
+  });
+  bindToggles();
+}
+
+function openOfferDetailSheet(id, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  state.activeOfferId = id;
+  const items = sortedOfferItems(offer);
+  const reserved = offerReservedCount(offer);
+  const total = offerTotalCount(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty/poznĂˇmky" : "Upravit nabĂ­dku";
+  const toggleTypeLabel = isRestOffer(offer) ? "PĹ™esunout do nabĂ­dek" : "PĹ™esunout do restĹŻ/poznĂˇmek";
+  const body = `<section class="offer-detail">
+    <div class="offer-stats">
+      <span><strong>${items.length}</strong><small>odÄąâ„˘ezkÄąĹ»</small></span>
+      <span><strong>${total}</strong><small>kusÄąĹ»</small></span>
+      <span><strong>${reserved}</strong><small>rezervacÄ‚Â­</small></span>
+      <span><strong>${Math.max(0, total - reserved)}</strong><small>volnÄ‚Â©</small></span>
+    </div>
+    <div class="pill-row"><span class="pill ${isRestOffer(offer) ? "warn" : ""}">${escapeHtml(offerTypeLabel(offer))}</span><span class="pill">${escapeHtml(offer.status)}</span></div>
+    ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
+    <button class="button" type="button" data-toggle-offer-type="${escapeHtml(id)}">${toggleTypeLabel}</button>
+    <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">PÄąâ„˘ipravit Facebook pÄąâ„˘Ä‚Â­spĂ„â€şvek</button>
+    <div class="offer-items">
+      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">ZatÄ‚Â­m bez odÄąâ„˘ezkÄąĹ».</div>`}
+    </div>
+  </section>`;
+  const footer = `<button class="button" type="button" data-close-sheet>ZavÄąâ„˘Ä‚Â­t</button>
+    <button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button>
+    <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">${editLabel}</button>
+    <button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoÄąâ„˘it objednÄ‚Ë‡vky</button>
+    <button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">PÄąâ„˘idat odÄąâ„˘ezek</button>`;
+  openSheet(offer.title, body, null, footer, {
+    ...options,
+    restore: () => openOfferDetailSheet(id, { replace: true }),
+  });
+  els.sheet.querySelector("[data-toggle-offer-type]")?.addEventListener("click", () => {
+    setOfferType(id, isRestOffer(offer) ? "offer" : "rests");
+  });
+  els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+  els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  els.sheet.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemSheet(id));
+  els.sheet.querySelectorAll("[data-reserve-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.reserveOfferItem, "", "confirmed"));
+  });
+  els.sheet.querySelectorAll("[data-alternate-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.alternateOfferItem, "", "alternate"));
+  });
+  els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.sheet.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(button.dataset.offerId, button.dataset.itemId, button.dataset.deleteReservation));
+  });
+  resolvePhotos(els.sheet);
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty/pozn\u00e1mky"
+    : "Nab\u00eddka";
+}
+
+function defaultOfferTitle(type = "offer", date = todayInput()) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty/pozn\u00e1mky ${formatDate(date)}`
+    : `Nab\u00eddka ${formatDate(date)}`;
+}
+
+function setOfferType(id, nextType, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  const normalizedCurrentType = normalizeOfferType(offer.type);
+  const normalizedNextType = normalizeOfferType(nextType);
+  if (normalizedCurrentType === normalizedNextType) return;
+  const offerDate = clean(offer.date) || todayInput();
+  upsert("offers", normalizeOffer({
+    ...offer,
+    title: adjustedOfferTitleForType(offer.title, normalizedCurrentType, normalizedNextType, offerDate),
+    type: normalizedNextType,
+    updatedAt: new Date().toISOString(),
+  }));
+  saveData();
+  render();
+  openOfferDetailSheet(id, { replace: true });
+  if (!options.quiet) {
+    toast(normalizedNextType === "rests" ? "Nab\u00eddka p\u0159esunuta do rest\u016f/pozn\u00e1mek." : "Resty/pozn\u00e1mky p\u0159esunuty do nab\u00eddek.");
+  }
+}
+
+function uniqueOfferTitle(baseTitle, excludeId = "") {
+  const originalTitle = clean(baseTitle) || defaultOfferTitle("offer", todayInput());
+  let nextTitle = originalTitle;
+  let index = 2;
+  while (state.data.offers.some((offer) => clean(offer.id) !== clean(excludeId) && clean(offer.title) === nextTitle)) {
+    nextTitle = `${originalTitle} (${index})`;
+    index += 1;
+  }
+  return nextTitle;
+}
+
+function offerLeftoverTransferEntries(offer = {}) {
+  return sortedOfferItems(offer).reduce((entries, item) => {
+    const availableQuantity = reservationAvailableQuantity(item);
+    if (!availableQuantity) return entries;
+    const totalQuantity = wholeNumber(item.quantity, 0);
+    entries.push({
+      item,
+      availableQuantity,
+      remainingQuantity: Math.max(totalQuantity - availableQuantity, 0),
+    });
+    return entries;
+  }, []);
+}
+
+function cloneOfferItemForLeftovers(item = {}, quantity = 0) {
+  return normalizeOfferItem({
+    ...item,
+    id: uid(),
+    quantity: String(Math.max(Number(quantity) || 0, 0)),
+    reservations: [],
+  });
+}
+
+function moveOfferLeftoversToNewOffer(id, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return null;
+  if (isRestOffer(offer)) {
+    toast("Zbytky p\u0159esouvej jen z klasick\u00e9 nab\u00eddky.");
+    return null;
+  }
+  const entries = offerLeftoverTransferEntries(offer);
+  if (!entries.length) {
+    toast("V nab\u00eddce u\u017e nejsou \u017e\u00e1dn\u00e9 voln\u00e9 kusy k p\u0159esunu.");
+    return null;
+  }
+  const totalQuantity = entries.reduce((sum, entry) => sum + entry.availableQuantity, 0);
+  if (!confirm(`P\u0159esunout ${totalQuantity} voln\u00fdch ks do nov\u00e9 nab\u00eddky?`)) return null;
+
+  const now = new Date().toISOString();
+  const nextDate = clean(options.date) || todayInput();
+  const nextOffer = normalizeOffer({
+    id: uid(),
+    title: uniqueOfferTitle(defaultOfferTitle("offer", nextDate)),
+    date: nextDate,
+    facebookPublishDate: nextDate,
+    facebookPublishTime: clean(offer.facebookPublishTime) || "20:00",
+    type: "offer",
+    status: "p\u0159ipraven\u00e1",
+    note: `Zbytky z nab\u00eddky ${offer.title}.`,
+    items: entries.map(({ item, availableQuantity }) => cloneOfferItemForLeftovers(item, availableQuantity)),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const entriesById = new Map(entries.map((entry) => [clean(entry.item.id), entry]));
+  offer.items = (offer.items || []).reduce((items, item) => {
+    const entry = entriesById.get(clean(item.id));
+    if (!entry) {
+      items.push(item);
+      return items;
+    }
+    item.quantity = String(entry.remainingQuantity);
+    if (wholeNumber(item.quantity, 0) > 0 || (item.reservations || []).length) {
+      items.push(item);
+    }
+    return items;
+  }, []);
+
+  upsert("offers", normalizeOffer({
+    ...offer,
+    items: offer.items,
+    updatedAt: now,
+  }));
+  upsert("offers", nextOffer);
+  saveData();
+  render();
+  openOfferDetailSheet(nextOffer.id, { replace: true });
+  if (!options.quiet) toast("Vytvo\u0159ena nov\u00e1 nab\u00eddka z neprodan\u00fdch zbytk\u016f.");
+  return nextOffer;
+}
+
+function openOfferSheet(id = "", defaults = {}) {
+  const offer = findById("offers", id) || {};
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  const sheetTitle = offer.id
+    ? (initialType === "rests" ? "Upravit resty/pozn\u00e1mky" : "Upravit nab\u00eddku")
+    : (initialType === "rests" ? "Nov\u00e9 resty/pozn\u00e1mky" : "Nov\u00e1 nab\u00eddka");
+  openSheet(sheetTitle, `<form class="form-grid" id="sheetForm">
+    <label class="field"><span>N\u00e1zev</span><input name="title" required value="${escapeHtml(offer.title || defaultOfferTitle(initialType, initialDate))}"></label>
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || initialDate)}"></label>
+    <label class="field"><span>\u010cas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
+    <label class="field"><span>Typ</span><select name="type"><option value="offer" ${initialType === "offer" ? "selected" : ""}>Nab\u00eddka</option><option value="rests" ${initialType === "rests" ? "selected" : ""}>Resty/pozn\u00e1mky</option></select></label>
+    ${toggle("status", [["p\u0159ipraven\u00e1", "P\u0159ipraven\u00e1"], ["zve\u0159ejn\u011bn\u00e1", "Zve\u0159ejn\u011bn\u00e1"], ["uzav\u0159en\u00e1", "Uzav\u0159en\u00e1"]], offer.status || "p\u0159ipraven\u00e1")}
+    <label class="field"><span>Pozn\u00e1mka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const nextType = normalizeOfferType(data.get("type"));
+    const sourceType = offer.id ? normalizeOfferType(offer.type) : nextType;
+    upsert("offers", normalizeOffer({
+      ...offer,
+      id: offer.id || uid(),
+      title: adjustedOfferTitleForType(clean(data.get("title")), sourceType, nextType, nextDate),
+      date: nextDate,
+      facebookPublishDate: clean(data.get("facebookPublishDate")) || nextDate,
+      facebookPublishTime: clean(data.get("facebookPublishTime")) || "20:00",
+      type: nextType,
+      status: form.querySelector('[name="status"]').value,
+      note: clean(data.get("note")),
+      items: offer.items || [],
+      createdAt: offer.createdAt || now,
+      updatedAt: now,
+    }));
+  });
+  bindToggles();
+}
+
+function openOfferDetailSheet(id, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  state.activeOfferId = id;
+  const items = sortedOfferItems(offer);
+  const reserved = offerReservedCount(offer);
+  const total = offerTotalCount(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty/pozn\u00e1mky" : "Upravit nab\u00eddku";
+  const toggleTypeLabel = isRestOffer(offer) ? "P\u0159esunout do nab\u00eddek" : "P\u0159esunout do rest\u016f/pozn\u00e1mek";
+  const moveLeftoversButton = !isRestOffer(offer)
+    ? `<button class="button" type="button" data-move-offer-leftovers="${escapeHtml(id)}">P\u0159esunout neprodan\u00e9 do nov\u00e9 nab\u00eddky</button>`
+    : "";
+  const body = `<section class="offer-detail">
+    <div class="offer-stats">
+      <span><strong>${items.length}</strong><small>od\u0159ezk\u016f</small></span>
+      <span><strong>${total}</strong><small>kus\u016f</small></span>
+      <span><strong>${reserved}</strong><small>rezervac\u00ed</small></span>
+      <span><strong>${Math.max(0, total - reserved)}</strong><small>voln\u00e9</small></span>
+    </div>
+    <div class="pill-row"><span class="pill ${isRestOffer(offer) ? "warn" : ""}">${escapeHtml(offerTypeLabel(offer))}</span><span class="pill">${escapeHtml(offer.status)}</span></div>
+    ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
+    <button class="button" type="button" data-toggle-offer-type="${escapeHtml(id)}">${toggleTypeLabel}</button>
+    ${moveLeftoversButton}
+    <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">P\u0159ipravit Facebook p\u0159\u00edsp\u011bvek</button>
+    <div class="offer-items">
+      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zat\u00edm bez od\u0159ezk\u016f.</div>`}
+    </div>
+  </section>`;
+  const footer = `<button class="button" type="button" data-close-sheet>Zav\u0159\u00edt</button>
+    <button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button>
+    <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">${editLabel}</button>
+    <button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvo\u0159it objedn\u00e1vky</button>
+    <button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">P\u0159idat od\u0159ezek</button>`;
+  openSheet(offer.title, body, null, footer, {
+    ...options,
+    restore: () => openOfferDetailSheet(id, { replace: true }),
+  });
+  els.sheet.querySelector("[data-toggle-offer-type]")?.addEventListener("click", () => {
+    setOfferType(id, isRestOffer(offer) ? "offer" : "rests");
+  });
+  els.sheet.querySelector("[data-move-offer-leftovers]")?.addEventListener("click", () => {
+    moveOfferLeftoversToNewOffer(id);
+  });
+  els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+  els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  els.sheet.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemSheet(id));
+  els.sheet.querySelectorAll("[data-reserve-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.reserveOfferItem, "", "confirmed"));
+  });
+  els.sheet.querySelectorAll("[data-alternate-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.alternateOfferItem, "", "alternate"));
+  });
+  els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.sheet.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(button.dataset.offerId, button.dataset.itemId, button.dataset.deleteReservation));
+  });
+  resolvePhotos(els.sheet);
+}
+
 function matchOffer(offer) {
-  const isClosed = offer.status === "uzavřená";
+  const isClosed = offer.status === "uzavĹ™enĂˇ";
   if (state.filter === "active" && isClosed) return false;
   if (state.filter === "closed" && !isClosed) return false;
   const items = Array.isArray(offer.items) ? offer.items : [];
-  return matches([offer.title, offer.note, offer.status, ...items.map((item) => offerItemName(item))]);
+  return matches([offer.title, offerTypeLabel(offer), offer.note, offer.status, ...items.map((item) => offerItemName(item))]);
 }
 
 function matchOrder(order) {
-  if (state.filter === "todo" && order.paymentStatus === "zaplaceno" && ["odesláno", "zaplaceno"].includes(order.shippingStatus)) return false;
-  if (state.filter === "done" && !(order.paymentStatus === "zaplaceno" && ["odesláno", "zaplaceno"].includes(order.shippingStatus))) return false;
+  if (state.filter === "todo" && order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus)) return false;
+  if (state.filter === "done" && !(order.paymentStatus === "zaplaceno" && ["odeslĂˇno", "zaplaceno"].includes(order.shippingStatus))) return false;
   return matches([customerName(findCustomer(order.customerId)), order.varietiesText, order.note, order.orderDate]);
 }
 
@@ -3096,7 +7659,7 @@ function collapseRepeatedName(value) {
 
 function compactName(value) {
   const text = clean(value).replace(/\s+/g, " ");
-  return text.length > 42 ? `${text.slice(0, 39).trim()}…` : text;
+  return text.length > 42 ? `${text.slice(0, 39).trim()}â€¦` : text;
 }
 
 function orderVarietyNames(order = {}) {
@@ -3123,7 +7686,7 @@ function orderLineQuantity(line = "") {
   const match =
     value.match(/\b(\d+)\s*x\b/i) ||
     value.match(/\bx\s*(\d+)\b/i) ||
-    value.match(/\b(\d+)\s*(ks|kus|kusy|řízků|rizku|sazenic)\b/i);
+    value.match(/\b(\d+)\s*(ks|kus|kusy|Ĺ™Ă­zkĹŻ|rizku|sazenic)\b/i);
   const quantity = match ? Number(match[1]) : 1;
   return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
 }
@@ -3131,27 +7694,27 @@ function orderLineQuantity(line = "") {
 function orderLineUnitPrice(line = "") {
   const value = clean(line);
   const pricedAtEnd =
-    value.match(/(?:-|–|—)\s*(\d+(?:[,.]\d+)?)\s*(Kč|kc|czk|eur|€)?\s*$/i) ||
-    value.match(/(?:@|=)\s*(\d+(?:[,.]\d+)?)\s*(Kč|kc|czk|eur|€)?\s*$/i);
+    value.match(/(?:-|â€“|â€”)\s*(\d+(?:[,.]\d+)?)\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i) ||
+    value.match(/(?:@|=)\s*(\d+(?:[,.]\d+)?)\s*(KÄŤ|kc|czk|eur|â‚¬)?\s*$/i);
   if (pricedAtEnd) return number(pricedAtEnd[1]);
-  const inline = value.match(/(\d+(?:[,.]\d+)?)\s*Kč/i);
+  const inline = value.match(/(\d+(?:[,.]\d+)?)\s*KÄŤ/i);
   return inline ? number(inline[1]) : Number.NaN;
 }
 
 function paymentPill(order) {
-  return order.paymentStatus === "zaplaceno" ? "✅ Zaplaceno" : "⏳ Čeká";
+  return order.paymentStatus === "zaplaceno" ? "âś… Zaplaceno" : "âŹł ÄŚekĂˇ";
 }
 
 function statusPill(order) {
-  return { "nová": "Nová", "připraveno": "Připravená", "odesláno": "🚚 Odeslaná", zaplaceno: "Hotovo" }[order.shippingStatus] || "Nová";
+  return { "novĂˇ": "NovĂˇ", "pĹ™ipraveno": "PĹ™ipravenĂˇ", "odeslĂˇno": "đźšš OdeslanĂˇ", zaplaceno: "Hotovo" }[order.shippingStatus] || "NovĂˇ";
 }
 
 function orderPaymentTextPill(order = {}) {
-  return clean(order.paymentTextSentAt) ? "Text odeslán" : "";
+  return clean(order.paymentTextSentAt) ? "Text odeslĂˇn" : "";
 }
 
 function crossLineage(cross) {
-  return `${findById("varieties", cross.motherVarietyId)?.name || "Matka"} × ${findById("varieties", cross.pollenVarietyId)?.name || "Pyl"}`;
+  return `${findById("varieties", cross.motherVarietyId)?.name || "Matka"} Ă— ${findById("varieties", cross.pollenVarietyId)?.name || "Pyl"}`;
 }
 
 function varietyImages(variety = {}) {
@@ -3287,26 +7850,81 @@ function idbDelete(db, storeName, key) {
 async function resolvePhotos(root) {
   const images = [...root.querySelectorAll("[data-photo-ref]")];
   await Promise.all(images.map(async (image) => {
+    if (image.dataset.photoLoaded === "1") return;
     const originalRef = clean(image.dataset.photoRef);
     const fullRef = clean(image.dataset.photoFullRef);
     const fallbackAllowed = image.dataset.photoAllowFallback === "1";
     const ref = fullRef ? originalRef : thumbPreviewRef(originalRef);
     if (ref !== originalRef && !image.dataset.photoFullRef) image.dataset.photoFullRef = originalRef;
-    image.onerror = async () => {
-      if (!fallbackAllowed || !image.dataset.photoFullRef || image.dataset.photoFallbackLoaded === "1") return;
-      image.dataset.photoFallbackLoaded = "1";
-      const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
-      if (!fallbackUrl) return;
-      image.src = fallbackUrl;
-      clearPhotoMissing(image);
+    const load = async () => {
+      image.dataset.photoQueued = "";
+      image.onerror = async () => {
+        if (!fallbackAllowed || !image.dataset.photoFullRef || image.dataset.photoFallbackLoaded === "1") return;
+        image.dataset.photoFallbackLoaded = "1";
+        const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
+        if (!fallbackUrl) return;
+        image.src = fallbackUrl;
+        image.dataset.photoLoaded = "1";
+        clearPhotoMissing(image);
+      };
+      let url = await resolvePhotoUrl(ref);
+      if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
+      if (url) {
+        image.src = url;
+        image.dataset.photoLoaded = "1";
+        clearPhotoMissing(image);
+      } else {
+        markPhotoMissing(image);
+      }
     };
-    let url = await resolvePhotoUrl(ref);
-    if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
-    if (url) {
-      image.src = url;
-      clearPhotoMissing(image);
-    } else markPhotoMissing(image);
+    const lazyEligible = ref.startsWith(SUPABASE_PHOTO_PREFIX)
+      || clean(image.dataset.photoFullRef).startsWith(SUPABASE_PHOTO_PREFIX);
+    if (lazyEligible && !isPhotoNearViewport(image) && queueDeferredPhotoLoad(image, load)) return;
+    await load();
   }));
+}
+
+function isPhotoNearViewport(image) {
+  if (!image?.getBoundingClientRect) return true;
+  const rect = image.getBoundingClientRect();
+  const margin = SUPABASE_PHOTO_LAZY_MARGIN_PX;
+  const width = window.innerWidth || document.documentElement?.clientWidth || 0;
+  const height = window.innerHeight || document.documentElement?.clientHeight || 0;
+  return rect.bottom >= -margin
+    && rect.top <= height + margin
+    && rect.right >= -margin
+    && rect.left <= width + margin;
+}
+
+function ensurePhotoObserver() {
+  if (photoRuntime.observer || typeof IntersectionObserver !== "function") return photoRuntime.observer;
+  photoRuntime.observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting && entry.intersectionRatio <= 0) return;
+      runDeferredPhotoLoad(entry.target);
+    });
+  }, { rootMargin: SUPABASE_PHOTO_OBSERVER_ROOT_MARGIN });
+  return photoRuntime.observer;
+}
+
+function queueDeferredPhotoLoad(image, load) {
+  const observer = ensurePhotoObserver();
+  if (!observer || image.dataset.photoQueued === "1" || image.dataset.photoLoaded === "1") return false;
+  photoRuntime.deferredLoads.set(image, load);
+  image.dataset.photoQueued = "1";
+  observer.observe(image);
+  return true;
+}
+
+function runDeferredPhotoLoad(image) {
+  const observer = photoRuntime.observer;
+  if (observer) observer.unobserve(image);
+  const load = photoRuntime.deferredLoads.get(image);
+  if (!load) return;
+  photoRuntime.deferredLoads.delete(image);
+  Promise.resolve(load()).catch(() => {
+    markPhotoMissing(image);
+  });
 }
 
 function markPhotoMissing(image) {
@@ -3341,13 +7959,20 @@ async function resolvePhotoUrl(ref) {
     return url;
   }
   if (value.startsWith(SUPABASE_PHOTO_PREFIX)) {
+    const path = parseSupabasePhotoRef(value);
     const cached = await getCachedSupabasePhotoBlob(value);
     if (cached) {
       const cachedUrl = URL.createObjectURL(cached);
       state.photoUrls.set(value, cachedUrl);
       return cachedUrl;
     }
-    const url = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(value), value) || await createSignedPhotoUrl(parseSupabasePhotoRef(value));
+    const fetchedUrl = await fetchSupabasePhotoObjectUrl(path, value);
+    if (fetchedUrl) {
+      state.photoUrls.set(value, fetchedUrl);
+      return fetchedUrl;
+    }
+    if (isSupabaseThumbnailPath(path)) return "";
+    const url = await createSignedPhotoUrl(path);
     state.photoUrls.set(value, url);
     return url;
   }
@@ -3533,35 +8158,35 @@ async function loginSync() {
   saveSyncConfigFromInputs();
   const email = clean(document.querySelector("#syncEmail")?.value);
   const password = clean(document.querySelector("#syncLoginPassword")?.value);
-  if (!email || !password) return toast("Doplň email a heslo.");
+  if (!email || !password) return toast("DoplĹ email a heslo.");
   try {
     updateSyncIndicator("working");
     const result = await authRequest("/auth/v1/token?grant_type=password", { email, password });
     saveSyncSession(result);
     const verified = await pullSync({ silent: true, verify: true });
     if (verified === false) {
-      if (hasLocalData() && window.confirm("Cloud nejde přečíst tímto šifrovacím heslem. Pokud jsou data v mobilu správná, přepsat cloud daty z mobilu?")) {
+      if (hasLocalData() && window.confirm("Cloud nejde pĹ™eÄŤĂ­st tĂ­mto ĹˇifrovacĂ­m heslem. Pokud jsou data v mobilu sprĂˇvnĂˇ, pĹ™epsat cloud daty z mobilu?")) {
         state.syncVerifiedPassword = state.syncPassword;
         const repaired = await pushSync({ silent: true, force: true });
         if (repaired) {
-          toast("Cloud opravený z mobilu.");
+          toast("Cloud opravenĂ˝ z mobilu.");
           state.view = "offers";
           render();
           return;
         }
       }
-      toast("Přihlášeno, ale cloud nejde dešifrovat.");
+      toast("PĹ™ihlĂˇĹˇeno, ale cloud nejde deĹˇifrovat.");
       render();
       return;
     }
-    toast("Přihlášeno.");
+    toast("PĹ™ihlĂˇĹˇeno.");
     state.view = "offers";
     render();
     maybeAutoPull();
   } catch (error) {
     console.error(error);
     updateSyncIndicator("error");
-    toast(`Přihlášení selhalo: ${friendlySyncError(error)}`);
+    toast(`PĹ™ihlĂˇĹˇenĂ­ selhalo: ${friendlySyncError(error)}`);
   }
 }
 
@@ -3569,13 +8194,13 @@ function logoutSync() {
   localStorage.removeItem(SUPABASE_SYNC_SESSION_KEY);
   state.photoUrls.clear();
   state.view = "sync";
-  toast("Odhlášeno.");
+  toast("OdhlĂˇĹˇeno.");
   render();
 }
 
 async function pushSync(options = {}) {
   saveSyncConfigFromInputs();
-  if (!state.syncPassword) return toast("Doplň šifrovací heslo.");
+  if (!state.syncPassword) return toast("DoplĹ ĹˇifrovacĂ­ heslo.");
   if (state.syncRunning) {
     markSyncDirty();
     return false;
@@ -3591,7 +8216,7 @@ async function pushSync(options = {}) {
       const verified = await verifySyncPassword(state.syncPassword, session);
       if (verified !== true) {
         updateSyncIndicator("error");
-        if (!options.silent) toast(verified === false ? "Šifrovací heslo nesedí." : "Cloud nejde ověřit.");
+        if (!options.silent) toast(verified === false ? "Ĺ ifrovacĂ­ heslo nesedĂ­." : "Cloud nejde ovÄ›Ĺ™it.");
         return false;
       }
       state.syncVerifiedPassword = state.syncPassword;
@@ -3605,12 +8230,12 @@ async function pushSync(options = {}) {
     saveSyncConfig({ lastPushedAt: updatedAt });
     clearSyncDirtyIfUnchanged(startedDirtyAt, startedRevision);
     updateSyncIndicator();
-    if (!options.silent) toast("Odesláno do cloudu.");
+    if (!options.silent) toast("OdeslĂˇno do cloudu.");
     return true;
   } catch (error) {
     console.error(error);
     updateSyncIndicator("error");
-    if (!options.silent) toast(`Odeslání selhalo: ${friendlySyncError(error)}`);
+    if (!options.silent) toast(`OdeslĂˇnĂ­ selhalo: ${friendlySyncError(error)}`);
     return false;
   } finally {
     state.syncRunning = false;
@@ -3620,19 +8245,29 @@ async function pushSync(options = {}) {
 
 async function pullSync(options = {}) {
   saveSyncConfigFromInputs();
-  if (!state.syncPassword) return toast("Doplň šifrovací heslo.");
+  if (!state.syncPassword) return toast("DoplĹ ĹˇifrovacĂ­ heslo.");
   if (!options.verify && hasPendingSync()) {
     updateSyncIndicator();
     if (loadSyncConfig().autoSync && !state.syncTimer) scheduleAutoSync();
-    if (!options.silent) toast("Nejdřív odešli lokální změny do cloudu.");
+    if (!options.silent) toast("NejdĹ™Ă­v odeĹˇli lokĂˇlnĂ­ zmÄ›ny do cloudu.");
     return false;
   }
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
-    const rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, { method: "GET" });
-    if (!rows?.[0]?.encrypted_data) return toast("V cloudu zatím nejsou data.");
-    if (options.auto && !options.verify && state.syncVerifiedPassword === state.syncPassword && clean(rows[0].updated_at) === loadSyncConfig().lastPulledAt) {
+    const metadataOnly = Boolean(options.auto && !options.verify);
+    let rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=${metadataOnly ? "updated_at" : "encrypted_data,updated_at"}`, { method: "GET" });
+    let cloudUpdatedAt = clean(rows?.[0]?.updated_at);
+    if (metadataOnly && state.syncVerifiedPassword === state.syncPassword && cloudUpdatedAt && cloudUpdatedAt === loadSyncConfig().lastPulledAt) {
+      updateSyncIndicator();
+      return true;
+    }
+    if (metadataOnly && cloudUpdatedAt) {
+      rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, { method: "GET" });
+      cloudUpdatedAt = clean(rows?.[0]?.updated_at);
+    }
+    if (!rows?.[0]?.encrypted_data) {
+      if (!options.silent) toast("V cloudu zatĂ­m nejsou data.");
       updateSyncIndicator();
       return true;
     }
@@ -3640,16 +8275,16 @@ async function pullSync(options = {}) {
     syncFinishedCrossVarieties();
     state.syncVerifiedPassword = state.syncPassword;
     saveData({ skipAutoSync: true });
-    saveSyncConfig({ lastPulledAt: clean(rows[0].updated_at) });
+    saveSyncConfig({ lastPulledAt: cloudUpdatedAt });
     render();
     updateSyncIndicator();
-    if (!options.silent) toast("Staženo z cloudu.");
+    if (!options.silent) toast("StaĹľeno z cloudu.");
     return true;
   } catch (error) {
     console.error(error);
     state.syncVerifiedPassword = "";
     updateSyncIndicator("error");
-    if (!options.silent) toast(`Stažení selhalo: ${isSyncDecryptError(error) ? "cloud je zašifrovaný jiným heslem" : friendlySyncError(error)}`);
+    if (!options.silent) toast(`StaĹľenĂ­ selhalo: ${isSyncDecryptError(error) ? "cloud je zaĹˇifrovanĂ˝ jinĂ˝m heslem" : friendlySyncError(error)}`);
     return false;
   }
 }
@@ -3681,7 +8316,7 @@ function toggleAutoSync() {
   saveSyncConfigFromInputs();
   const next = !loadSyncConfig().autoSync;
   saveSyncConfig({ autoSync: next });
-  toast(next ? "Automatický sync zapnutý." : "Automatický sync vypnutý.");
+  toast(next ? "AutomatickĂ˝ sync zapnutĂ˝." : "AutomatickĂ˝ sync vypnutĂ˝.");
   render();
   if (next) maybeAutoPull();
 }
@@ -3692,7 +8327,7 @@ function updateSyncIndicator(status = "") {
   const session = loadSyncSession();
   const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
   const time = last ? formatTime(last) : formatTime(new Date());
-  let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutý";
+  let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutĂ˝";
   let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
   if (status === "working") {
     text = "Syncuji...";
@@ -3701,7 +8336,7 @@ function updateSyncIndicator(status = "") {
     text = "Sync chyba";
     stateClass = "error";
   } else if (hasPendingSync()) {
-    text = "Čeká na sync";
+    text = "ÄŚekĂˇ na sync";
     stateClass = "working";
   }
   els.syncIndicator.textContent = text;
@@ -3761,14 +8396,17 @@ function scheduleAutoSync() {
   }, 5000);
 }
 
-async function maybeAutoPull() {
+async function maybeAutoPull(options = {}) {
   const config = loadSyncConfig();
-  if (!config.autoSync || !state.syncPassword || state.syncRunning) return;
+  if (!config.autoSync || !state.syncPassword || state.syncRunning || document.visibilityState === "hidden") return;
+  const now = Date.now();
+  if (!options.force && now - Number(state.lastAutoPullAt || 0) < AUTO_PULL_MIN_GAP_MS) return;
   if (hasPendingSync()) {
     if (!state.syncTimer) scheduleAutoSync();
     return;
   }
-  await pullSync({ silent: true });
+  state.lastAutoPullAt = now;
+  await pullSync({ silent: true, auto: true });
 }
 
 async function buildSyncData(userId) {
@@ -3776,14 +8414,14 @@ async function buildSyncData(userId) {
   for (const variety of data.varieties || []) {
     const images = varietyImages(variety);
     const refs = await uploadPhotoList(userId, variety.name, images);
-    ensureUploadedPhotoRefs(images, refs, variety.name || "odrůda");
+    ensureUploadedPhotoRefs(images, refs, variety.name || "odrĹŻda");
     variety.photoUrl = refs[0] || "";
     variety.gallery = refs.slice(1);
   }
   for (const cross of data.crosses || []) {
     const images = crossSeedlingImages(cross);
     const refs = await uploadPhotoList(userId, cross.seedlingName || "semenac", images);
-    ensureUploadedPhotoRefs(images, refs, cross.seedlingName || "semenáč");
+    ensureUploadedPhotoRefs(images, refs, cross.seedlingName || "semenĂˇÄŤ");
     cross.seedlingPhotoUrl = refs[0] || "";
     cross.seedlingGallery = refs.slice(1);
   }
@@ -3796,7 +8434,7 @@ function ensureUploadedPhotoRefs(originalRefs, uploadedRefs, ownerName = "fotka"
   const allUploaded = originals.every((ref) => ref.startsWith(SUPABASE_PHOTO_PREFIX))
     || (uploaded.length >= originals.length && uploaded.every((ref) => ref.startsWith(SUPABASE_PHOTO_PREFIX)));
   if (!allUploaded) {
-    throw new Error(`Fotku u „${ownerName}“ se nepodařilo nahrát do cloudu. Cloud jsem raději nepřepsala.`);
+    throw new Error(`Fotku u â€ž${ownerName}â€ś se nepodaĹ™ilo nahrĂˇt do cloudu. Cloud jsem radÄ›ji nepĹ™epsala.`);
   }
 }
 
@@ -3858,7 +8496,7 @@ async function uploadPhotoList(userId, ownerName, refs) {
     if (ref.startsWith(SUPABASE_PHOTO_PREFIX)) uploaded.push(ref);
     else {
       const file = await photoToFile(ref, ownerName);
-      if (!file) throw new Error(`Fotku u „${ownerName}“ se nepodařilo přečíst pro cloud.`);
+      if (!file) throw new Error(`Fotku u â€ž${ownerName}â€ś se nepodaĹ™ilo pĹ™eÄŤĂ­st pro cloud.`);
       const uploadFile = await preparePhotoFileForStorage(file);
       const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(uploadFile)}${photoExtension(uploadFile)}`;
       await uploadStorage(path, uploadFile);
@@ -3894,7 +8532,7 @@ async function createPhotoThumbnail(file) {
 
 async function authRequest(path, body) {
   const config = loadSyncConfig();
-  if (!config.url || !config.anonKey) throw new Error("Chybí Supabase nastavení.");
+  if (!config.url || !config.anonKey) throw new Error("ChybĂ­ Supabase nastavenĂ­.");
   const response = await fetch(`${config.url.replace(/\/+$/, "")}${path}`, { method: "POST", headers: { apikey: config.anonKey, "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
   return response.json();
@@ -3903,7 +8541,7 @@ async function authRequest(path, body) {
 async function ensureSession() {
   const session = loadSyncSession();
   if (session.accessToken && session.expiresAt > Date.now() && session.user?.id) return session;
-  if (!session.refreshToken) throw new Error("Chybí přihlášení.");
+  if (!session.refreshToken) throw new Error("ChybĂ­ pĹ™ihlĂˇĹˇenĂ­.");
   const refreshed = await authRequest("/auth/v1/token?grant_type=refresh_token", { refresh_token: session.refreshToken });
   saveSyncSession(refreshed);
   return loadSyncSession();
@@ -3933,19 +8571,19 @@ async function createSignedPhotoUrl(path) {
 
 function friendlySyncError(error) {
   const raw = clean(error?.message || String(error || ""));
-  if (!raw) return "neznámá chyba";
+  if (!raw) return "neznĂˇmĂˇ chyba";
   try {
     const parsed = JSON.parse(raw);
     const message = clean(parsed.message || parsed.msg || parsed.error_description || parsed.error);
     if (message) return message;
   } catch {
-    // Supabase někdy vrací čistý text, někdy JSON.
+    // Supabase nÄ›kdy vracĂ­ ÄŤistĂ˝ text, nÄ›kdy JSON.
   }
-  if (/invalid login credentials/i.test(raw)) return "nesedí email nebo heslo";
-  if (/row-level security|violates row-level security/i.test(raw)) return "RLS nepovolilo zápis pro tohoto uživatele";
-  if (/bucket.*not.*found|not found/i.test(raw)) return "nenašel se bucket na fotky";
-  if (/jwt|token|unauthorized|401/i.test(raw)) return "přihlášení vypršelo nebo nesedí klíč projektu";
-  if (/permission|403/i.test(raw)) return "chybí oprávnění v Supabase";
+  if (/invalid login credentials/i.test(raw)) return "nesedĂ­ email nebo heslo";
+  if (/row-level security|violates row-level security/i.test(raw)) return "RLS nepovolilo zĂˇpis pro tohoto uĹľivatele";
+  if (/bucket.*not.*found|not found/i.test(raw)) return "nenaĹˇel se bucket na fotky";
+  if (/jwt|token|unauthorized|401/i.test(raw)) return "pĹ™ihlĂˇĹˇenĂ­ vyprĹˇelo nebo nesedĂ­ klĂ­ÄŤ projektu";
+  if (/permission|403/i.test(raw)) return "chybĂ­ oprĂˇvnÄ›nĂ­ v Supabase";
   return raw.slice(0, 160);
 }
 
@@ -4053,7 +8691,7 @@ function formatTime(value) {
 function formatMoney(value, currency = "CZK") {
   const amount = number(value);
   if (!Number.isFinite(amount)) return "";
-  return `${new Intl.NumberFormat("cs-CZ", { maximumFractionDigits: currency === "CZK" ? 0 : 2 }).format(amount)} ${currency === "EUR" ? "EUR" : "Kč"}`;
+  return `${new Intl.NumberFormat("cs-CZ", { maximumFractionDigits: currency === "CZK" ? 0 : 2 }).format(amount)} ${currency === "EUR" ? "EUR" : "KÄŤ"}`;
 }
 
 function todayInput() {
@@ -4132,9 +8770,2531 @@ function safeFileName(value, fallback = "fotka") {
 }
 
 function initials(value) {
-  return clean(value).split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "🌱";
+  return clean(value).split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "đźŚ±";
 }
 
 function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
+
+function restFormVarietyNames(value = "") {
+  return unique(clean(value).split(/\r?\n|[,;]+/).map(clean).filter(Boolean));
+}
+
+function mobileRestOfferVarietyLabel(offer = {}) {
+  const values = restFormVarietyNames(offer.restVarietyName);
+  if (values.length) return values.join(", ");
+  const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  return clean(linked?.name || offer.restVarietyName);
+}
+
+function mobileRestOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = mobileRestOfferCustomer(offer);
+  const variety = mobileRestOfferVarietyLabel(offer);
+  const items = sortedOfferItems(offer).slice(0, 2).map((item) => `${offerItemName(item)} Â· ${wholeNumber(item.quantity, 1)} ks`);
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (items.length) parts.push(items.join(", "));
+  return parts.filter(Boolean).join(" Â· ");
+}
+
+function renderRestVarietySelection(container, names = []) {
+  if (!container) return;
+  container.innerHTML = names.length
+    ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>Ă—</span></button>`).join("")
+    : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+}
+
+function setupRestVarietyPickerForSheet(form, initialValue = "") {
+  if (!form) return;
+  const picker = form.elements.restVarietyPicker;
+  const hidden = form.elements.restVarietyName;
+  const list = form.querySelector("[data-rest-variety-list]");
+  const addButton = form.querySelector("[data-rest-variety-add]");
+  if (!picker || !hidden || !list || !addButton) return;
+  let suggestions = form.querySelector("[data-rest-variety-suggestions]");
+  if (!suggestions) {
+    suggestions = document.createElement("div");
+    suggestions.className = "rest-variety-suggestions";
+    suggestions.setAttribute("data-rest-variety-suggestions", "");
+    suggestions.hidden = true;
+    picker.closest("label")?.after(suggestions);
+  }
+  form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+  const suggestionNames = (query = "") => {
+    const needle = normalize(clean(query));
+    const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+    return [...(state.data.varieties || [])]
+      .map((variety) => clean(variety.name))
+      .filter(Boolean)
+      .filter((name) => !selected.has(normalize(name)))
+      .filter((name) => !needle || normalize(name).includes(needle))
+      .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }))
+      .slice(0, 8);
+  };
+  const renderSuggestions = () => {
+    const names = suggestionNames(picker.value);
+    suggestions.hidden = !names.length;
+    suggestions.innerHTML = names
+      .map((name) => `<button class="rest-variety-suggestion" type="button" data-rest-variety-pick="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+      .join("");
+  };
+  const sync = () => {
+    hidden.value = form.__restVarietyNames.join("\n");
+    renderRestVarietySelection(list, form.__restVarietyNames);
+    renderSuggestions();
+  };
+  const addCurrent = () => {
+    const raw = clean(picker.value);
+    if (!raw) return;
+    const exact = findVarietyByName(raw);
+    const nextName = clean(exact?.name || raw);
+    if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+      form.__restVarietyNames.push(nextName);
+    }
+    picker.value = "";
+    sync();
+    picker.focus();
+  };
+  addButton.onclick = addCurrent;
+  picker.oninput = renderSuggestions;
+  picker.onkeydown = (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addCurrent();
+  };
+  list.onclick = (event) => {
+    const button = event.target.closest("[data-rest-variety-remove]");
+    if (!button) return;
+    form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+    sync();
+  };
+  suggestions.onclick = (event) => {
+    const button = event.target.closest("[data-rest-variety-pick]");
+    if (!button) return;
+    picker.value = button.dataset.restVarietyPick || "";
+    addCurrent();
+  };
+  sync();
+}
+
+function mobileRestOfferOrderLines(offer = {}) {
+  const lines = [];
+  sortedOfferItems(offer).forEach((item) => {
+    const quantity = Math.max(wholeNumber(item.quantity, 0), 0);
+    if (!quantity) return;
+    const variety = findById("varieties", clean(item.varietyId)) || findVarietyByName(item.varietyName);
+    const explicitPrice = number(item.price);
+    const fallbackPrice = number(variety?.salePrice);
+    const unitPrice = Number.isFinite(explicitPrice) ? item.price : (Number.isFinite(fallbackPrice) ? variety.salePrice : "");
+    lines.push(unitPrice ? offerOrderLineText(offerItemName(item), quantity, unitPrice) : `${offerItemName(item)} ${quantity}x`);
+  });
+  if (lines.length) return lines;
+  return restFormVarietyNames(offer.restVarietyName).map((name) => {
+    const variety = findVarietyByName(name);
+    const fallbackPrice = number(variety?.salePrice);
+    return Number.isFinite(fallbackPrice) ? offerOrderLineText(name, 1, variety.salePrice) : `${name} 1x`;
+  });
+}
+
+function openOfferSheet(id = "", defaults = {}) {
+  const offer = findById("offers", id) || {};
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  if (initialType !== "rests") return __akPrevMobileOpenOfferSheet(id, defaults);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  const customers = [...state.data.customers].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+  openSheet(offer.id ? "Upravit resty" : "NovĂ© resty", `<form class="form-grid" id="sheetForm">
+    <input name="type" type="hidden" value="rests">
+    <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+    <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+    <input name="facebookPublishTime" type="hidden" value="20:00">
+    <input name="status" type="hidden" value="pĹ™ipravenĂˇ">
+    <input name="restVarietyId" type="hidden" value="">
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="restCustomerId"><option value="">Bez zĂˇkaznĂ­ka</option>${customers
+      .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+      .join("")}</select></label>
+    <label class="field"><span>OdrĹŻdy</span><input name="restVarietyPicker" list="varietyList" placeholder="zaÄŤni psĂˇt a pĹ™idej"></label>
+    <textarea name="restVarietyName" hidden aria-hidden="true"></textarea>
+    <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-rest-variety-add>PĹ™idat odrĹŻdu</button></div>
+    <div class="rest-variety-selection" data-rest-variety-list></div>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const names = restFormVarietyNames(data.get("restVarietyName"));
+    upsert("offers", normalizeOffer({
+      ...offer,
+      id: offer.id || uid(),
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "pĹ™ipravenĂˇ",
+      note: clean(data.get("note")),
+      restCustomerId: clean(data.get("restCustomerId")),
+      restVarietyId: "",
+      restVarietyName: names.join("\n"),
+      items: offer.items || [],
+      createdAt: offer.createdAt || now,
+      updatedAt: now,
+    }));
+  });
+  setupRestVarietyPickerForSheet(els.sheet.querySelector("#sheetForm"), offer.restVarietyName || "");
+}
+
+function mobileRestOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = mobileRestOfferCustomer(offer);
+  const variety = mobileRestOfferVarietyLabel(offer);
+  const items = sortedOfferItems(offer).slice(0, 2).map((item) => `${offerItemName(item)} Â· ${wholeNumber(item.quantity, 1)} ks`);
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (items.length) parts.push(items.join(", "));
+  return parts.filter(Boolean).join(" Â· ");
+}
+
+function renderOffers() {
+  const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+  const groups = splitOffersByType(offers);
+  const renderOfferGroup = (label, items) => {
+    if (!items.length) return "";
+    return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+      if (isRestOffer(offer)) {
+        const summary = mobileRestOfferSummaryText(offer);
+        const notePill = clean(offer.note) ? `đź“ť ${mobileShortRestText(offer.note, 42)}` : "";
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title,
+          sub: [formatDate(offer.date), summary].filter(Boolean).join(" Â· "),
+          pills: [notePill].filter(Boolean),
+          badges: [{ label: "Resty", className: "warn" }],
+          thumb: "",
+          thumbText: initials(offer.title),
+          actions: [["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]],
+        });
+      }
+
+      const offerItems = sortedOfferItems(offer);
+      const reserved = offerReservedCount(offer);
+      const total = offerTotalCount(offer);
+      const available = offerAvailableCount(offer);
+      const alternates = offerAlternateCount(offer);
+      const coverImage = offerItems.map((item) => offerItemImage(item)).find(Boolean) || "";
+      const itemPills = offerItems.slice(0, 4).map((item) => `đźŚż ${offerItemName(item)}`);
+      if (offerItems.length > 4) itemPills.push(`+${offerItems.length - 4} dalĹˇĂ­`);
+      return card({
+        id: offer.id,
+        type: "offer",
+        title: offer.title,
+        sub: `${formatDate(offer.date)} Â· ${offerTypeLabel(offer)} Â· ${offer.status}`,
+        pills: [...itemPills, `VolnĂ© ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `NĂˇhradnĂ­ci ${alternates}` : ""],
+        badges: [],
+        thumb: coverImage,
+        thumbText: initials(offer.title),
+        actions: [["facebook-offer", "FB"], ["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]],
+      });
+    }).join("")}`;
+  };
+  return [
+    renderOfferGroup("NabĂ­dky", groups.offers),
+    renderOfferGroup("Resty", groups.rests),
+  ].filter(Boolean).join("");
+}
+
+function mobileRestOfferOrderLines(offer = {}) {
+  const lines = [];
+  sortedOfferItems(offer).forEach((item) => {
+    const quantity = Math.max(wholeNumber(item.quantity, 0), 0);
+    if (!quantity) return;
+    const variety = findById("varieties", clean(item.varietyId)) || findVarietyByName(item.varietyName);
+    const explicitPrice = number(item.price);
+    const fallbackPrice = number(variety?.salePrice);
+    const unitPrice = Number.isFinite(explicitPrice) ? item.price : (Number.isFinite(fallbackPrice) ? variety.salePrice : "");
+    lines.push(unitPrice ? offerOrderLineText(offerItemName(item), quantity, unitPrice) : `${offerItemName(item)} ${quantity}x`);
+  });
+  if (lines.length) return lines;
+  const restVariety = mobileRestOfferVarietyLabel(offer);
+  if (!restVariety) return [];
+  const variety = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(restVariety);
+  const fallbackPrice = number(variety?.salePrice);
+  return [Number.isFinite(fallbackPrice) ? offerOrderLineText(restVariety, 1, variety.salePrice) : `${restVariety} 1x`];
+}
+
+function mobileRestOfferOrderNote(offer = {}) {
+  return [`Z restĹŻ: ${offer.title}`, clean(offer.note)].filter(Boolean).join("\n");
+}
+
+var __akPrevMobileCreateOrdersFromOffer = createOrdersFromOffer;
+createOrdersFromOffer = function createOrdersFromOfferOverride(id) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  if (!isRestOffer(offer)) return __akPrevMobileCreateOrdersFromOffer(id);
+  const customerId = clean(offer.restCustomerId);
+  if (!customerId) {
+    toast("U restĹŻ nejdĹ™Ă­v vyber zĂˇkaznĂ­ka.");
+    return;
+  }
+  const lines = mobileRestOfferOrderLines(offer);
+  const note = mobileRestOfferOrderNote(offer);
+  if (!lines.length && !note) {
+    toast("Rest nemĂˇ co pĹ™evĂ©st do objednĂˇvky.");
+    return;
+  }
+  if (state.data.orders.some((order) => clean(order.offerId) === clean(offer.id)) && !confirm("Z tÄ›chto restĹŻ uĹľ objednĂˇvka vznikla. VytvoĹ™it dalĹˇĂ­?")) return;
+  const now = new Date().toISOString();
+  const lineText = lines.join("\n");
+  const fees = defaultOfferOrderFees(customerId);
+  const shippingFee = number(fees.shippingFee);
+  const packingFee = number(fees.packingFee);
+  const feeTotal = (Number.isFinite(shippingFee) ? shippingFee : 0) + (Number.isFinite(packingFee) ? packingFee : 0);
+  const order = normalizeOrder({
+    id: uid(),
+    offerId: offer.id,
+    customerId,
+    orderDate: offer.date || todayInput(),
+    varietiesText: lineText,
+    price: normalizeAmount(orderTotalFromText(lineText) + feeTotal),
+    paymentStatus: "ÄŤekĂˇ",
+    shippingStatus: "novĂˇ",
+    deliveryMethod: "ship",
+    shippingFee: Number.isFinite(shippingFee) ? fees.shippingFee : "",
+    shippingFeeLabel: Number.isFinite(shippingFee) ? fees.shippingFeeLabel : "",
+    packingFee: Number.isFinite(packingFee) ? fees.packingFee : "",
+    codFee: "",
+    note,
+    createdAt: now,
+    updatedAt: now,
+  });
+  upsert("orders", order);
+  saveData();
+  render();
+  openOrderSheet(order.id);
+  toast("VytvoĹ™ena objednĂˇvka z restĹŻ.");
+};
+
+var __akPrevMobileOpenOfferSheet = openOfferSheet;
+openOfferSheet = function openOfferSheetOverride(id = "", defaults = {}) {
+  const offer = findById("offers", id) || {};
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  if (initialType !== "rests") return __akPrevMobileOpenOfferSheet(id, defaults);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  const linkedVariety = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  const customers = [...state.data.customers].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+  openSheet(offer.id ? "Upravit resty" : "NovĂ© resty", `<form class="form-grid" id="sheetForm">
+    <input name="type" type="hidden" value="rests">
+    <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+    <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+    <input name="facebookPublishTime" type="hidden" value="20:00">
+    <input name="status" type="hidden" value="pĹ™ipravenĂˇ">
+    <input name="restVarietyId" type="hidden" value="${escapeHtml(clean(offer.restVarietyId || linkedVariety?.id))}">
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="restCustomerId"><option value="">Bez zĂˇkaznĂ­ka</option>${customers
+      .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+      .join("")}</select></label>
+    <label class="field"><span>OdrĹŻda</span><input name="restVarietyName" list="varietyList" value="${escapeHtml(clean(offer.restVarietyName || linkedVariety?.name))}" placeholder="volitelnÄ›"></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const rawRestVarietyName = clean(data.get("restVarietyName"));
+    const matchedRestVariety = rawRestVarietyName ? findVarietyByName(rawRestVarietyName) : null;
+    upsert("offers", normalizeOffer({
+      ...offer,
+      id: offer.id || uid(),
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "pĹ™ipravenĂˇ",
+      note: clean(data.get("note")),
+      restCustomerId: clean(data.get("restCustomerId")),
+      restVarietyId: clean(data.get("restVarietyId")) || clean(matchedRestVariety?.id),
+      restVarietyName: clean(matchedRestVariety?.name || rawRestVarietyName),
+      items: offer.items || [],
+      createdAt: offer.createdAt || now,
+      updatedAt: now,
+    }));
+  });
+  const form = els.sheet.querySelector("#sheetForm");
+  form?.elements?.restVarietyName?.addEventListener("input", () => {
+    const exact = findVarietyByName(form.elements.restVarietyName.value);
+    form.elements.restVarietyId.value = exact?.id || "";
+  });
+  form?.elements?.restVarietyName?.addEventListener("change", () => {
+    const exact = findVarietyByName(form.elements.restVarietyName.value);
+    form.elements.restVarietyId.value = exact?.id || "";
+  });
+};
+
+var __akPrevMobileOpenOfferDetailSheet = openOfferDetailSheet;
+openOfferDetailSheet = function openOfferDetailSheetOverride(id, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer || !isRestOffer(offer)) return __akPrevMobileOpenOfferDetailSheet(id, options);
+  state.activeOfferId = id;
+  const items = sortedOfferItems(offer);
+  const metaCards = [
+    { label: "ZĂˇkaznĂ­k", value: customerName(mobileRestOfferCustomer(offer)) },
+    { label: "OdrĹŻda", value: mobileRestOfferVarietyLabel(offer) },
+  ].filter((entry) => clean(entry.value));
+  const body = `<section class="offer-detail">
+    <div class="pill-row"><span class="pill warn">Resty</span></div>
+    ${metaCards.length ? `<div class="rest-meta-stack">${metaCards.map((entry) => `<div class="rest-meta-card"><small>${escapeHtml(entry.label)}</small><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}</div>` : ""}
+    ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
+    ${items.length ? `<div class="offer-items">${items.map((item) => offerItemDetailMarkup(offer, item)).join("")}</div>` : `<div class="empty light">Bez odĹ™ezkĹŻ. Rest mĹŻĹľe bĂ˝t jen poznĂˇmka nebo pĹ™ipomĂ­nka.</div>`}
+  </section>`;
+  const footer = `<button class="button" type="button" data-close-sheet>ZavĹ™Ă­t</button>
+    <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+    <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoĹ™it objednĂˇvku</button>`;
+  openSheet(offer.title, body, null, footer, {
+    ...options,
+    restore: () => openOfferDetailSheet(id, { replace: true }),
+  });
+  els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+  els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+  });
+  resolvePhotos(els.sheet);
+};
+
+function normalizeOffer(offer = {}) {
+  const nextDate = clean(offer.date) || todayInput();
+  const nextType = normalizeOfferType(offer.type);
+  const legacyRestTitle = `Resty/poznĂˇmky ${formatDate(nextDate)}`;
+  const defaultTitle = defaultOfferTitle(nextType, nextDate);
+  const title = clean(offer.title);
+  return {
+    ...offer,
+    id: clean(offer.id) || uid(),
+    title: nextType === "rests" && title === legacyRestTitle ? defaultTitle : (title || defaultTitle),
+    date: nextDate,
+    facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || nextDate,
+    facebookPublishTime: clean(offer.facebookPublishTime) || "20:00",
+    type: nextType,
+    status: ["pĹ™ipravenĂˇ", "zveĹ™ejnÄ›nĂˇ", "uzavĹ™enĂˇ"].includes(clean(offer.status)) ? clean(offer.status) : "pĹ™ipravenĂˇ",
+    items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [],
+    note: clean(offer.note),
+    restCustomerId: nextType === "rests" ? clean(offer.restCustomerId) : "",
+    restVarietyId: nextType === "rests" ? clean(offer.restVarietyId) : "",
+    restVarietyName: nextType === "rests" ? clean(offer.restVarietyName) : "",
+  };
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty"
+    : "NabĂ­dka";
+}
+
+function defaultOfferTitle(type = "offer", date = todayInput()) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty ${formatDate(date)}`
+    : `NabĂ­dka ${formatDate(date)}`;
+}
+
+function mobileRestOfferCustomer(offer = {}) {
+  return findCustomer(clean(offer.restCustomerId));
+}
+
+function mobileRestOfferVarietyLabel(offer = {}) {
+  const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  return clean(linked?.name || offer.restVarietyName);
+}
+
+function mobileShortRestText(value = "", max = 88) {
+  const text = clean(value);
+  return text.length > max ? `${text.slice(0, max - 1)}â€¦` : text;
+}
+
+function mobileRestOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = mobileRestOfferCustomer(offer);
+  const variety = mobileRestOfferVarietyLabel(offer);
+  const items = sortedOfferItems(offer).slice(0, 2).map((item) => `${offerItemName(item)} Â· ${wholeNumber(item.quantity, 1)} ks`);
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (items.length) parts.push(items.join(", "));
+  if (offer.note) parts.push(mobileShortRestText(offer.note, 64));
+  return parts.filter(Boolean).join(" Â· ");
+}
+
+function mobileRestOffersForCustomer(customerId = "") {
+  const id = clean(customerId);
+  if (!id) return [];
+  return (state.data.offers || [])
+    .filter((offer) => isRestOffer(offer) && clean(offer.restCustomerId) === id && offer.status !== "uzavĹ™enĂˇ")
+    .sort((a, b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")));
+}
+
+function mobileRestOfferAlertLines(offer = {}) {
+  const lines = [];
+  const variety = mobileRestOfferVarietyLabel(offer);
+  const itemSummary = sortedOfferItems(offer)
+    .slice(0, 3)
+    .map((item) => `${offerItemName(item)} Â· ${wholeNumber(item.quantity, 1)} ks`)
+    .join(", ");
+  if (variety) lines.push(variety);
+  if (!variety && itemSummary) lines.push(itemSummary);
+  if (offer.note) lines.push(mobileShortRestText(offer.note, 84));
+  return lines.length ? lines : [mobileShortRestText(offer.title, 84)];
+}
+
+function renderSheetRestWarning(form = els.sheet.querySelector("#sheetForm")) {
+  const block = form?.querySelector("[data-sheet-rest-warning]");
+  if (!block) return;
+  const offers = mobileRestOffersForCustomer(form.elements.customerId?.value);
+  if (!offers.length) {
+    block.hidden = true;
+    block.innerHTML = "";
+    return;
+  }
+  block.hidden = false;
+  block.innerHTML = `
+    <div class="sheet-rest-heading">
+      <strong>MĂˇ resty</strong>
+      <small>Zkontroluj, jestli je potĹ™eba nÄ›co doplnit nebo pĹ™ipomenout.</small>
+    </div>
+    <div class="sheet-rest-list">
+      ${offers.map((offer) => `
+        <article class="sheet-rest-item">
+          <strong>${escapeHtml(offer.title)}</strong>
+          <small>${escapeHtml(mobileRestOfferAlertLines(offer).join(" Â· "))}</small>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function customerOverviewMarkup(customerId) {
+  const orders = state.data.orders
+    .filter((order) => order.customerId === customerId)
+    .sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
+  const waitingOrders = orders.filter((order) => order.paymentStatus !== "zaplaceno");
+  const rests = mobileRestOffersForCustomer(customerId);
+  const waitingText = waitingOrders.length ? `${waitingOrders.length} Â· ${orderTotalsText(waitingOrders)}` : "Ne";
+  return `<section class="customer-overview">
+    <div class="offer-stats customer-overview-stats">
+      <span><small>ObjednĂˇvky</small><strong>${orders.length}</strong></span>
+      <span><small>Celkem koupil</small><strong>${escapeHtml(orderTotalsText(orders))}</strong></span>
+      <span><small>ÄŚekĂˇ platba</small><strong>${escapeHtml(waitingText)}</strong></span>
+      <span><small>Resty</small><strong>${rests.length ? rests.length : "Ne"}</strong></span>
+    </div>
+  </section>`;
+}
+
+function renderOffers() {
+  const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  if (!offers.length) return empty("Ĺ˝ĂˇdnĂ© nabĂ­dky.");
+  const groups = splitOffersByType(offers);
+  const renderOfferGroup = (label, items) => {
+    if (!items.length) return "";
+    return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+      const offerItems = sortedOfferItems(offer);
+      const reserved = offerReservedCount(offer);
+      const total = offerTotalCount(offer);
+      const available = offerAvailableCount(offer);
+      const alternates = offerAlternateCount(offer);
+      const coverImage = offerItems.map((item) => offerItemImage(item)).find(Boolean) || "";
+      const itemPills = offerItems.slice(0, 4).map((item) => `đźŚż ${offerItemName(item)}`);
+      const restSummary = isRestOffer(offer) ? mobileRestOfferSummaryText(offer) : "";
+      if (restSummary) itemPills.unshift(`âš  ${restSummary}`);
+      if (offerItems.length > 4) itemPills.push(`+${offerItems.length - 4} dalĹˇĂ­`);
+      return card({
+        id: offer.id,
+        type: "offer",
+        title: offer.title,
+        sub: `${formatDate(offer.date)} Â· ${offerTypeLabel(offer)} Â· ${offer.status}`,
+        pills: [...itemPills, `VolnĂ© ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `NĂˇhradnĂ­ci ${alternates}` : ""],
+        badges: isRestOffer(offer) ? [{ label: "Resty", className: "warn" }] : [],
+        thumb: coverImage,
+        thumbText: initials(offer.title),
+        actions: isRestOffer(offer) ? [["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]] : [["facebook-offer", "FB"], ["edit-offer", "âśŽ"], ["delete-offer", "Ă—"]],
+      });
+    }).join("")}`;
+  };
+  return [
+    renderOfferGroup("NabĂ­dky", groups.offers),
+    renderOfferGroup("Resty", groups.rests),
+  ].filter(Boolean).join("");
+}
+
+function openOrderSheet(id = "", customerId = "") {
+  const order = findById("orders", id) || {};
+  const customers = state.data.customers;
+  const selectedCustomerId = clean(order.customerId || customerId);
+  const selectedCustomer = findCustomer(selectedCustomerId);
+  const activeShippingLabel = clean(order.shippingFeeLabel) || (clean(order.shippingFee) ? shippingLabel(selectedCustomer) : "");
+  openSheet(order.id ? "Upravit objednĂˇvku" : "NovĂˇ objednĂˇvka", `<form class="form-grid" id="sheetForm">
+    <input name="offerId" type="hidden" value="${escapeHtml(order.offerId || "")}">
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="customerId" required><option value="" ${selectedCustomerId ? "" : "selected"}>Zvol zĂˇkaznĂ­ka</option>${customers
+      .slice()
+      .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+      .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+      .join("")}</select></label>
+    <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
+    <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
+    ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+    ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
+    ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
+    <div class="toggle-grid">
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna ÄŚR" ? "active" : ""}" type="button" data-fee="shipping-cz">ZĂˇsilkovna ÄŚR Â· ${escapeHtml(appSettings().shippingFeeCz || "89")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "ZĂˇsilkovna Slovensko" ? "active" : ""}" type="button" data-fee="shipping-sk">ZĂˇsilkovna SK Â· ${escapeHtml(appSettings().shippingFeeSk || "99")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && activeShippingLabel === "BalĂ­kovna" ? "active" : ""}" type="button" data-fee="shipping-post">BalĂ­kovna Â· ${escapeHtml(appSettings().postalFee || "")} KÄŤ</button>
+      <button class="chip-button ${clean(order.shippingFee) && isShippingAddressLabel(activeShippingLabel) ? "active" : ""}" type="button" data-fee="shipping-address">ZĂˇsilkovna na adresu Â· ${escapeHtml(defaultShippingAddressFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+      <button class="chip-button ${clean(order.packingFee) ? "active" : ""}" type="button" data-fee="packing">BalnĂ© Â· ${escapeHtml(appSettings().packingFee || "20")} KÄŤ</button>
+      <button class="chip-button ${clean(order.codFee) ? "active" : ""}" type="button" data-fee="cod">DobĂ­rka Â· ${escapeHtml(defaultCodFeeForCustomer(appSettings(), selectedCustomer) || "")} KÄŤ</button>
+      ${order.id ? `<button class="chip-button ${clean(order.paymentTextSentAt) ? "active" : ""}" type="button" data-toggle-sheet-order-text="${escapeHtml(order.id)}">${clean(order.paymentTextSentAt) ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn"}</button>` : ""}
+    </div>
+    <label class="field"><span>OdrĹŻdy</span><textarea name="varietiesText" placeholder="NN Harriet 1x - 600 KÄŤ">${escapeHtml(order.varietiesText)}</textarea></label>
+    <section class="order-alternate-sheet-block" data-sheet-order-alternates hidden></section>
+    <label class="field"><span>Celkem KÄŤ</span><input name="price" inputmode="decimal" value="${escapeHtml(order.price)}"></label>
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(order.note)}</textarea></label>
+    <input name="shippingFee" type="hidden" value="${escapeHtml(order.shippingFee)}">
+    <input name="shippingFeeLabel" type="hidden" value="${escapeHtml(order.shippingFeeLabel || activeShippingLabel)}">
+    <input name="packingFee" type="hidden" value="${escapeHtml(order.packingFee)}">
+    <input name="codFee" type="hidden" value="${escapeHtml(order.codFee)}">
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const item = normalizeOrder({
+      ...order,
+      id: order.id || uid(),
+      offerId: clean(data.get("offerId")),
+      customerId: clean(data.get("customerId")),
+      orderDate: clean(data.get("orderDate")) || todayInput(),
+      paymentStatus: form.querySelector('[name="paymentStatus"]').value,
+      shippingStatus: form.querySelector('[name="shippingStatus"]').value,
+      deliveryMethod: form.querySelector('[name="deliveryMethod"]').value,
+      varietiesText: clean(data.get("varietiesText")),
+      price: clean(data.get("price")),
+      shippingFee: clean(data.get("shippingFee")),
+      shippingFeeLabel: clean(data.get("shippingFeeLabel")),
+      packingFee: clean(data.get("packingFee")),
+      codFee: clean(data.get("codFee")),
+      note: clean(data.get("note")),
+      createdAt: order.createdAt || now,
+      updatedAt: now,
+    });
+    upsert("orders", item);
+  });
+  const form = els.sheet.querySelector("#sheetForm");
+  form?.setAttribute("data-order-id", order.id || "");
+  bindToggles();
+  bindFees();
+  form?.setAttribute("data-last-delivery-method", order.deliveryMethod || "ship");
+  syncOrderSheetCustomerValidity(form);
+  syncOrderSheetAlternates();
+  renderSheetRestWarning(form);
+  form?.querySelector('[name="varietiesText"]')?.addEventListener("input", () => recalculateOrderSheetPrice());
+  form?.querySelector('[name="customerId"]')?.addEventListener("change", () => {
+    syncOrderSheetCustomerValidity(form);
+    if (form?.elements?.deliveryMethod?.value === "personal_pickup") {
+      clearOrderSheetFeeRestoreSnapshot(form);
+    } else {
+      syncOrderSheetCountryShippingPreset(form);
+    }
+    form?.__syncFeeButtons?.();
+    syncOrderSheetAlternates();
+    renderSheetRestWarning(form);
+  });
+  form?.querySelector('[name="deliveryMethod"]')?.addEventListener("change", () => {
+    if (!form?.elements) return;
+    const previousDelivery = form.dataset.lastDeliveryMethod || "ship";
+    if (form.elements.deliveryMethod.value === "personal_pickup") {
+      if (previousDelivery !== "personal_pickup") rememberOrderSheetFeeRestoreSnapshot(form);
+      els.sheet.querySelectorAll("[data-fee].active").forEach((button) => button.classList.remove("active"));
+      form.elements.shippingFee.value = "";
+      form.elements.shippingFeeLabel.value = "";
+      form.elements.packingFee.value = "";
+      form.elements.codFee.value = "";
+      recalculateOrderSheetPrice(form);
+    } else if (previousDelivery === "personal_pickup") {
+      const restored = restoreOrderSheetFeeRestoreSnapshot(form);
+      if (!restored) form.__syncFeeButtons?.();
+      recalculateOrderSheetPrice(form);
+    }
+    form.dataset.lastDeliveryMethod = form.elements.deliveryMethod.value || "ship";
+  });
+  els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", () => {
+    syncOrderSheetCustomerValidity(form);
+    if (!clean(form?.querySelector('[name="customerId"]')?.value)) toast("Zvol zĂˇkaznĂ­ka.");
+  });
+  els.sheet.querySelector("[data-toggle-sheet-order-text]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const button = event.currentTarget;
+    const sent = toggleOrderPaymentTextSent(button.dataset.toggleSheetOrderText, { skipRender: true });
+    button.classList.toggle("active", sent);
+    button.textContent = sent ? "âś“ Text odeslĂˇn" : "Text odeslĂˇn";
+  });
+}
+
+function openOfferSheet(id = "", defaults = {}) {
+  const offer = findById("offers", id) || {};
+  const initialType = offer.id ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer.date || clean(defaults.date) || todayInput();
+  const linkedVariety = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  const customers = [...state.data.customers].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+  const sheetTitle = offer.id
+    ? (initialType === "rests" ? "Upravit resty" : "Upravit nabĂ­dku")
+    : (initialType === "rests" ? "NovĂ© resty" : "NovĂˇ nabĂ­dka");
+  const restMetaMarkup = initialType === "rests" ? `
+    <input name="restVarietyId" type="hidden" value="${escapeHtml(clean(offer.restVarietyId || linkedVariety?.id))}">
+    <label class="field"><span>ZĂˇkaznĂ­k</span><select name="restCustomerId"><option value="">Bez zĂˇkaznĂ­ka</option>${customers
+      .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+      .join("")}</select></label>
+    <label class="field"><span>OdrĹŻda</span><input name="restVarietyName" list="varietyList" value="${escapeHtml(clean(offer.restVarietyName || linkedVariety?.name))}" placeholder="volitelnÄ›"></label>
+  ` : `<input name="restVarietyId" type="hidden" value=""><input name="restCustomerId" type="hidden" value=""><input name="restVarietyName" type="hidden" value="">`;
+  openSheet(sheetTitle, `<form class="form-grid" id="sheetForm">
+    <input name="type" type="hidden" value="${escapeHtml(initialType)}">
+    <label class="field"><span>NĂˇzev</span><input name="title" required value="${escapeHtml(offer.title || defaultOfferTitle(initialType, initialDate))}"></label>
+    <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+    <label class="field"><span>Datum na Facebooku</span><input name="facebookPublishDate" type="date" value="${escapeHtml(offer.facebookPublishDate || initialDate)}"></label>
+    <label class="field"><span>ÄŚas na Facebooku</span><input name="facebookPublishTime" type="time" value="${escapeHtml(offer.facebookPublishTime || "20:00")}"></label>
+    ${restMetaMarkup}
+    ${toggle("status", [["pĹ™ipravenĂˇ", "PĹ™ipravenĂˇ"], ["zveĹ™ejnÄ›nĂˇ", "ZveĹ™ejnÄ›nĂˇ"], ["uzavĹ™enĂˇ", "UzavĹ™enĂˇ"]], offer.status || "pĹ™ipravenĂˇ")}
+    <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+  </form>`, () => {
+    const form = document.querySelector("#sheetForm");
+    const data = new FormData(form);
+    const now = new Date().toISOString();
+    const nextDate = clean(data.get("date")) || todayInput();
+    const nextType = normalizeOfferType(data.get("type") || offer.type || defaults.type);
+    const sourceType = offer.id ? normalizeOfferType(offer.type) : nextType;
+    const rawRestVarietyName = nextType === "rests" ? clean(data.get("restVarietyName")) : "";
+    const matchedRestVariety = rawRestVarietyName ? findVarietyByName(rawRestVarietyName) : null;
+    upsert("offers", normalizeOffer({
+      ...offer,
+      id: offer.id || uid(),
+      title: adjustedOfferTitleForType(clean(data.get("title")), sourceType, nextType, nextDate),
+      date: nextDate,
+      facebookPublishDate: clean(data.get("facebookPublishDate")) || nextDate,
+      facebookPublishTime: clean(data.get("facebookPublishTime")) || "20:00",
+      type: nextType,
+      status: form.querySelector('[name="status"]').value,
+      note: clean(data.get("note")),
+      restCustomerId: nextType === "rests" ? clean(data.get("restCustomerId")) : "",
+      restVarietyId: nextType === "rests" ? clean(data.get("restVarietyId")) || clean(matchedRestVariety?.id) : "",
+      restVarietyName: nextType === "rests" ? clean(matchedRestVariety?.name || rawRestVarietyName) : "",
+      items: offer.items || [],
+      createdAt: offer.createdAt || now,
+      updatedAt: now,
+    }));
+  });
+  bindToggles();
+  const form = els.sheet.querySelector("#sheetForm");
+  form?.elements?.restVarietyName?.addEventListener("input", () => {
+    const exact = findVarietyByName(form.elements.restVarietyName.value);
+    form.elements.restVarietyId.value = exact?.id || "";
+  });
+  form?.elements?.restVarietyName?.addEventListener("change", () => {
+    const exact = findVarietyByName(form.elements.restVarietyName.value);
+    form.elements.restVarietyId.value = exact?.id || "";
+  });
+}
+
+function openOfferDetailSheet(id, options = {}) {
+  const offer = findById("offers", id);
+  if (!offer) return;
+  state.activeOfferId = id;
+  const items = sortedOfferItems(offer);
+  const reserved = offerReservedCount(offer);
+  const total = offerTotalCount(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty" : "Upravit nabĂ­dku";
+  const moveLeftoversButton = !isRestOffer(offer)
+    ? `<button class="button" type="button" data-move-offer-leftovers="${escapeHtml(id)}">PĹ™esunout neprodanĂ© do novĂ© nabĂ­dky</button>`
+    : "";
+  const restMetaCards = isRestOffer(offer)
+    ? [
+        { label: "ZĂˇkaznĂ­k", value: customerName(mobileRestOfferCustomer(offer)) },
+        { label: "OdrĹŻda", value: mobileRestOfferVarietyLabel(offer) },
+      ].filter((entry) => clean(entry.value))
+    : [];
+  const restMetaMarkup = restMetaCards.length
+    ? `<div class="rest-meta-stack">${restMetaCards.map((entry) => `<div class="rest-meta-card"><small>${escapeHtml(entry.label)}</small><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}</div>`
+    : "";
+  const facebookPrimaryButton = !isRestOffer(offer)
+    ? `<button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">PĹ™ipravit Facebook pĹ™Ă­spÄ›vek</button>`
+    : "";
+  const facebookFooterButton = !isRestOffer(offer)
+    ? `<button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button>`
+    : "";
+  const body = `<section class="offer-detail">
+    <div class="offer-stats">
+      <span><strong>${items.length}</strong><small>odĹ™ezkĹŻ</small></span>
+      <span><strong>${total}</strong><small>kusĹŻ</small></span>
+      <span><strong>${reserved}</strong><small>rezervacĂ­</small></span>
+      <span><strong>${Math.max(0, total - reserved)}</strong><small>volnĂ©</small></span>
+    </div>
+    <div class="pill-row"><span class="pill ${isRestOffer(offer) ? "warn" : ""}">${escapeHtml(offerTypeLabel(offer))}</span><span class="pill">${escapeHtml(offer.status)}</span></div>
+    ${restMetaMarkup}
+    ${offer.note ? `<p class="sub">${escapeHtml(offer.note)}</p>` : ""}
+    ${moveLeftoversButton}
+    ${facebookPrimaryButton}
+    <div class="offer-items">
+      ${items.length ? items.map((item) => offerItemDetailMarkup(offer, item)).join("") : `<div class="empty light">ZatĂ­m bez odĹ™ezkĹŻ.</div>`}
+    </div>
+  </section>`;
+  const footer = `<button class="button" type="button" data-close-sheet>ZavĹ™Ă­t</button>
+    ${facebookFooterButton}
+    <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">${editLabel}</button>
+    <button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoĹ™it objednĂˇvky</button>
+    <button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">PĹ™idat odĹ™ezek</button>`;
+  openSheet(offer.title, body, null, footer, {
+    ...options,
+    restore: () => openOfferDetailSheet(id, { replace: true }),
+  });
+  els.sheet.querySelector("[data-move-offer-leftovers]")?.addEventListener("click", () => {
+    moveOfferLeftoversToNewOffer(id);
+  });
+  els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+  els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  els.sheet.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemSheet(id));
+  els.sheet.querySelectorAll("[data-reserve-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.reserveOfferItem, "", "confirmed"));
+  });
+  els.sheet.querySelectorAll("[data-alternate-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.alternateOfferItem, "", "alternate"));
+  });
+  els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+  });
+  els.sheet.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.sheet.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(button.dataset.offerId, button.dataset.itemId, button.dataset.deleteReservation));
+  });
+  resolvePhotos(els.sheet);
+}
+(() => {
+  function eofLegacyRest(offer = {}) {
+    const title = clean(offer.title);
+    if (!/^Resty(?:\/pozn.*)?/i.test(title)) return false;
+    return Boolean(clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName) || clean(offer.note));
+  }
+
+  function eofRestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function eofRestCustomer(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez z\u00e1kazn\u00edka";
+  }
+
+  function eofRestNotePill(offer = {}, max = 42) {
+    return clean(offer.note) ? `\ud83d\udcdd ${mobileShortRestText(offer.note, max)}` : "";
+  }
+
+  const baseOpenOfferSheet = openOfferSheet;
+  const baseOpenOfferDetailSheet = openOfferDetailSheet;
+
+  isRestOffer = function isRestOfferEof(offer) {
+    return normalizeOfferType(offer?.type) === "rests" || eofLegacyRest(offer);
+  };
+
+  offerTypeLabel = function offerTypeLabelEof(offerOrType) {
+    if (typeof offerOrType === "string") return normalizeOfferType(offerOrType) === "rests" ? "Resty" : "Nab\u00eddka";
+    return isRestOffer(offerOrType) ? "Resty" : "Nab\u00eddka";
+  };
+
+  mobileRestOfferVarietyLabel = function mobileRestOfferVarietyLabelEof(offer = {}) {
+    return eofRestNames(offer).join(", ");
+  };
+
+  mobileRestOfferSummaryText = function mobileRestOfferSummaryTextEof(offer = {}) {
+    return [eofRestCustomer(offer), mobileRestOfferVarietyLabel(offer)].filter(Boolean).join(" \u00b7 ");
+  };
+
+  function setupRestSheetSelectPicker(form, initialValue = "") {
+    if (!form) return;
+    const label = form.querySelector('[name="restVarietyPicker"]')?.closest("label");
+    let picker = form.querySelector('[name="restVarietyPicker"]');
+    const hidden = form.querySelector('textarea[name="restVarietyName"]');
+    const list = form.querySelector("[data-rest-variety-list]");
+    const addButton = form.querySelector("[data-rest-variety-add]");
+    if (!label || !picker || !hidden || !list || !addButton) return;
+    if (picker.tagName !== "SELECT") {
+      const select = document.createElement("select");
+      select.name = "restVarietyPicker";
+      picker.replaceWith(select);
+      picker = select;
+      const heading = label.querySelector("span");
+      if (heading) heading.textContent = "OdrĹŻda";
+    }
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odrĹŻdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.includes(previousValue)) picker.value = previousValue;
+    };
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(list, form.__restVarietyNames);
+      renderPicker();
+    };
+    const addCurrent = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(raw))) form.__restVarietyNames.push(raw);
+      picker.value = "";
+      sync();
+    };
+    addButton.onclick = addCurrent;
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+    sync();
+  }
+  setupRestVarietyPickerForSheet = setupRestSheetSelectPicker;
+
+  openOfferSheet = function openOfferSheetEof(id = "", defaults = {}) {
+    const offer = findById("offers", id) || {};
+    const initialIsRest = offer.id ? isRestOffer(offer) : normalizeOfferType(defaults.type) === "rests";
+    if (!initialIsRest) return baseOpenOfferSheet(id, defaults);
+    const initialDate = offer.date || clean(defaults.date) || todayInput();
+    const names = eofRestNames(offer);
+    const customers = [...state.data.customers].sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    openSheet(offer.id ? "Upravit resty" : "Nov\u00e9 resty", `<form class="form-grid" id="sheetForm">
+      <input name="type" type="hidden" value="rests">
+      <input name="title" type="hidden" value="${escapeHtml(defaultOfferTitle("rests", initialDate))}">
+      <input name="facebookPublishDate" type="hidden" value="${escapeHtml(initialDate)}">
+      <input name="facebookPublishTime" type="hidden" value="20:00">
+      <input name="status" type="hidden" value="p\u0159ipraven\u00e1">
+      <input name="restVarietyId" type="hidden" value="">
+      <label class="field"><span>Datum</span><input name="date" type="date" required value="${escapeHtml(initialDate)}"></label>
+      <label class="field"><span>Z\u00e1kazn\u00edk</span><select name="restCustomerId"><option value="">Bez z\u00e1kazn\u00edka</option>${customers
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(offer.restCustomerId) === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+        .join("")}</select></label>
+      <label class="field"><span>OdrĹŻda</span><select name="restVarietyPicker"></select></label>
+      <textarea name="restVarietyName" hidden aria-hidden="true">${escapeHtml(names.join("\n"))}</textarea>
+      <div class="rest-variety-picker-row"><button class="button ghost" type="button" data-rest-variety-add>P\u0159idat odr\u016fdu</button></div>
+      <div class="rest-variety-selection" data-rest-variety-list></div>
+      <label class="field"><span>Pozn\u00e1mka</span><textarea name="note">${escapeHtml(offer.note)}</textarea></label>
+    </form>`, () => {
+      const form = document.querySelector("#sheetForm");
+      const data = new FormData(form);
+      const now = new Date().toISOString();
+      const nextDate = clean(data.get("date")) || todayInput();
+      const nextNames = restFormVarietyNames(data.get("restVarietyName"));
+      const matchedVariety = nextNames.length === 1 ? findVarietyByName(nextNames[0]) : null;
+      upsert("offers", normalizeOffer({
+        ...offer,
+        id: offer.id || uid(),
+        title: defaultOfferTitle("rests", nextDate),
+        date: nextDate,
+        facebookPublishDate: nextDate,
+        facebookPublishTime: "20:00",
+        type: "rests",
+        status: "p\u0159ipraven\u00e1",
+        note: clean(data.get("note")),
+        restCustomerId: clean(data.get("restCustomerId")),
+        restVarietyId: clean(matchedVariety?.id),
+        restVarietyName: nextNames.join("\n"),
+        items: offer.items || [],
+        createdAt: offer.createdAt || now,
+        updatedAt: now,
+      }));
+    });
+    setupRestSheetSelectPicker(els.sheet.querySelector("#sheetForm"), names.join("\n"));
+  };
+
+  openOfferDetailSheet = function openOfferDetailSheetEof(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer || !isRestOffer(offer)) return baseOpenOfferDetailSheet(id, options);
+    state.activeOfferId = id;
+    const names = eofRestNames(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>Z\u00e1kazn\u00edk</small><strong>${escapeHtml(eofRestCustomer(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "Odr\u016fdy" : "Odr\u016fda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+      </div>
+      ${names.length ? `<div class="rest-variety-selection">${names.map((name) => `<span class="rest-variety-chip">${escapeHtml(name)}</span>`).join("")}</div>` : ""}
+      ${clean(offer.note) ? `<div class="rest-meta-stack"><div class="rest-meta-card"><small>Pozn\u00e1mka</small><strong>${escapeHtml(offer.note)}</strong></div></div>` : ""}
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>Zav\u0159\u00edt</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvo\u0159it objedn\u00e1vku</button>`;
+    openSheet(offer.title, body, null, footer, {
+      ...options,
+      restore: () => openOfferDetailSheet(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  };
+
+  renderOffers = function renderOffersEof() {
+    const offers = state.data.offers.filter(matchOffer).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!offers.length) return empty("\u017d\u00e1dn\u00e9 nab\u00eddky.");
+    const groups = splitOffersByType(offers);
+    const renderOfferGroup = (label, items) => {
+      if (!items.length) return "";
+      return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+        if (isRestOffer(offer)) {
+          const names = eofRestNames(offer);
+          const pills = names.slice(0, 4).map((name) => `\ud83c\udf3f ${name}`);
+          if (names.length > 4) pills.push(`+${names.length - 4} dal\u0161\u00ed`);
+          const notePill = eofRestNotePill(offer);
+          if (notePill) pills.push(notePill);
+          return card({
+            id: offer.id,
+            type: "offer",
+            title: offer.title,
+            sub: [formatDate(offer.date), eofRestCustomer(offer)].filter(Boolean).join(" \u00b7 "),
+            pills,
+            badges: [{ label: "Resty", className: "warn" }],
+            thumb: "",
+            thumbText: "R",
+            actions: [["edit-offer", "\u270e"], ["delete-offer", "\u00d7"]],
+          });
+        }
+
+        const offerItems = sortedOfferItems(offer);
+        const reserved = offerReservedCount(offer);
+        const total = offerTotalCount(offer);
+        const available = offerAvailableCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const coverImage = offerItems.map((item) => offerItemImage(item)).find(Boolean) || "";
+        const itemPills = offerItems.slice(0, 4).map((item) => `\ud83c\udf3f ${offerItemName(item)}`);
+        if (offerItems.length > 4) itemPills.push(`+${offerItems.length - 4} dal\u0161\u00ed`);
+        return card({
+          id: offer.id,
+          type: "offer",
+          title: offer.title,
+          sub: `${formatDate(offer.date)} \u00b7 ${offerTypeLabel(offer)} \u00b7 ${offer.status}`,
+          pills: [...itemPills, `Voln\u00e9 ${available}`, `Rezervace ${reserved}/${total}`, alternates ? `N\u00e1hradn\u00edci ${alternates}` : ""],
+          badges: [],
+          thumb: coverImage,
+          thumbText: initials(offer.title),
+          actions: [["facebook-offer", "FB"], ["edit-offer", "\u270e"], ["delete-offer", "\u00d7"]],
+        });
+      }).join("")}`;
+    };
+    return [
+      renderOfferGroup("Nab\u00eddky", groups.offers),
+      renderOfferGroup("Resty", groups.rests),
+    ].filter(Boolean).join("");
+  };
+})();
+(() => {
+  const previousOpenOfferDetailSheet = openOfferDetailSheet;
+
+  function finalRestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function finalRestCustomerText(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez zĂˇkaznĂ­ka";
+  }
+
+  renderRestVarietySelection = function renderRestVarietySelectionFinal(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>Ă—</span></button>`).join("")
+      : '<div class="rest-variety-empty">ZatĂ­m bez odrĹŻd.</div>';
+  };
+
+  setupRestVarietyPickerForSheet = function setupRestVarietyPickerForSheetFinal(form, initialValue = "") {
+    if (!form) return;
+    let picker = form.elements.restVarietyPicker;
+    let hidden = form.elements.restVarietyName;
+    const list = form.querySelector("[data-rest-variety-list]");
+    const addButton = form.querySelector("[data-rest-variety-add]");
+    if (!picker || !hidden || !list || !addButton) return;
+    if (picker.tagName !== "SELECT") {
+      const label = picker.closest("label");
+      const heading = label?.querySelector("span");
+      if (heading) heading.textContent = "OdrĹŻda";
+      const select = document.createElement("select");
+      select.name = "restVarietyPicker";
+      picker.replaceWith(select);
+      picker = select;
+    }
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+    const renderPickerOptions = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odrĹŻdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) picker.value = previousValue;
+    };
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(list, form.__restVarietyNames);
+      renderPickerOptions();
+    };
+    const addCurrent = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      picker.value = "";
+      sync();
+      picker.focus();
+    };
+    addButton.onclick = addCurrent;
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+    sync();
+  };
+
+  openOfferDetailSheet = function openOfferDetailSheetNoDuplicateRest(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer || !isRestOffer(offer)) return previousOpenOfferDetailSheet(id, options);
+    state.activeOfferId = id;
+    const names = finalRestNames(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>ZĂˇkaznĂ­k</small><strong>${escapeHtml(finalRestCustomerText(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "OdrĹŻdy" : "OdrĹŻda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+      </div>
+      ${clean(offer.note) ? `<div class="rest-meta-stack"><div class="rest-meta-card"><small>PoznĂˇmka</small><strong>${escapeHtml(offer.note)}</strong></div></div>` : ""}
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>ZavĹ™Ă­t</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">VytvoĹ™it objednĂˇvku</button>`;
+    openSheet(offer.title, body, null, footer, {
+      ...options,
+      restore: () => openOfferDetailSheet(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  };
+
+  document.querySelectorAll('[data-action="new-rest-offer"]').forEach((button) => {
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openOfferSheet("", { type: "rests" });
+    };
+  });
+})();
+(() => {
+  function finalRestTitleMatch(value = "") {
+    return /^Resty(?:\/pozn.*)?(?:\s|$)/i.test(clean(value));
+  }
+
+  function finalRestLikeOffer(offer = {}) {
+    if (!offer) return false;
+    if (normalizeOfferType(offer.type) === "rests") return true;
+    if (clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName)) return true;
+    return finalRestTitleMatch(offer.title);
+  }
+
+  const previousNormalizeOfferBootstrap = normalizeOffer;
+  normalizeOffer = function normalizeOfferRestBootstrap(offer = {}) {
+    const shouldBeRest = finalRestLikeOffer(offer);
+    const normalized = previousNormalizeOfferBootstrap({
+      ...offer,
+      type: shouldBeRest ? "rests" : offer?.type,
+    });
+    return shouldBeRest ? { ...normalized, type: "rests" } : normalized;
+  };
+
+  const previousIsRestOfferBootstrap = isRestOffer;
+  isRestOffer = function isRestOfferRestBootstrap(offer = {}) {
+    return finalRestLikeOffer(offer) || previousIsRestOfferBootstrap(offer);
+  };
+
+  if (Array.isArray(state?.data?.offers) && state.data.offers.length) {
+    state.data.offers = state.data.offers.map((offer) => normalizeOffer(offer));
+  }
+
+  const rerender = () => {
+    if (typeof render === "function") render();
+  };
+
+  rerender();
+  setTimeout(rerender, 0);
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      rerender();
+      requestAnimationFrame(rerender);
+    });
+  }
+})();
+(() => {
+  const previousNormalizeOrderStorno = normalizeOrder;
+
+  function ak91ParseMobileOrderStornoLines(value = "") {
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => ({
+          name: clean(entry?.name),
+          quantity: Math.max(wholeNumber(entry?.quantity, 1), 1),
+          unitPrice: normalizeAmount(entry?.unitPrice),
+          currency: clean(entry?.currency) || "CZK",
+          note: clean(entry?.note),
+          createdAt: clean(entry?.createdAt),
+        }))
+        .filter((entry) => entry.name);
+    }
+    if (!clean(value)) return [];
+    try {
+      return ak91ParseMobileOrderStornoLines(JSON.parse(value));
+    } catch {
+      return [];
+    }
+  }
+
+  normalizeOrder = function normalizeOrderWithStorno(order = {}) {
+    const normalized = previousNormalizeOrderStorno(order);
+    return {
+      ...normalized,
+      stornoLines: ak91ParseMobileOrderStornoLines(order.stornoLines || normalized.stornoLines),
+      cancelledAt: clean(order.cancelledAt || normalized.cancelledAt),
+      cancelledNote: clean(order.cancelledNote || normalized.cancelledNote),
+    };
+  };
+
+  orderStornoLines = function orderStornoLinesMobile(order = {}) {
+    return ak91ParseMobileOrderStornoLines(order?.stornoLines);
+  };
+
+  orderHasStorno = function orderHasStornoMobile(order = {}) {
+    return Boolean(orderStornoLines(order).length || clean(order?.cancelledAt));
+  };
+
+  customerStornoOrders = function customerStornoOrdersMobile(customerId = "") {
+    const id = clean(customerId);
+    if (!id) return [];
+    return (state.data.orders || []).filter((order) => clean(order.customerId) === id && orderHasStorno(order));
+  };
+
+  if (Array.isArray(state?.data?.orders) && state.data.orders.length) {
+    state.data.orders = state.data.orders.map((order) => normalizeOrder(order));
+  }
+})();
+
+(() => {
+  const ak91OpenOrderSheet = openOrderSheet;
+  const ak91PreviousOfferDetailSheet = openOfferDetailSheet;
+  const ak91RenderVarieties = renderVarieties;
+  const ak91RenderCrosses = renderCrosses;
+  const ak91RenderSync = renderSync;
+  const ak93EncodingMaps = new Map();
+
+  function ak93ReverseByteMap(encoding) {
+    if (ak93EncodingMaps.has(encoding)) return ak93EncodingMaps.get(encoding);
+    const decoder = new TextDecoder(encoding);
+    const map = new Map();
+    for (let index = 0; index < 256; index += 1) {
+      const decoded = decoder.decode(Uint8Array.of(index));
+      if (!map.has(decoded)) map.set(decoded, index);
+    }
+    ak93EncodingMaps.set(encoding, map);
+    return map;
+  }
+
+  function ak93RepairScore(text = "") {
+    const markers = (text.match(/[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/g) || []).length;
+    const accents = (text.match(/[áéíóúýčďěňřšťůžľĺôäÁÉÍÓÚÝČĎĚŇŘŠŤŮŽĽĹÔÄ×·]/g) || []).length;
+    return accents - markers * 4;
+  }
+
+  function ak93LooksBroken(text = "") {
+    return /[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/.test(text) || /Â·|Ã—|Ă—/.test(text);
+  }
+
+  function ak93DecodeSegment(segment, encoding) {
+    if (!segment) return "";
+    const map = ak93ReverseByteMap(encoding);
+    const bytes = [];
+    for (const ch of segment) {
+      const code = ch.codePointAt(0);
+      if (code <= 0x7f) {
+        bytes.push(code);
+        continue;
+      }
+      const mapped = map.get(ch);
+      if (mapped == null) return segment;
+      bytes.push(mapped);
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+    } catch {
+      return segment;
+    }
+  }
+
+  function ak93DecodeText(value, encoding) {
+    const text = String(value ?? "");
+    if (!text) return "";
+    const map = ak93ReverseByteMap(encoding);
+    let result = "";
+    let buffer = "";
+    const flush = () => {
+      if (!buffer) return;
+      result += ak93DecodeSegment(buffer, encoding);
+      buffer = "";
+    };
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      if (code <= 0x7f || map.has(ch)) {
+        buffer += ch;
+      } else {
+        flush();
+        result += ch;
+      }
+    }
+    flush();
+    return result;
+  }
+
+  function ak93RepairRawText(value) {
+    const text = String(value ?? "");
+    if (!text) return "";
+    if (!ak93LooksBroken(text)) return text;
+    let best = text;
+    let bestScore = ak93RepairScore(text);
+    for (let pass = 0; pass < 3; pass += 1) {
+      let changed = false;
+      for (const encoding of ["windows-1250", "windows-1252"]) {
+        const candidate = ak93DecodeText(best, encoding);
+        const candidateScore = ak93RepairScore(candidate);
+        if (candidate !== best && candidateScore > bestScore) {
+          best = candidate;
+          bestScore = candidateScore;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
+    return best;
+  }
+
+  function ak93DisplayText(value, fallback = "") {
+    const text = clean(ak93RepairRawText(value));
+    if (!text) return fallback;
+    return text || fallback;
+  }
+
+  function ak93RepairSheetDom(root = els.sheet) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    textNodes.forEach((node) => {
+      const fixed = ak93RepairRawText(node.nodeValue);
+      if (fixed !== node.nodeValue) node.nodeValue = fixed;
+    });
+    root.querySelectorAll("[title], [placeholder], input:not([type='hidden']), textarea").forEach((node) => {
+      if (!(node instanceof HTMLElement)) return;
+      if (node.hasAttribute("title")) {
+        const currentTitle = node.getAttribute("title") || "";
+        const fixedTitle = ak93RepairRawText(currentTitle);
+        if (fixedTitle !== currentTitle) node.setAttribute("title", fixedTitle);
+      }
+      if ("placeholder" in node && node.placeholder) {
+        const fixedPlaceholder = ak93RepairRawText(node.placeholder);
+        if (fixedPlaceholder !== node.placeholder) node.placeholder = fixedPlaceholder;
+      }
+      if ((node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) && node.type !== "hidden" && node.type !== "password" && node.value) {
+        const fixedValue = ak93RepairRawText(node.value);
+        if (fixedValue !== node.value) node.value = fixedValue;
+      }
+    });
+
+    const orderVarietySelect = root.querySelector('[name="orderVarietySelect"]');
+    if (orderVarietySelect instanceof HTMLSelectElement) {
+      const firstOption = orderVarietySelect.querySelector('option[value=""]');
+      if (firstOption && firstOption.textContent !== "Vyber odrůdu") firstOption.textContent = "Vyber odrůdu";
+    }
+
+    root.querySelectorAll("[data-order-variety-add]").forEach((node) => {
+      if (node.textContent !== "Přidat odrůdu") node.textContent = "Přidat odrůdu";
+    });
+
+    root.querySelectorAll(".rest-variety-empty").forEach((node) => {
+      if (node.textContent !== "Zatím bez odrůd.") node.textContent = "Zatím bez odrůd.";
+    });
+
+    root.querySelectorAll("[data-sheet-order-cancel-all], [data-stable-order-cancel-all], [data-final-order-cancel-all]").forEach((node) => {
+      if (node.textContent !== "Stornovat celou objednávku") node.textContent = "Stornovat celou objednávku";
+    });
+
+    root.querySelectorAll("button[data-sheet-order-storno], button[data-stable-order-storno], button[data-final-order-storno]").forEach((node) => {
+      if (node.textContent !== "Stornovat") node.textContent = "Stornovat";
+    });
+
+    root.querySelectorAll("button[data-sheet-order-restore], button[data-stable-order-restore], button[data-final-order-restore]").forEach((node) => {
+      if (node.textContent !== "Obnovit") node.textContent = "Obnovit";
+    });
+  }
+
+  function ak93EnsureSheetObserver() {
+    if (!els.sheet || els.sheet.dataset.ak93Observed === "1") return;
+    let repairing = false;
+    const observer = new MutationObserver(() => {
+      if (repairing) return;
+      repairing = true;
+      try {
+        ak93RepairSheetDom(els.sheet);
+      } finally {
+        repairing = false;
+      }
+    });
+    observer.observe(els.sheet, { childList: true, subtree: true, characterData: true });
+    els.sheet.dataset.ak93Observed = "1";
+    els.sheet.__ak93Observer = observer;
+  }
+
+  renderRestVarietySelection = function renderRestVarietySelectionAK93(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(ak93DisplayText(name))} <span>×</span></button>`).join("")
+      : '<div class="rest-variety-empty">Zatím bez odrůd.</div>';
+  };
+
+  if (typeof toast === "function") {
+    const ak93PreviousToast = toast;
+    toast = function toastAK93(message, ...rest) {
+      return ak93PreviousToast.call(this, ak93DisplayText(message), ...rest);
+    };
+  }
+
+  if (typeof window.prompt === "function") {
+    const ak93PreviousPrompt = window.prompt.bind(window);
+    window.prompt = function promptAK93(message, defaultValue) {
+      return ak93PreviousPrompt(
+        ak93DisplayText(message),
+        typeof defaultValue === "string" ? ak93DisplayText(defaultValue) : defaultValue,
+      );
+    };
+  }
+
+  if (typeof window.confirm === "function") {
+    const ak93PreviousConfirm = window.confirm.bind(window);
+    window.confirm = function confirmAK93(message) {
+      return ak93PreviousConfirm(ak93DisplayText(message));
+    };
+  }
+
+  if (typeof defaultFacebookOfferTemplate === "function") {
+    const ak93PreviousDefaultFacebookOfferTemplate = defaultFacebookOfferTemplate;
+    defaultFacebookOfferTemplate = function defaultFacebookOfferTemplateAK93(settings = appSettings()) {
+      return ak93RepairRawText(ak93PreviousDefaultFacebookOfferTemplate.call(this, settings));
+    };
+  }
+
+  if (typeof renderFacebookOfferTemplate === "function") {
+    const ak93PreviousRenderFacebookOfferTemplate = renderFacebookOfferTemplate;
+    renderFacebookOfferTemplate = function renderFacebookOfferTemplateAK93(template, offer) {
+      return ak93RepairRawText(ak93PreviousRenderFacebookOfferTemplate.call(this, ak93RepairRawText(template), offer));
+    };
+  }
+
+  if (typeof buildFacebookOfferText === "function") {
+    const ak93PreviousBuildFacebookOfferText = buildFacebookOfferText;
+    buildFacebookOfferText = function buildFacebookOfferTextAK93(offer) {
+      return ak93RepairRawText(ak93PreviousBuildFacebookOfferText.call(this, offer));
+    };
+  }
+
+  if (typeof buildCustomerOrderText === "function") {
+    const ak93PreviousBuildCustomerOrderText = buildCustomerOrderText;
+    buildCustomerOrderText = function buildCustomerOrderTextAK93(order, customer) {
+      return ak93RepairRawText(ak93PreviousBuildCustomerOrderText.call(this, order, customer));
+    };
+  }
+
+  openSheet = function openSheetAK93(title, body, onSave, customFooter = "", options = {}) {
+    if (!els.sheet.hidden && !options.replace && typeof state.currentSheetRestore === "function") {
+      state.sheetStack.push(state.currentSheetRestore);
+    }
+    clearPendingPhotoPreviewUrls(els.sheet.querySelector("#sheetForm"));
+    state.currentSheetRestore = typeof options.restore === "function" ? options.restore : null;
+    els.sheet.hidden = false;
+    els.sheet.innerHTML = `<section class="sheet" role="dialog" aria-modal="true">
+      <header class="sheet-header"><h2>${escapeHtml(ak93DisplayText(title))}</h2><button class="round" type="button" data-close-sheet>×</button></header>
+      <div class="sheet-body">${body}</div>
+      <footer class="sheet-footer">${customFooter || `<button class="button" type="button" data-close-sheet>Zrušit</button><button class="button primary" type="button" data-save-sheet>Uložit</button>`}</footer>
+    </section>`;
+    ak93RepairSheetDom(els.sheet);
+    els.sheet.querySelectorAll("[data-close-sheet]").forEach((button) => button.addEventListener("click", closeSheet));
+    els.sheet.querySelector("[data-save-sheet]")?.addEventListener("click", async () => {
+      const saveButton = els.sheet.querySelector("[data-save-sheet]");
+      if (saveButton?.disabled) return;
+      const form = els.sheet.querySelector("form");
+      if (form && !form.reportValidity()) return;
+      const previousLabel = saveButton?.textContent;
+      if (saveButton) {
+        saveButton.disabled = true;
+        saveButton.textContent = "Ukládám...";
+      }
+      try {
+        const result = await onSave?.();
+        if (result === false) return;
+        saveData();
+        closeSheet();
+        render();
+        toast("Uloženo.");
+      } catch (error) {
+        console.error(error);
+        toast("Uložení se nepodařilo.");
+        if (saveButton) {
+          saveButton.disabled = false;
+          saveButton.textContent = previousLabel || "Uložit";
+        }
+      }
+    });
+  }
+
+  function ak93OfferTypeLabel(offerOrType) {
+    return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+      ? "Resty"
+      : "Nabídka";
+  }
+
+  const ak93Icons = {
+    share: `<svg class="action-icon-svg action-icon-facebook" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="12" fill="#1877F2"></circle>
+      <path fill="#ffffff" d="M13.69 20v-7.02h2.36l.35-2.74h-2.71V8.49c0-.79.22-1.33 1.36-1.33H16.5V4.71c-.25-.03-1.08-.11-2.05-.11-2.03 0-3.42 1.24-3.42 3.51v1.96H8.75v2.74h2.28V20h2.66z"></path>
+    </svg>`,
+    copy: "&#128203;",
+    message: "&#128172;",
+    edit: "&#9998;",
+    delete: "&times;",
+    add: "&#10133;",
+    download: "&#8681;",
+  };
+
+  function ak93ActionIcon(action = "", label = "") {
+    const key = clean(action);
+    if (key === "facebook-offer") return ak93Icons.share;
+    if (key === "copy-order") return ak93Icons.copy;
+    if (key === "toggle-order-text-sent") return ak93Icons.message;
+    if (key === "edit-order" || key === "edit-customer" || key === "edit-variety" || key === "edit-cross" || key === "edit-offer") return ak93Icons.edit;
+    if (key === "delete-order" || key === "delete-customer" || key === "delete-variety" || key === "delete-cross" || key === "delete-offer") return ak93Icons.delete;
+    if (key === "order-customer") return ak93Icons.add;
+    if (key === "download-cross") return ak93Icons.download;
+    const text = ak93DisplayText(label).trim().toLowerCase();
+    if (["fb", "sta"].includes(text) || text.includes("facebook")) return ak93Icons.share;
+    if (text.startsWith("kop")) return ak93Icons.copy;
+    if (text.startsWith("txt")) return ak93Icons.message;
+    if (text.startsWith("upr")) return ak93Icons.edit;
+    if (text === "x") return ak93Icons.delete;
+    if (text === "+") return ak93Icons.add;
+    return escapeHtml(ak93DisplayText(label));
+  }
+
+  function ak93ActionTitle(action = "", label = "") {
+    const key = clean(action);
+    return {
+      "facebook-offer": "Facebook příspěvek",
+      "copy-order": "Kopírovat objednávku",
+      "toggle-order-text-sent": "Text zákazníkovi",
+      "edit-order": "Upravit objednávku",
+      "delete-order": "Smazat objednávku",
+      "order-customer": "Nová objednávka",
+      "edit-customer": "Upravit zákazníka",
+      "delete-customer": "Smazat zákazníka",
+      "edit-variety": "Upravit odrůdu",
+      "delete-variety": "Smazat odrůdu",
+      "download-cross": "Stáhnout kartu",
+      "edit-cross": "Upravit křížení",
+      "delete-cross": "Smazat křížení",
+      "edit-offer": "Upravit nabídku",
+      "delete-offer": "Smazat nabídku",
+    }[key] || ak93DisplayText(label, "Akce");
+  }
+
+  const ak96CurrencyToken = "(?:Kč|KÄŤ|kc|czk|eur|€)";
+  const ak96QuantityToken = "(?:ks|kus|kusy|řízků|Ĺ™Ă­zkĹŻ|rizku|sazenic)";
+
+  orderLineQuantity = function orderLineQuantityAK96(line = "") {
+    const value = clean(line);
+    const match =
+      value.match(/\b(\d+)\s*x\b/iu) ||
+      value.match(/\bx\s*(\d+)\b/iu) ||
+      value.match(new RegExp(`\\b(\\d+)\\s*${ak96QuantityToken}\\b`, "iu"));
+    const quantity = match ? Number(match[1]) : 1;
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+  };
+
+  orderLineUnitPrice = function orderLineUnitPriceAK96(line = "") {
+    const value = clean(line);
+    const trailingQuantityToken = `(?:\\d+\\s*x|x\\s*\\d+|\\d+\\s*${ak96QuantityToken})`;
+    const pricedAtEnd =
+      value.match(new RegExp(`(?:-|–|—)\\s*(\\d+(?:[,.]\\d+)?)\\s*${ak96CurrencyToken}?(?:\\s*${trailingQuantityToken})?\\s*$`, "iu")) ||
+      value.match(new RegExp(`(?:@|=)\\s*(\\d+(?:[,.]\\d+)?)\\s*${ak96CurrencyToken}?(?:\\s*${trailingQuantityToken})?\\s*$`, "iu"));
+    if (pricedAtEnd) return number(pricedAtEnd[1]);
+    const inline = value.match(new RegExp(`(\\d+(?:[,.]\\d+)?)\\s*${ak96CurrencyToken}(?=\\s*(?:${trailingQuantityToken})?\\s*$)`, "iu"));
+    return inline ? number(inline[1]) : Number.NaN;
+  };
+
+  parseSheetOrderLineName = function parseSheetOrderLineNameAK96(line = "") {
+    return clean(line)
+      .replace(/\b\d+\s*x\b/giu, " ")
+      .replace(/\bx\s*\d+\b/giu, " ")
+      .replace(new RegExp(`\\b\\d+\\s*${ak96QuantityToken}\\b`, "giu"), " ")
+      .replace(new RegExp(`(?:-|–|—)\\s*\\d+(?:[,.]\\d+)?\\s*${ak96CurrencyToken}?\\s*$`, "iu"), " ")
+      .replace(new RegExp(`(?:@|=)\\s*\\d+(?:[,.]\\d+)?\\s*${ak96CurrencyToken}?\\s*$`, "iu"), " ")
+      .replace(new RegExp(`\\b\\d+(?:[,.]\\d+)?\\s*${ak96CurrencyToken}\\b`, "giu"), " ")
+      .replace(/[=:@]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  offerOrderLineText = function offerOrderLineTextAK96(name, quantity, unitPrice) {
+    return `${clean(name)} ${wholeNumber(quantity, 1)}x - ${normalizeAmount(unitPrice)} Kč`.trim();
+  };
+
+  orderFeeLines = function orderFeeLinesAK97(order, customer) {
+    const currency = "CZK";
+    const shipping = number(order.shippingFee);
+    const packing = number(order.packingFee);
+    const cod = number(order.codFee);
+    const parts = [];
+    if (Number.isFinite(shipping) && shipping > 0) parts.push(`${orderShippingLabel(order, customer)} ${formatMoney(shipping, currency)}`);
+    if (Number.isFinite(packing) && packing > 0) parts.push(`Balné ${formatMoney(packing, currency)}`);
+    if (Number.isFinite(cod) && cod > 0) parts.push(`Dobírka ${formatMoney(cod, currency)}`);
+    normalizeNamedFees(order.extraFees).forEach((fee) => {
+      const amount = number(fee.amount);
+      if (clean(fee.name) && Number.isFinite(amount) && amount > 0) parts.push(`${fee.name} ${formatMoney(amount, currency)}`);
+    });
+    return parts;
+  };
+
+  buildCustomerOrderText = function buildCustomerOrderTextAK97(order, customer) {
+    const settings = appSettings();
+    const lines = clean(order.varietiesText).split(/\n+/).map(clean).filter(Boolean);
+    lines.push(...orderFeeLines(order, customer));
+    const totalCzk = orderFinalTotal(order);
+    const eur = shouldShowEur(customer) ? orderPriceEur(order, totalCzk) : null;
+    const paymentLines = [
+      clean(settings.paymentAccountName) ? `Jméno a příjmení: ${settings.paymentAccountName}` : "",
+      clean(settings.paymentAccountNumber) ? `Číslo účtu: ${settings.paymentAccountNumber}` : "",
+      clean(settings.paymentIban) ? `IBAN: ${settings.paymentIban}` : "",
+      clean(settings.paymentSwift) ? `SWIFT / BIC: ${settings.paymentSwift}` : "",
+    ].filter(Boolean);
+    const parts = [
+      "Dobrý den,",
+      "posílám přehled objednávky:",
+      "",
+      lines.join("\n"),
+      "",
+      `Celkem v CZK: ${formatMoney(totalCzk, "CZK")}`,
+      eur ? `K úhradě v EUR: ${formatMoney(eur, "EUR")}` : "",
+      paymentLines.length ? "\nÚdaje k platbě:" : "",
+      paymentLines.join("\n"),
+      "",
+      "Děkuji.",
+    ];
+    return parts.filter((part, index) => part || parts[index - 1] !== "").join("\n").trim();
+  };
+
+  card = function cardAK93({ id, type, tone = "", title, sub = "", price = "", pills = [], badges = [], actions = [], thumb = "", thumbText = "" }) {
+    const thumbRef = thumbPreviewRef(thumb);
+    const thumbHtml = thumb || thumbText ? `<span class="thumb">${thumb ? `<img data-photo-ref="${escapeHtml(thumbRef)}" alt="">` : escapeHtml(thumbText)}</span>` : "";
+    return `<article class="card card-${escapeHtml(type)} ${tone} ${badges.length ? "has-status" : ""}" data-card="${type}" data-id="${escapeHtml(id)}">
+      ${badges.length ? `<div class="status-badges">${badges.filter(Boolean).map(renderCardPill).join("")}</div>` : ""}
+      <div class="card-row">
+        ${thumbHtml}
+        <div class="card-main">
+          <strong class="title">${title}</strong>
+          ${sub ? `<small>${sub}</small>` : ""}
+          ${price ? `<div class="price">${price}</div>` : ""}
+          ${pills.length ? `<div class="pill-row">${pills.filter(Boolean).map(renderCardPill).join("")}</div>` : ""}
+        </div>
+      </div>
+      ${actions.length ? `<div class="card-actions">${actions.map(([action, label]) => {
+        const titleText = ak93ActionTitle(action, label);
+        return `<button class="round" type="button" data-action-row="${escapeHtml(action)}" data-id="${escapeHtml(id)}" title="${escapeHtml(titleText)}" aria-label="${escapeHtml(titleText)}">${ak93ActionIcon(action, label)}</button>`;
+      }).join("")}</div>` : ""}
+    </article>`;
+  };
+
+  function ak93OfferItemName(item = {}) {
+    return ak93DisplayText(offerItemNameSafe(item), ak93DisplayText(item?.varietyName || item?.name, "Odřezek"));
+  }
+
+  function ak93CrossStageLabel(stage = "") {
+    return {
+      opyleno: "Opyleno",
+      vyseto: "Vyseto",
+      roste: "Roste",
+      hotovo: "Hotovo",
+    }[clean(stage)] || ak93DisplayText(crossStageText(stage), "Opyleno");
+  }
+
+  function ak93CrossRatingLabel(rating = "") {
+    return {
+      krasna: "Krásná",
+      hnusna: "Hnusná",
+      nejista: "Nejistá",
+    }[clean(rating)] || "";
+  }
+
+  function ak93PhotoCountLabel(count = 0) {
+    const value = wholeNumber(count, 0);
+    if (!value) return "Bez fotky";
+    if (value === 1) return "1 fotka";
+    if (value >= 2 && value <= 4) return `${value} fotky`;
+    return `${value} fotek`;
+  }
+
+  function ak93ReservationLineMarkup(offer, item, reservation) {
+    const customer = findCustomer(reservation.customerId);
+    const status = reservationStatusValue(reservation.status);
+    const offerId = escapeHtml(offer.id);
+    const itemId = escapeHtml(item.id);
+    const reservationId = escapeHtml(reservation.id);
+    const customerLabel = ak93DisplayText(customerName(customer), "Bez zákazníka");
+    const note = ak93DisplayText(reservation.note);
+    return `<div class="reservation-line">
+      <strong>${escapeHtml(customerLabel)}</strong>
+      <span>${number(reservation.quantity) || 1} ks</span>
+      <span class="pill ${status === "alternate" ? "warn" : "ok"}">${status === "alternate" ? "Náhradník" : "Potvrzeno"}</span>
+      ${reservationLinkedToOrder(offer, item, reservation) ? `<span class="pill ok">Objednávka</span>` : ""}
+      ${note ? `<small>${escapeHtml(note)}</small>` : ""}
+      <span class="reservation-line-actions">
+        <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-edit-reservation="${reservationId}" title="Upravit rezervaci">${ak93Icons.edit}</button>
+        <button class="round" type="button" data-offer-id="${offerId}" data-item-id="${itemId}" data-delete-reservation="${reservationId}" title="Smazat rezervaci">${ak93Icons.delete}</button>
+      </span>
+    </div>`;
+  }
+
+  function ak93OfferItemDetailMarkup(offer, item) {
+    const reserved = offerItemReservedCount(item);
+    const alternate = offerItemAlternateCount(item);
+    const confirmed = offerItemConfirmedCount(item);
+    const total = number(item.quantity);
+    const available = Math.max(0, total - confirmed);
+    const image = offerItemImageSafe(item);
+    const offerId = escapeHtml(offer.id);
+    const itemId = escapeHtml(item.id);
+    const orderProgress = offerItemOrderProgress(offer, item);
+    const orderProgressLabel = orderProgress.state === "done"
+      ? "V objednávce"
+      : orderProgress.state === "partial"
+        ? "Částečně v objednávce"
+        : ak93DisplayText(orderProgress.label);
+    const orderFlag = orderProgress.state
+      ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgressLabel)}">OBJ</span>`
+      : "";
+    const itemName = ak93OfferItemName(item);
+    const emptyReservationsText = "Zatím bez rezervací.";
+    return `<article class="offer-item ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
+      <div class="offer-item-head">
+        <span class="thumb offer-thumb-wrap">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(itemName || "O"))}${orderFlag}</span>
+        <div>
+          <strong>${escapeHtml(itemName)}</strong>
+          <small>${total || 0} ks · ${formatMoney(item.price, item.currency || "CZK")} / ks</small>
+        </div>
+      </div>
+      <div class="pill-row">
+        <span class="pill">Volné ${available}</span>
+        <span class="pill">Potvrzeno ${confirmed}</span>
+        ${alternate ? `<span class="pill">Náhradník ${alternate}</span>` : ""}
+        ${reserved > confirmed ? `<span class="pill">Rezervace ${reserved}</span>` : ""}
+      </div>
+      <div class="offer-item-actions">
+        <button class="button primary" type="button" data-offer-id="${offerId}" data-reserve-offer-item="${itemId}" ${available <= 0 ? "disabled" : ""}>Rezervovat</button>
+        <button class="button" type="button" data-offer-id="${offerId}" data-alternate-offer-item="${itemId}">Náhradník</button>
+        <button class="button" type="button" data-offer-id="${offerId}" data-edit-offer-item="${itemId}">Upravit</button>
+        <button class="button danger" type="button" data-offer-id="${offerId}" data-delete-offer-item="${itemId}">Smazat</button>
+      </div>
+      <div class="reservation-list">
+        ${(item.reservations || []).length ? sortedReservations(item).map((reservation) => ak93ReservationLineMarkup(offer, item, reservation)).join("") : `<small class="sub">${emptyReservationsText}</small>`}
+      </div>
+    </article>`;
+  }
+
+  function ak93RenderVarieties() {
+    const varieties = (state.data.varieties || [])
+      .filter(matchVariety)
+      .slice()
+      .sort((a, b) => naturalCompare(ak93DisplayText(a?.name, ""), ak93DisplayText(b?.name, "")));
+    if (!varieties.length) return empty("Žádné odrůdy.");
+    return varieties.map((variety) => {
+      const name = ak93DisplayText(variety.name, "Odrůda");
+      const imageCount = varietyImages(variety).length;
+      return card({
+        id: variety.id,
+        type: "variety",
+        title: name,
+        sub: `${ak93PhotoCountLabel(imageCount)} · ${varietyUsageCount(variety.name)} záznamů`,
+        price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
+        thumb: varietyImages(variety)[0],
+        thumbText: initials(name),
+        pills: [variety.active === false ? "Neaktivní" : "Aktivní"],
+        actions: [["edit-variety", ak93Icons.edit], ["delete-variety", ak93Icons.delete]],
+      });
+    }).join("");
+  }
+
+  function ak93RenderCrosses() {
+    const crosses = (state.data.crosses || [])
+      .filter(matchCross)
+      .slice()
+      .sort((a, b) => String(b.pollinatedAt || "").localeCompare(String(a.pollinatedAt || "")));
+    if (!crosses.length) return empty("Žádné křížení.");
+    return crosses.map((cross) => {
+      const title = ak93DisplayText(crossLineage(cross), "Křížení");
+      const seedlingName = ak93DisplayText(cross.seedlingName);
+      const tone = clean(cross.resultRating) === "hnusna" ? "reject" : clean(cross.stage) === "hotovo" ? "done" : "attention";
+      const pills = [
+        ak93CrossStageLabel(cross.stage),
+        ak93CrossRatingLabel(cross.resultRating) || "Bez hodnocení",
+        seedlingName,
+      ].filter(Boolean);
+      return card({
+        id: cross.id,
+        type: "cross",
+        tone,
+        title,
+        sub: seedlingName,
+        thumb: crossSeedlingImages(cross)[0],
+        thumbText: initials(title),
+        pills,
+        actions: [["download-cross", ak93Icons.download], ["edit-cross", ak93Icons.edit], ["delete-cross", ak93Icons.delete]],
+      });
+    }).join("");
+  }
+
+  function ak93OpenStandardOfferDetail(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    state.activeOfferId = id;
+    const items = sortedOfferItems(offer);
+    const reserved = offerReservedCount(offer);
+    const total = offerTotalCount(offer);
+    const available = Math.max(0, total - reserved);
+    const title = ak93DisplayText(offer.title, "Nabídka");
+    const statusLabel = ak91OfferStatusLabel(offer.status);
+    const note = ak93DisplayText(offer.note);
+    const body = `<section class="offer-detail">
+      <div class="offer-stats">
+        <span><strong>${items.length}</strong><small>odřezků</small></span>
+        <span><strong>${total}</strong><small>kusů</small></span>
+        <span><strong>${reserved}</strong><small>rezervací</small></span>
+        <span><strong>${available}</strong><small>volné</small></span>
+      </div>
+      <div class="pill-row"><span class="pill">${ak93OfferTypeLabel(offer)}</span><span class="pill">${escapeHtml(statusLabel)}</span></div>
+      ${note ? `<p class="sub">${escapeHtml(note)}</p>` : ""}
+      <button class="button" type="button" data-move-offer-leftovers="${escapeHtml(id)}">Přesunout neprodané do nové nabídky</button>
+      <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Připravit Facebook příspěvek</button>
+      <div class="offer-items">
+        ${items.length ? items.map((item) => ak93OfferItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
+      </div>
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>Zavřít</button>
+      <button class="button" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Facebook</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit nabídku</button>
+      <button class="button" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávky</button>
+      <button class="button primary" type="button" data-add-offer-item="${escapeHtml(id)}">Přidat odřezek</button>`;
+    openSheet(title, body, null, footer, {
+      ...options,
+      restore: () => ak91OpenOfferDetail(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-move-offer-leftovers]")?.addEventListener("click", () => {
+      moveOfferLeftoversToNewOffer(id);
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+    els.sheet.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemSheet(id));
+    els.sheet.querySelectorAll("[data-reserve-offer-item]").forEach((button) => {
+      button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.reserveOfferItem, "", "confirmed"));
+    });
+    els.sheet.querySelectorAll("[data-alternate-offer-item]").forEach((button) => {
+      button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.alternateOfferItem, "", "alternate"));
+    });
+    els.sheet.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+      button.addEventListener("click", () => openOfferItemSheet(button.dataset.offerId, button.dataset.editOfferItem));
+    });
+    els.sheet.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+      button.addEventListener("click", () => deleteOfferItem(button.dataset.offerId, button.dataset.deleteOfferItem));
+    });
+    els.sheet.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+      button.addEventListener("click", () => openReservationSheet(button.dataset.offerId, button.dataset.itemId, button.dataset.editReservation));
+    });
+    els.sheet.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+      button.addEventListener("click", () => deleteReservation(button.dataset.offerId, button.dataset.itemId, button.dataset.deleteReservation));
+    });
+    resolvePhotos(els.sheet);
+  }
+
+  function ak91LatestStornoNote(order = {}) {
+    const cancelledNote = clean(order?.cancelledNote);
+    if (cancelledNote) return cancelledNote;
+    const latestLine = orderStornoLines(order)
+      .slice()
+      .reverse()
+      .find((entry) => clean(entry?.note));
+    return clean(latestLine?.note);
+  }
+
+  function ak91CustomerStornoMeta(customerId = "") {
+    const id = clean(customerId);
+    if (!id) return { count: 0, note: "", latest: null };
+    const orders = customerStornoOrders(id)
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    return {
+      count: orders.length,
+      note: latest ? ak91LatestStornoNote(latest) : "",
+      latest,
+    };
+  }
+
+  function ak91OrderStornoMeta(order = {}) {
+    const customerMeta = ak91CustomerStornoMeta(order?.customerId);
+    if (customerMeta.count) return customerMeta;
+    return {
+      count: orderHasStorno(order) ? 1 : 0,
+      note: ak91LatestStornoNote(order),
+      latest: orderHasStorno(order) ? order : null,
+    };
+  }
+
+  function ak91StornoMarkup(meta = {}) {
+    if (!meta.count) return "";
+    return [
+      `<span class="customer-storno-mobile">Pozor, stornuje${meta.count > 1 ? ` (${meta.count})` : ""}</span>`,
+      meta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(ak93DisplayText(meta.note))}</span>` : "",
+    ].filter(Boolean).join("");
+  }
+
+  function ak91RestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName).map((name) => ak93DisplayText(name)).filter(Boolean);
+    if (names.length) return names;
+    const linked = findById("varieties", clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    const fallbackName = ak93DisplayText(linked?.name || offer.restVarietyName);
+    return fallbackName ? [fallbackName] : [];
+  }
+
+  function ak91RestCustomerText(offer = {}) {
+    return ak93DisplayText(customerName(findCustomer(clean(offer.restCustomerId))), "Bez zákazníka");
+  }
+
+  function ak91OpenRestDetail(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    state.activeOfferId = id;
+    const names = ak91RestNames(offer);
+    const body = `<section class="offer-detail">
+      <div class="pill-row"><span class="pill warn">Resty</span></div>
+      <div class="rest-meta-stack">
+        <div class="rest-meta-card"><small>Datum</small><strong>${escapeHtml(formatDate(offer.date))}</strong></div>
+        <div class="rest-meta-card"><small>Zákazník</small><strong>${escapeHtml(ak91RestCustomerText(offer))}</strong></div>
+        ${names.length ? `<div class="rest-meta-card"><small>${names.length > 1 ? "Odrůdy" : "Odrůda"}</small><strong>${escapeHtml(names.join(", "))}</strong></div>` : ""}
+      </div>
+      ${clean(offer.note) ? `<div class="rest-meta-stack"><div class="rest-meta-card"><small>Poznámka</small><strong>${escapeHtml(ak93DisplayText(offer.note))}</strong></div></div>` : ""}
+    </section>`;
+    const footer = `<button class="button" type="button" data-close-sheet>Zavřít</button>
+      <button class="button" type="button" data-edit-offer-detail="${escapeHtml(id)}">Upravit resty</button>
+      <button class="button primary" type="button" data-create-offer-orders="${escapeHtml(id)}">Vytvořit objednávku</button>`;
+    openSheet(ak93DisplayText(offer.title, "Resty"), body, null, footer, {
+      ...options,
+      restore: () => ak91OpenOfferDetail(id, { replace: true }),
+    });
+    els.sheet.querySelector("[data-edit-offer-detail]")?.addEventListener("click", () => openOfferSheet(id, { type: "rests" }));
+    els.sheet.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(id));
+  }
+
+  function ak91RenderOfferCard(offer) {
+    if (isRestOffer(offer)) {
+      const names = ak91RestNames(offer);
+      const pills = names.slice(0, 4);
+      if (names.length > 4) pills.push(`+${names.length - 4} další`);
+      if (clean(offer.note)) pills.push({ label: ak93DisplayText(offer.note), className: "warn" });
+      return card({
+        id: offer.id,
+        type: "offer",
+        title: escapeHtml(ak93DisplayText(offer.title, "Resty")),
+        sub: [formatDate(offer.date), ak91RestCustomerText(offer)].filter(Boolean).join(" · "),
+        pills,
+        badges: [{ label: "Resty", className: "warn" }],
+        thumbText: "R",
+        actions: [["edit-offer", ak93Icons.edit], ["delete-offer", ak93Icons.delete]],
+      });
+    }
+
+    const items = sortedOfferItems(offer);
+    const reserved = offerReservedCount({ items });
+    const total = offerTotalCount({ items });
+    const available = offerAvailableCount({ items });
+    const alternates = offerAlternateCount({ items });
+    const coverImage = items.map((item) => offerItemImageSafe(item)).find(Boolean) || "";
+    const itemPills = items.slice(0, 4).map((item) => ak93OfferItemName(item));
+    if (items.length > 4) itemPills.push(`+${items.length - 4} další`);
+    const offerTitle = ak93DisplayText(offer.title, "Nabídka");
+    return card({
+      id: offer.id,
+      type: "offer",
+      title: escapeHtml(offerTitle),
+      sub: [formatDate(offer.date), ak93OfferTypeLabel(offer), ak91OfferStatusLabel(offer.status)].filter(Boolean).join(" · "),
+      pills: [
+        ...itemPills,
+        `Volné ${available}`,
+        `Rezervace ${reserved}/${total}`,
+        alternates ? `Náhradníci ${alternates}` : "",
+      ].filter(Boolean),
+      thumb: coverImage,
+      thumbText: initials(offerTitle || "N"),
+      actions: [["facebook-offer", ak93Icons.share], ["edit-offer", ak93Icons.edit], ["delete-offer", ak93Icons.delete]],
+    });
+  }
+
+  function ak91RenderOffers() {
+    const offers = (Array.isArray(state.data.offers) ? state.data.offers : [])
+      .filter((offer) => {
+        try {
+          return ak91MatchOffer(offer);
+        } catch (error) {
+          console.error("AK91 offer filter failed", error, offer);
+          return true;
+        }
+      })
+      .slice()
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    if (!offers.length) return empty("Žádné nabídky.");
+    const groups = splitOffersByType(offers);
+    const renderGroup = (label, items) => {
+      if (!items.length) return "";
+      return `<div class="card-group-heading">${escapeHtml(label)}</div>${items.map((offer) => {
+        try {
+          return ak91RenderOfferCard(offer);
+        } catch (error) {
+          console.error("AK91 offer card failed", error, offer);
+          return card({
+            id: clean(offer?.id) || uid(),
+            type: "offer",
+            title: clean(offer?.title) || "Nabídka",
+            sub: [formatDate(offer?.date), ak91OfferStatusLabel(offer?.status)].filter(Boolean).join(" · "),
+            thumbText: initials(clean(offer?.title) || "N"),
+            actions: [["edit-offer", ak93Icons.edit], ["delete-offer", ak93Icons.delete]],
+          });
+        }
+      }).join("")}`;
+    };
+    return [renderGroup("Nabídky", groups.offers), renderGroup("Resty", groups.rests)].filter(Boolean).join("");
+  }
+
+  function ak91StatusKey(value) {
+    const raw = clean(value);
+    const exact = {
+      "novĂˇ": "new",
+      "pĹ™ipraveno": "prepared",
+      "pĹ™ipravenĂˇ": "prepared",
+      "odeslĂˇno": "shipped",
+      "odeslanĂˇ": "shipped",
+      "ÄŤekĂˇ": "waiting",
+      "zveĹ™ejnÄ›nĂˇ": "published",
+      "uzavĹ™enĂˇ": "closed",
+      zaplaceno: "paid",
+    };
+    if (exact[raw]) return exact[raw];
+    const normalized = normalize(clean(value)).replace(/[^a-z0-9]+/g, "");
+    if (!normalized) return "";
+    if (normalized.startsWith("nova")) return "new";
+    if (normalized.startsWith("pripraven")) return "prepared";
+    if (normalized.startsWith("odeslan")) return "shipped";
+    if (normalized.startsWith("zaplacen")) return "paid";
+    if (normalized.startsWith("cek")) return "waiting";
+    if (normalized.startsWith("zverejnen")) return "published";
+    if (normalized.startsWith("uzavren")) return "closed";
+    return normalized;
+  }
+
+  function ak91OfferStatusLabel(value) {
+    return {
+      prepared: "Připravená",
+      published: "Zveřejněná",
+      closed: "Uzavřená",
+    }[ak91StatusKey(value)] || clean(value) || "Připravená";
+  }
+
+  function ak91ShippingStatusLabel(value) {
+    return {
+      new: "Nová",
+      prepared: "Připravená",
+      shipped: "Odeslaná",
+      paid: "Hotovo",
+    }[ak91StatusKey(value)] || clean(value) || "Nová";
+  }
+
+  function ak91PaymentStatusLabel(value) {
+    return ak91StatusKey(value) === "paid" ? "Zaplaceno" : "Čeká";
+  }
+
+  function ak91SummaryMeta() {
+    return {
+      offers: ["Nabídky", `${(state.data.offers || []).length} nabídek`, "Rychle vytvoříš nabídku a rezervace."],
+      orders: ["Objednávky", `${(state.data.orders || []).length} objednávek`, "Platby, doprava a text zákazníkovi po ruce."],
+      customers: ["Zákazníci", `${(state.data.customers || []).length} kontaktů`, ""],
+      varieties: ["Odrůdy", `${(state.data.varieties || []).length} odrůd`, "Fotky a ceny v Kč."],
+      crosses: ["Křížení", `${(state.data.crosses || []).length} záznamů`, ""],
+      sync: ["Nastavení", loadSyncConfig().autoSync ? "Sync zapnutý" : "Sync vypnutý", "Soukromý cloud, fotky a základní nastavení aplikace."],
+    }[state.view] || ["Přehled", "", ""];
+  }
+
+  function ak91RenderSummary() {
+    if (!els.summary) return;
+    const summary = ak91SummaryMeta();
+    els.summary.innerHTML = `<div><span>${escapeHtml(summary[0])}</span><strong>${escapeHtml(summary[1])}</strong></div>${summary[2] ? `<p>${escapeHtml(summary[2])}</p>` : ""}`;
+  }
+
+  function ak91RenderFilters() {
+    if (!els.filterRow) return;
+    const filters = {
+      offers: [],
+      orders: [["all", "Vše"], ["todo", "K řešení"], ["done", "Hotovo"]],
+      customers: [["all", "Vše"], ["cz", "Česko"], ["foreign", "Zahraničí"]],
+      varieties: [["all", "Vše"], ["active", "Aktivní"], ["photo", "S fotkou"]],
+      crosses: [],
+      sync: [],
+    }[state.view] || [];
+    if (!filters.some(([value]) => value === state.filter)) state.filter = "all";
+    els.filterRow.innerHTML = filters.map(([value, label]) => `<button class="chip-button ${state.filter === value ? "active" : ""}" type="button" data-filter="${value}">${escapeHtml(label)}</button>`).join("");
+    els.filterRow.querySelectorAll("[data-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.filter = button.dataset.filter;
+        render();
+      });
+    });
+  }
+
+  function ak91MatchOffer(offer = {}) {
+    const offerStatus = ak91OfferStatusLabel(offer.status);
+    const isClosed = ak91StatusKey(offer.status) === "closed";
+    if (state.filter === "active" && isClosed) return false;
+    if (state.filter === "closed" && !isClosed) return false;
+    const items = sortedOfferItems(offer);
+    return matches([offer.title, offerTypeLabel(offer), offer.note, offerStatus, ...items.map((item) => offerItemNameSafe(item))]);
+  }
+
+  function ak91MatchOrder(order = {}) {
+    const paymentKey = ak91StatusKey(order.paymentStatus);
+    const shippingKey = ak91StatusKey(order.shippingStatus);
+    if (state.filter === "todo" && paymentKey === "paid" && ["shipped", "paid"].includes(shippingKey)) return false;
+    if (state.filter === "done" && !(paymentKey === "paid" && ["shipped", "paid"].includes(shippingKey))) return false;
+    return matches([customerName(findCustomer(order.customerId)), order.varietiesText, order.note, order.orderDate]);
+  }
+
+  function ak91PaymentPill(order = {}) {
+    return ak91PaymentStatusLabel(order.paymentStatus);
+  }
+
+  function ak91StatusPill(order = {}) {
+    return ak91ShippingStatusLabel(order.shippingStatus);
+  }
+
+  function ak91OrderPaymentTextPill(order = {}) {
+    return clean(order.paymentTextSentAt) ? "Text odeslán" : "";
+  }
+
+  function ak91FormatMoney(value, currency = "CZK") {
+    const amount = number(value);
+    if (!Number.isFinite(amount)) return "";
+    return `${new Intl.NumberFormat("cs-CZ", { maximumFractionDigits: currency === "CZK" ? 0 : 2 }).format(amount)} ${currency === "EUR" ? "EUR" : "Kč"}`;
+  }
+
+  function ak92RenderSync() {
+    const config = loadSyncConfig();
+    const session = loadSyncSession();
+    const loggedIn = Boolean(session.accessToken || session.refreshToken);
+    const settings = appSettings();
+    const loginFields = loggedIn
+      ? ""
+      : `<label class="field"><span>Email</span><input id="syncEmail" type="email" value="${escapeHtml(config.email)}" autocomplete="email"></label>
+    <label class="field"><span>Heslo k účtu</span><input id="syncLoginPassword" type="password" autocomplete="current-password"></label>
+    <label class="field"><span>Šifrovací heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmí se ztratit"></label>`;
+    return `<section class="sync-card">
+    <strong class="title">Soukromá appka</strong>
+    <p class="sub">${loggedIn ? "Přihlášeno. Sync běží automaticky na pozadí." : "Po přihlášení se ukáže obsah appky. Sync běží úsporně."}</p>
+    <input id="syncUrl" type="hidden" value="${escapeHtml(config.url)}">
+    <input id="syncAnon" type="hidden" value="${escapeHtml(config.anonKey)}">
+    ${loginFields}
+    <div class="two">
+      ${loggedIn ? `<button class="button" type="button" id="syncLogout">Odhlásit</button>` : `<button class="button primary" type="button" id="syncLogin">Přihlásit</button>`}
+    </div>
+    <small class="sub">${loggedIn ? "Obsah je odemčený." : "Obsah se zobrazí až po přihlášení."}</small>
+  </section>
+  <section class="sync-card">
+    <strong class="title">Poplatky</strong>
+    <div class="two">
+      <label class="field"><span>Zásilkovna ČR</span><input id="settingShippingCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeCz)}"></label>
+      <label class="field"><span>Zásilkovna SK</span><input id="settingShippingSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeSk)}"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Balíkovna</span><input id="settingPostal" inputmode="decimal" value="${escapeHtml(settings.postalFee)}"></label>
+      <label class="field"><span>Balné</span><input id="settingPacking" inputmode="decimal" value="${escapeHtml(settings.packingFee)}"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Zásilkovna na adresu ČR</span><input id="settingShippingAddressCz" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddressCz)}"></label>
+      <label class="field"><span>Zásilkovna na adresu Slovensko</span><input id="settingShippingAddressSk" inputmode="decimal" value="${escapeHtml(settings.shippingFeeAddressSk)}"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span>Dobírka ČR</span><input id="settingCodCz" inputmode="decimal" value="${escapeHtml(settings.codFeeCz)}"></label>
+      <label class="field"><span>Dobírka Slovensko</span><input id="settingCodSk" inputmode="decimal" value="${escapeHtml(settings.codFeeSk)}"></label>
+    </div>
+    <strong class="title small-title">Platba pro zákazníka</strong>
+    <label class="field"><span>Jméno a příjmení</span><input id="settingPaymentName" value="${escapeHtml(settings.paymentAccountName)}"></label>
+    <label class="field"><span>Číslo účtu</span><input id="settingPaymentAccount" value="${escapeHtml(settings.paymentAccountNumber)}"></label>
+    <label class="field"><span>IBAN</span><input id="settingPaymentIban" value="${escapeHtml(settings.paymentIban)}"></label>
+    <label class="field"><span>SWIFT / BIC</span><input id="settingPaymentSwift" value="${escapeHtml(settings.paymentSwift)}"></label>
+    <button class="button primary" type="button" id="saveAppSettings">Uložit nastavení</button>
+  </section>`;
+  }
+
+  function ak91UpdateSyncIndicator(status = "") {
+    if (!els.syncIndicator) return;
+    const config = loadSyncConfig();
+    const session = loadSyncSession();
+    const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
+    const time = last ? formatTime(last) : formatTime(new Date());
+    let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutý";
+    let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
+    if (status === "working") {
+      text = "Syncuji...";
+      stateClass = "working";
+    } else if (status === "error") {
+      text = "Sync chyba";
+      stateClass = "error";
+    } else if (hasPendingSync()) {
+      text = "Čeká na sync";
+      stateClass = "working";
+    }
+    els.syncIndicator.textContent = text;
+    els.syncIndicator.dataset.status = stateClass;
+  }
+
+  function ak91OrderTone(order = {}) {
+    const paymentKey = ak91StatusKey(order.paymentStatus);
+    const shippingKey = ak91StatusKey(order.shippingStatus);
+    if (ak91OrderStornoMeta(order).count || orderHasStorno(order)) return "reject";
+    if (paymentKey === "paid" && ["shipped", "paid"].includes(shippingKey)) return "done";
+    if (paymentKey === "paid") return "progress";
+    return "attention";
+  }
+
+  function ak91RenderOrders() {
+    const orders = (state.data.orders || [])
+      .filter(matchOrder)
+      .slice()
+      .sort((a, b) => String(b.orderDate || "").localeCompare(String(a.orderDate || "")));
+    if (!orders.length) return empty("Žádné objednávky.");
+    return orders.map((order) => {
+      const customer = findCustomer(order.customerId);
+      const stornoMeta = ak91OrderStornoMeta(order);
+      return card({
+        id: order.id,
+        type: "order",
+        tone: ak91OrderTone(order),
+        title: escapeHtml(ak93DisplayText(compactName(customerName(customer) || "Bez zákazníka"), "Bez zákazníka")),
+        sub: [formatDate(order.orderDate), ak93DisplayText(customer?.country)].filter(Boolean).join(" · ") + ak91StornoMarkup(stornoMeta),
+        price: formatMoney(orderFinalTotal(order), "CZK"),
+        pills: [
+          ...orderVarietyPreviewItems(order).slice(0, 5).map((item) => item.quantity > 1 ? `${ak93DisplayText(item.name)} · ${quantityText(item.quantity)} ks` : ak93DisplayText(item.name)),
+          ...orderOfferAlternateEntries(order).map((item) => ({
+            label: `Náhradník: ${item.quantity > 1 ? `${ak93DisplayText(item.name)} · ${quantityText(item.quantity)} ks` : ak93DisplayText(item.name)}`,
+            className: "danger order-alternate-preview-pill",
+          })),
+          ...orderStornoLines(order).map((item) => ({
+            label: `Storno: ${item.quantity > 1 ? `${ak93DisplayText(item.name)} · ${quantityText(item.quantity)} ks` : ak93DisplayText(item.name)}`,
+            className: "danger order-alternate-preview-pill",
+          })),
+        ],
+        badges: [
+          stornoMeta.count ? { label: `Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`, className: "danger" } : "",
+          orderHasStorno(order) ? { label: "Storno", className: "danger" } : "",
+          paymentPill(order),
+          statusPill(order),
+          orderPaymentTextPill(order),
+        ].filter(Boolean),
+        actions: [["copy-order", ak93Icons.copy], ["toggle-order-text-sent", ak93Icons.message], ["edit-order", ak93Icons.edit], ["delete-order", ak93Icons.delete]],
+      });
+    }).join("");
+  }
+
+  function ak91RenderCustomers() {
+    const customers = (state.data.customers || [])
+      .filter(matchCustomer)
+      .slice()
+      .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }));
+    if (!customers.length) return empty("Žádní zákazníci.");
+    return customers.map((customer) => {
+      const stornoMeta = ak91CustomerStornoMeta(customer.id);
+      return card({
+        id: customer.id,
+        type: "customer",
+        tone: stornoMeta.count ? "customer-storno-card" : "",
+        title: escapeHtml(ak93DisplayText(customerName(customer), "Bez zákazníka")),
+        sub: [customer.email, customer.phone, ak93DisplayText(customer.country)].filter(Boolean).join("<br>") + ak91StornoMarkup(stornoMeta),
+        pills: [...(customer.tags || []).map((tag) => ak93DisplayText(tag)), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        actions: [["order-customer", ak93Icons.add], ["edit-customer", ak93Icons.edit], ["delete-customer", ak93Icons.delete]],
+      });
+    }).join("");
+  }
+
+  function ak91OpenOfferDetail(id, options = {}) {
+    const offer = findById("offers", id);
+    if (!offer) return;
+    try {
+      if (isRestOffer(offer)) return ak91OpenRestDetail(id, options);
+      return ak93OpenStandardOfferDetail(id, options);
+    } catch (error) {
+      console.error("AK91 offer detail failed", error);
+      try {
+        if (isRestOffer(offer)) return openOfferSheet(id, { type: "rests" });
+        return openOfferSheet(id);
+      } catch (fallbackError) {
+        console.error("AK91 offer detail fallback failed", fallbackError);
+        toast(isRestOffer(offer) ? "Resty se nepodařilo otevřít." : "Nabídku se nepodařilo otevřít.");
+      }
+    }
+  }
+
+  function ak91HandleRowAction(action, id) {
+    if (action === "edit-order") return ak91OpenOrderSheet(id);
+    if (action === "order-customer") return ak91OpenOrderSheet("", id);
+    return handleRowAction(action, id);
+  }
+
+  function ak91HandleListClick(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const actionButton = target.closest("[data-action-row]");
+    if (actionButton && els.list.contains(actionButton)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      return ak91HandleRowAction(actionButton.dataset.actionRow || "", actionButton.dataset.id || "");
+    }
+
+    const cardEl = target.closest("[data-card]");
+    if (!cardEl || !els.list.contains(cardEl) || target.closest("button")) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+
+    const type = cardEl.dataset.card || "";
+    const id = cardEl.dataset.id || "";
+    if (type === "offer") return ak91OpenOfferDetail(id);
+    if (type === "order") return ak91OpenOrderSheet(id);
+    if (type === "customer") return openCustomerSheet(id);
+    if (type === "variety") return openVarietyDetailSheet(id);
+    if (type === "cross") return openCrossDetailSheet(id);
+  }
+
+  function ak91EnsureListHost() {
+    if (!els.list || els.list.dataset.ak91Host === "1") return;
+    const clone = els.list.cloneNode(false);
+    clone.dataset.ak91Host = "1";
+    els.list.replaceWith(clone);
+    els.list = clone;
+    els.list.addEventListener("click", ak91HandleListClick, true);
+  }
+
+  function ak91RunAction(action) {
+    if (action === "new-offer") return openOfferSheet();
+    if (action === "new-rest-offer") return openOfferSheet("", { type: "rests" });
+    if (action === "new-order") return ak91OpenOrderSheet();
+    if (action === "new-customer") return openCustomerSheet();
+    if (action === "new-variety") return openVarietySheet();
+    if (action === "new-cross") return openCrossSheet();
+  }
+
+  function ak91BindStaticButtons() {
+    document.querySelectorAll("[data-view], [data-action]").forEach((node) => {
+      if (!(node instanceof HTMLButtonElement)) return;
+      const clone = node.cloneNode(true);
+      node.replaceWith(clone);
+    });
+
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        openView(button.dataset.view || "offers");
+      }, true);
+    });
+
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        ak91RunAction(button.dataset.action || "");
+      }, true);
+    });
+  }
+
+  function ak91BindSyncButtons() {
+    const bindClick = (selector, handler) => {
+      const node = document.querySelector(selector);
+      if (node) node.onclick = handler;
+    };
+    bindClick("#syncLogin", loginSync);
+    bindClick("#syncLogout", logoutSync);
+    bindClick("#syncPush", () => pushSync());
+    bindClick("#syncPull", () => pullSync());
+    bindClick("#syncAuto", toggleAutoSync);
+    ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
+      const node = document.querySelector(`#${id}`);
+      if (node) node.oninput = saveSyncConfigFromInputs;
+    });
+    const settingsButton = document.querySelector("#saveAppSettings");
+    if (settingsButton) settingsButton.onclick = saveAppSettingsFromInputs;
+  }
+
+  renderOffers = ak91RenderOffers;
+  renderOrders = ak91RenderOrders;
+  renderCustomers = ak91RenderCustomers;
+  renderVarieties = ak93RenderVarieties;
+  renderCrosses = ak93RenderCrosses;
+  renderSummary = ak91RenderSummary;
+  renderFilters = ak91RenderFilters;
+  renderSync = ak92RenderSync;
+  matchOffer = ak91MatchOffer;
+  matchOrder = ak91MatchOrder;
+  paymentPill = ak91PaymentPill;
+  statusPill = ak91StatusPill;
+  orderPaymentTextPill = ak91OrderPaymentTextPill;
+  formatMoney = ak91FormatMoney;
+  updateSyncIndicator = ak91UpdateSyncIndicator;
+  openOfferDetailSheet = ak91OpenOfferDetail;
+  runAction = ak91RunAction;
+  bindListActions = function bindListActionsAK91() {
+    ak91BindSyncButtons();
+  };
+
+  render = function renderAK91() {
+    if (!isSyncLoggedIn()) state.view = "sync";
+    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
+
+    try {
+      renderFilters();
+    } catch (error) {
+      console.error("AK91 renderFilters failed", error);
+      if (els.filterRow) els.filterRow.innerHTML = "";
+    }
+
+    try {
+      renderSummary();
+    } catch (error) {
+      console.error("AK91 renderSummary failed", error);
+      if (els.summary) els.summary.innerHTML = "";
+    }
+
+    const renderers = {
+      offers: renderOffers,
+      orders: renderOrders,
+      customers: renderCustomers,
+      varieties: renderVarieties,
+      crosses: renderCrosses,
+      sync: renderSync,
+    };
+
+    els.list.innerHTML = "";
+    try {
+      els.list.innerHTML = renderers[state.view]?.() || "";
+    } catch (error) {
+      console.error("AK91 section render failed", error);
+      els.list.innerHTML = empty("Tahle sekce se nepodařila otevřít.");
+    }
+
+    try {
+      resolvePhotos(els.list);
+    } catch (error) {
+      console.error("AK91 resolvePhotos failed", error);
+    }
+
+    try {
+      bindListActions();
+    } catch (error) {
+      console.error("AK91 bindListActions failed", error);
+    }
+
+    try {
+      updateSyncIndicator();
+    } catch (error) {
+      console.error("AK91 updateSyncIndicator failed", error);
+    }
+  };
+
+  openView = function openViewAK91(view) {
+    const nextView = ["offers", "orders", "customers", "varieties", "crosses", "sync"].includes(view) ? view : "offers";
+    if (!isSyncLoggedIn() && nextView !== "sync") {
+      state.view = "sync";
+      render();
+      toast("Nejdřív se přihlas.");
+      return;
+    }
+    state.view = nextView;
+    state.filter = "all";
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === nextView));
+    if (els.search) els.search.value = "";
+    state.query = "";
+    closeSheet({ all: true });
+    render();
+  };
+
+  globalThis.__akOpenOrderSheetFinal = ak91OpenOrderSheet;
+  globalThis.__akRenderCustomersFinal = ak91RenderCustomers;
+  globalThis.__akRenderOrdersFinal = ak91RenderOrders;
+  globalThis.__akMobileRuntimeFinal93 = true;
+
+  ak93EnsureSheetObserver();
+  ak91EnsureListHost();
+  ak91BindStaticButtons();
+  render();
+  setTimeout(() => render(), 0);
+})();

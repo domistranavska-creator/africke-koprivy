@@ -12,6 +12,10 @@ const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
 const SUPABASE_THUMB_DIR = "_nahledy_v2";
 const SUPABASE_THUMB_MAX_SIZE = 520;
 const SUPABASE_THUMB_QUALITY = 0.82;
+const SUPABASE_SYNC_PULL_INTERVAL_MS = 2 * 60 * 1000;
+const SUPABASE_SYNC_PULL_MIN_GAP_MS = 30 * 1000;
+const SUPABASE_PHOTO_LAZY_MARGIN_PX = 600;
+const SUPABASE_PHOTO_OBSERVER_ROOT_MARGIN = "600px 0px";
 const PHOTO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const PHOTO_MAX_UPLOAD_EDGE = 3200;
 const PHOTO_UPLOAD_QUALITY_STEPS = [0.9, 0.86, 0.82, 0.78, 0.74];
@@ -50,6 +54,8 @@ const photoRuntime = {
   indexedObjectUrls: new Map(),
   indexedPreviewUrls: new Map(),
   supabaseSignedUrls: new Map(),
+  supabaseObserver: null,
+  deferredSupabaseLoads: new WeakMap(),
 };
 
 const paymentLabels = {
@@ -195,6 +201,7 @@ const state = {
   supabaseSyncDirty: false,
   supabaseSyncRunning: false,
   supabasePullRunning: false,
+  lastSupabaseAutoPullAt: 0,
   supabaseSyncMuted: false,
   syncEncryptionPassword: clean(localStorage.getItem(SUPABASE_SYNC_PASSWORD_KEY)),
   syncEncryptionVerifiedPassword: "",
@@ -236,7 +243,8 @@ const els = {
   defaultShippingFeeCz: document.querySelector("#defaultShippingFeeCz"),
   defaultShippingFeeSk: document.querySelector("#defaultShippingFeeSk"),
   defaultPostalFee: document.querySelector("#defaultPostalFee"),
-  defaultShippingFeeAddress: document.querySelector("#defaultShippingFeeAddress"),
+  defaultShippingFeeAddressCz: document.querySelector("#defaultShippingFeeAddressCz"),
+  defaultShippingFeeAddressSk: document.querySelector("#defaultShippingFeeAddressSk"),
   defaultPackingFee: document.querySelector("#defaultPackingFee"),
   defaultCodFeeCz: document.querySelector("#defaultCodFeeCz"),
   defaultCodFeeSk: document.querySelector("#defaultCodFeeSk"),
@@ -286,6 +294,7 @@ const els = {
   orderForm: document.querySelector("#orderForm"),
   orderDialogTitle: document.querySelector("#orderDialogTitle"),
   orderAlternateBlock: document.querySelector("#orderAlternateBlock"),
+  orderStornoBlock: document.querySelector("#orderStornoBlock"),
   orderAdvancedDetails: document.querySelector("#orderAdvancedDetails"),
   currencyRateHint: document.querySelector("#currencyRateHint"),
   loadOrderRateBtn: document.querySelector("#loadOrderRateBtn"),
@@ -410,10 +419,12 @@ function init() {
   document.querySelector("#addVarietyTopBtn").addEventListener("click", () => openVarietyDialog());
   document.querySelector("#addCrossTopBtn")?.addEventListener("click", () => openCrossDialog());
   document.querySelector("#addOfferTopBtn").addEventListener("click", () => openOfferDialog());
+  document.querySelector("#addRestOfferTopBtn")?.addEventListener("click", () => openOfferDialog(null, { type: "rests" }));
   document.querySelector("#addOrderTopBtn").addEventListener("click", () => openOrderDialog());
   document.querySelector("#addOrderBtn")?.addEventListener("click", () => openOrderDialog());
   document.querySelector("#addCrossBtn")?.addEventListener("click", () => openCrossDialog());
   document.querySelector("#addOfferBtn").addEventListener("click", () => openOfferDialog());
+  document.querySelector("#addRestOfferBtn")?.addEventListener("click", () => openOfferDialog(null, { type: "rests" }));
   els.commandPaletteBtn?.addEventListener("click", () => openCommandPalette());
   els.commandPaletteTopBtn?.addEventListener("click", () => openCommandPalette());
   els.installAppBtn?.addEventListener("click", installPwaApp);
@@ -671,6 +682,7 @@ function init() {
     renderOrderExtraFeeFields(undefined, { preserveValues: true });
     updateOrderAdvancedSummary();
     syncOrderAlternateBlock();
+    syncOrderRestWarningBlock();
     refreshOrderPricingPreview();
   });
   els.orderForm.elements.paymentStatus.addEventListener("change", handleOrderPaymentStatusChange);
@@ -703,6 +715,7 @@ function init() {
   });
   els.orderForm.elements.varietiesText.addEventListener("input", () => {
     autoCalculateOrderPrice({ silent: true });
+    renderOrderStornoBlock();
   });
   els.orderForm.querySelectorAll('input[name="currency"]').forEach((input) => {
     input.addEventListener("change", () => {
@@ -723,8 +736,8 @@ function init() {
   window.addEventListener("beforeunload", handleWindowBeforeUnload);
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
-  window.addEventListener("focus", maybeAutoPullSupabaseSync);
-  window.setInterval(maybeAutoPullSupabaseSync, 8000);
+  window.addEventListener("focus", () => maybeAutoPullSupabaseSync({ force: true }));
+  window.setInterval(() => maybeAutoPullSupabaseSync(), SUPABASE_SYNC_PULL_INTERVAL_MS);
   document.addEventListener("keydown", handleGlobalHotkeys);
   els.varietyUsageFilter.addEventListener("change", (event) => {
     state.varietyUsageFilter = event.target.value;
@@ -1389,6 +1402,12 @@ function buildCommandPaletteItems() {
       run: () => openOfferDialog(),
     },
     {
+      title: "Nové resty",
+      meta: "Akce · zbytky a poznámky",
+      keywords: "resty zbytky zbytek doplnky",
+      run: () => openOfferDialog(null, { type: "rests" }),
+    },
+    {
       title: "Přehled zisku",
       meta: "Sekce · dashboard",
       keywords: "zisk dashboard prehled overview",
@@ -1554,10 +1573,13 @@ function renderCustomers() {
     ? customers
         .map((customer) => {
           const lastOrder = latestOrderForCustomer(customer.id);
-          return `<tr class="${customer.id === state.selectedCustomerId ? "selected" : ""}" data-customer-row="${customer.id}">
+          const stornoMeta = customerStornoMeta(customer.id);
+          return `<tr class="${[customer.id === state.selectedCustomerId ? "selected" : "", stornoMeta.count ? "customer-row-storno" : ""].filter(Boolean).join(" ")}" data-customer-row="${customer.id}">
             <td>
               <span class="cell-main">${escapeHtml(customerName(customer))}</span>
               <span class="cell-sub">${escapeHtml([customer.fbName ? `FB: ${customer.fbName}` : "", customerRatingLabel(customer)].filter(Boolean).join(" · ") || customer.note || "")}</span>
+              ${stornoMeta.count ? `<span class="customer-storno-warning">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>` : ""}
+              ${stornoMeta.note ? `<span class="customer-storno-note">${escapeHtml(shortRestText(stornoMeta.note, 92))}</span>` : ""}
             </td>
             <td>
               <span class="cell-main">${escapeHtml(customer.email || customer.phone || "")}</span>
@@ -2017,10 +2039,12 @@ function customerVarietyStats(orders) {
 function renderOrderVarietyLinks(order) {
   const items = orderVarietyPreviewItems(order);
   const alternates = orderOfferAlternateEntries(order);
-  if (!items.length && !alternates.length) return `<small>${escapeHtml(order.varietiesText || "Bez odrůd")}</small>`;
+  const stornoEntries = orderStornoLines(order);
+  if (!items.length && !alternates.length && !stornoEntries.length) return `<small>${escapeHtml(order.varietiesText || "Bez odrůd")}</small>`;
   return `<div class="variety-links">${items
     .map((item) => `<button class="variety-link" type="button" data-open-variety-name="${escapeHtml(item.name)}">${escapeHtml(item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name)}</button>`)
     .concat(alternates.map((item) => `<span class="variety-link order-alternate-preview">⚠ ${escapeHtml(item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name)}</span>`))
+    .concat(stornoEntries.map((item) => `<span class="variety-link order-storno-preview">✕ ${escapeHtml(item.quantity > 1 ? `${item.name} · ${quantityText(item.quantity)} ks` : item.name)}</span>`))
     .join("")}</div>`;
 }
 
@@ -2037,6 +2061,7 @@ function renderCustomerOrderHistoryItem(order) {
       ${noteLine ? `<small>${escapeHtml(noteLine)}</small>` : ""}
     </div>
     <span class="order-statuses">
+      ${orderHasStorno(order) ? '<span class="pill warning">Storno</span>' : ""}
       ${statusPill(order.paymentStatus, paymentLabels[order.paymentStatus])}
       ${shippingPill(order.shippingStatus, shippingLabels[order.shippingStatus])}
       <button class="mini-button" type="button" title="Upravit objednávku" data-edit-detail-order="${order.id}">✎</button>
@@ -2081,6 +2106,7 @@ function focusOrdersForCustomerVariety(customerId, varietyName) {
 }
 
 function orderRowToneClass(order) {
+  if (orderHasStorno(order) || customerStornoOrders(order?.customerId).length) return "order-tone-storno";
   const paymentStatus = parsePaymentStatus(order?.paymentStatus);
   const shippingStatus = normalizeShippingStatus(order?.shippingStatus);
   if (paymentStatus === "zaplaceno" && ["odesláno", "zaplaceno"].includes(shippingStatus)) return "order-tone-complete";
@@ -2125,6 +2151,8 @@ function renderOrders() {
             </td>
             <td class="order-status-cell">
               <span class="order-statuses">
+                ${customerStornoOrders(order.customerId).length ? '<span class="pill danger">Stornuje</span>' : ""}
+                ${orderHasStorno(order) ? '<span class="pill warning">Storno</span>' : ""}
                 ${statusPill(order.paymentStatus, paymentLabels[order.paymentStatus])}
                 ${shippingPill(order.shippingStatus, shippingLabels[order.shippingStatus])}
                 ${orderPaymentTextPill(order)}
@@ -2562,42 +2590,53 @@ function renderOffers() {
     state.selectedOfferId = offers[0]?.id || null;
   }
 
-  els.offersTable.innerHTML = offers.length
-    ? offers
-        .map((offer) => {
-          const confirmed = offerConfirmedCount(offer);
-          const alternates = offerAlternateCount(offer);
-          const available = offerAvailableCount(offer);
-          return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
-            <td class="offer-main-cell">
-              <div class="offer-mobile-card">
-                <strong>${escapeHtml(offer.title)}</strong>
-                <small>${formatDate(offer.date)}</small>
-                <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
-                <div class="offer-mobile-stats">
-                  <span><small>Položky</small><b>${offer.items.length}</b></span>
-                  <span><small>Volné</small><b>${available}</b></span>
-                  <span><small>Rezervace</small><b>${confirmed}</b></span>
-                </div>
+  const groups = splitOffersByType(offers);
+  const renderOfferRows = (items, heading) => {
+    if (!items.length) return "";
+    return `
+      <tr class="table-section-row"><td colspan="5">${escapeHtml(heading)}</td></tr>
+      ${items.map((offer) => {
+        const confirmed = offerConfirmedCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const available = offerAvailableCount(offer);
+        return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+          <td class="offer-main-cell">
+            <div class="offer-mobile-card">
+              <strong>${escapeHtml(offer.title)}</strong>
+              <small>${formatDate(offer.date)} · ${escapeHtml(offerTypeLabel(offer))}</small>
+              ${isRestOffer(offer) ? '<span class="pill warning">Resty/poznámky</span>' : ""}
+              <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+              <div class="offer-mobile-stats">
+                <span><small>Položky</small><b>${offer.items.length}</b></span>
+                <span><small>Volné</small><b>${available}</b></span>
+                <span><small>Rezervace</small><b>${confirmed}</b></span>
               </div>
-              <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}</span>
-              <span class="cell-sub offer-desktop-sub">${formatDate(offer.date)}</span>
-            </td>
-            <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
-            <td>${offer.items.length}</td>
-            <td>
-              <span class="cell-main">${confirmed}</span>
-              <span class="cell-sub">${[`Volné ${available}`, alternates ? `Náhradníci ${alternates}` : ""].filter(Boolean).join(" · ")}</span>
-            </td>
-            <td>
-              <span class="row-actions">
-                <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">✎</button>
-                <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">×</button>
-              </span>
-            </td>
-          </tr>`;
-        })
-        .join("")
+            </div>
+            <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}${isRestOffer(offer) ? ' <span class="pill warning">Resty/poznámky</span>' : ""}</span>
+            <span class="cell-sub offer-desktop-sub">${formatDate(offer.date)} · ${escapeHtml(offerTypeLabel(offer))}</span>
+          </td>
+          <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
+          <td>${offer.items.length}</td>
+          <td>
+            <span class="cell-main">${confirmed}</span>
+            <span class="cell-sub">${[`Volné ${available}`, alternates ? `Náhradníci ${alternates}` : ""].filter(Boolean).join(" · ")}</span>
+          </td>
+          <td>
+            <span class="row-actions">
+              <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">✎</button>
+              <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">×</button>
+            </span>
+          </td>
+        </tr>`;
+      }).join("")}
+    `;
+  };
+
+  els.offersTable.innerHTML = offers.length
+    ? [
+        renderOfferRows(groups.offers, "Nabídky"),
+        renderOfferRows(groups.rests, "Resty/poznámky"),
+      ].filter(Boolean).join("")
     : `<tr><td colspan="5">${emptyState("Žádná nabídka.")}</td></tr>`;
 
   els.offersTable.querySelectorAll("[data-offer-row]").forEach((row) => {
@@ -2624,15 +2663,23 @@ function renderOfferDetail() {
   }
   state.selectedOfferId = offer.id;
   const items = sortedOfferItems(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty/poznámky" : "Upravit nabídku";
+  const toggleTypeLabel = isRestOffer(offer) ? "Přesunout do nabídek" : "Přesunout do restů/poznámek";
 
   els.offerDetail.innerHTML = `
     <div class="detail-header">
       <div>
         <h2>${escapeHtml(offer.title)}</h2>
-        <p class="fb-name">${formatDate(offer.date)} · ${escapeHtml(offer.status)}</p>
+        <div class="pills">
+          <span class="pill">${escapeHtml(offerTypeLabel(offer))}</span>
+          <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+        </div>
+        <p class="fb-name">${formatDate(offer.date)}</p>
         ${offer.note ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : ""}
       </div>
       <div class="detail-actions">
+        <button class="button ghost" type="button" data-edit-offer="${offer.id}">${editLabel}</button>
+        <button class="button ghost" type="button" data-toggle-offer-type="${offer.id}">${toggleTypeLabel}</button>
         <button class="button primary" type="button" data-add-offer-item="${offer.id}">Přidat odřezek</button>
         <button class="button ghost" type="button" data-facebook-offer="${offer.id}">Facebook</button>
         <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvořit objednávky</button>
@@ -2653,6 +2700,10 @@ function renderOfferDetail() {
     </section>
   `;
 
+  els.offerDetail.querySelector("[data-edit-offer]").addEventListener("click", () => openOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-toggle-offer-type]").addEventListener("click", () => {
+    setOfferType(offer.id, isRestOffer(offer) ? "offer" : "rests");
+  });
   els.offerDetail.querySelector("[data-add-offer-item]").addEventListener("click", () => openOfferItemDialog(offer.id));
   els.offerDetail.querySelector("[data-facebook-offer]").addEventListener("click", () => openFacebookOfferDialog(offer.id));
   els.offerDetail.querySelector("[data-create-offer-orders]").addEventListener("click", () => createOrdersFromOffer(offer.id));
@@ -2675,6 +2726,997 @@ function renderOfferDetail() {
   });
   hydrateLocalPhotoImages(els.offerDetail);
 }
+
+(function finalizeDesktopRestMode() {
+  function looksLikeLegacyRestOffer(offer = {}) {
+    const title = clean(offer.title);
+    if (!/^Resty(?:\/pozn.*)?/i.test(title)) return false;
+    return Boolean(clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName) || clean(offer.note));
+  }
+
+  function desktopRestVarietyNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findVariety(clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function desktopRestCustomerText(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez z\u00e1kazn\u00edka";
+  }
+
+  function desktopRestCustomerOptions(selectedId = "") {
+    return [`<option value="">Bez z\u00e1kazn\u00edka</option>`].concat(
+      [...state.data.customers]
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(selectedId) === clean(customer.id) ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+    ).join("");
+  }
+
+  function desktopRestNotePreview(offer = {}, max = 72) {
+    return clean(offer.note) ? `<small>${escapeHtml(shortRestText(offer.note, max))}</small>` : "";
+  }
+
+  function syncDesktopRestDate(form) {
+    if (!form || !isRestOffer({ type: form.elements.type?.value, title: form.elements.title?.value, note: form.elements.note?.value })) return;
+    const nextDate = clean(form.elements.date?.value) || toDateInput(new Date());
+    form.elements.title.value = defaultOfferTitle("rests", nextDate);
+    form.elements.facebookPublishDate.value = nextDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "p\u0159ipraven\u00e1";
+  }
+
+  const previousOpenOfferDialog = openOfferDialog;
+  const previousSaveOfferFromForm = saveOfferFromForm;
+  const previousRenderOfferDetail = renderOfferDetail;
+
+  isRestOffer = function isRestOfferFinal(offer) {
+    return normalizeOfferType(offer?.type) === "rests" || looksLikeLegacyRestOffer(offer);
+  };
+
+  offerTypeLabel = function offerTypeLabelFinal(offerOrType) {
+    if (typeof offerOrType === "string") return normalizeOfferType(offerOrType) === "rests" ? "Resty" : "Nab\u00eddka";
+    return isRestOffer(offerOrType) ? "Resty" : "Nab\u00eddka";
+  };
+
+  restOfferVarietyLabel = function restOfferVarietyLabelFinal(offer = {}) {
+    return desktopRestVarietyNames(offer).join(", ");
+  };
+
+  restOfferSummaryText = function restOfferSummaryTextFinal(offer = {}) {
+    return [desktopRestCustomerText(offer), restOfferVarietyLabel(offer)].filter(Boolean).join(" \u00b7 ");
+  };
+
+  renderRestMetaPanel = function renderRestMetaPanelFinal(offer = {}) {
+    if (!isRestOffer(offer)) return "";
+    const names = desktopRestVarietyNames(offer);
+    const meta = [
+      { label: "Z\u00e1kazn\u00edk", value: desktopRestCustomerText(offer) },
+      { label: names.length > 1 ? "Odr\u016fdy" : "Odr\u016fda", value: names.join(", ") },
+    ].filter((entry) => clean(entry.value));
+    if (!meta.length) return "";
+    return `<section class="rest-meta-panel"><div class="rest-meta-grid">${meta.map((entry) => `<div class="rest-meta-item"><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}</div></section>`;
+  };
+
+  syncOfferRestFieldsVisibility = function syncOfferRestFieldsVisibilityFinal() {
+    const form = els.offerForm;
+    if (!form) return;
+    const isRest = isRestOffer({ type: form.elements.type?.value, title: form.elements.title?.value, note: form.elements.note?.value });
+    const restBlock = form.querySelector("[data-rest-offer-fields]");
+    const titleField = form.elements.title?.closest("label");
+    const dateField = form.elements.date?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const statusField = form.querySelector(".offer-status-field");
+    const optionalDivider = form.querySelector(".form-divider");
+    const noteField = form.elements.note?.closest("label");
+    const setVisible = (node, visible) => {
+      if (!node) return;
+      node.hidden = false;
+      node.style.display = visible ? "" : "none";
+    };
+    setVisible(titleField, !isRest);
+    setVisible(dateField, true);
+    setVisible(facebookDateField, !isRest);
+    setVisible(facebookTimeField, !isRest);
+    setVisible(statusField, !isRest);
+    setVisible(optionalDivider, !isRest);
+    setVisible(noteField, true);
+    if (restBlock) {
+      restBlock.hidden = !isRest;
+      restBlock.style.display = isRest ? "" : "none";
+    }
+    if (isRest) {
+      syncDesktopRestDate(form);
+      setupRestVarietyPickerForOfferForm(form, form.elements.restVarietyName?.value || "");
+    }
+  };
+
+  openOfferDialog = function openOfferDialogFinal(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const initialIsRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults.type) === "rests";
+    if (!initialIsRest) return previousOpenOfferDialog(id, defaults);
+    const form = els.offerForm;
+    const initialDate = clean(offer?.date || defaults.date) || toDateInput(new Date());
+    const names = desktopRestVarietyNames(offer);
+    const singleVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    els.offerDialogTitle.textContent = offer ? "Upravit resty" : "Nov\u00e9 resty";
+    form.reset();
+    form.elements.id.value = offer?.id || "";
+    form.elements.type.value = "rests";
+    form.elements.title.value = defaultOfferTitle("rests", initialDate);
+    form.elements.date.value = initialDate;
+    form.elements.facebookPublishDate.value = initialDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "p\u0159ipraven\u00e1";
+    form.elements.note.value = offer?.note || "";
+    form.elements.restCustomerId.innerHTML = desktopRestCustomerOptions(offer?.restCustomerId || defaults.restCustomerId || "");
+    form.elements.restCustomerId.value = clean(offer?.restCustomerId || defaults.restCustomerId);
+    form.elements.restVarietyId.value = clean(singleVariety?.id || offer?.restVarietyId);
+    form.elements.restVarietyName.value = names.join("\n");
+    syncOfferStatusToggle();
+    setupRestVarietyPickerForOfferForm(form, names.join("\n"));
+    syncOfferRestFieldsVisibility();
+    const onDateChange = () => syncOfferRestFieldsVisibility();
+    form.elements.date.oninput = onDateChange;
+    form.elements.date.onchange = onDateChange;
+    showDialog(els.offerDialog);
+  };
+
+  saveOfferFromForm = function saveOfferFromFormFinal() {
+    const formEl = els.offerForm;
+    const shouldSaveAsRest = isRestOffer({
+      type: formEl?.elements?.type?.value,
+      title: formEl?.elements?.title?.value,
+      restCustomerId: formEl?.elements?.restCustomerId?.value,
+      restVarietyName: formEl?.elements?.restVarietyName?.value,
+      note: formEl?.elements?.note?.value,
+    });
+    if (!shouldSaveAsRest) return previousSaveOfferFromForm();
+    if (!formEl.reportValidity()) return;
+    const form = new FormData(formEl);
+    const id = form.get("id") || uid();
+    const existing = findOffer(id);
+    const now = new Date().toISOString();
+    const nextDate = clean(form.get("date")) || toDateInput(new Date());
+    const names = restFormVarietyNames(form.get("restVarietyName"));
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    const offer = normalizeOffer({
+      ...existing,
+      id,
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "p\u0159ipraven\u00e1",
+      note: clean(form.get("note")),
+      restCustomerId: clean(form.get("restCustomerId")),
+      restVarietyId: clean(matchedVariety?.id),
+      restVarietyName: names.join("\n"),
+      items: existing?.items || [],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    });
+    if (existing) Object.assign(existing, offer);
+    else state.data.offers.push(offer);
+    state.selectedOfferId = offer.id;
+    saveData();
+    renderAll();
+    els.offerDialog.close();
+    toast("Resty ulo\u017eeny.");
+  };
+
+  renderOffers = function renderOffersFinal() {
+    const offers = filteredOffers();
+    if (!state.selectedOfferId && offers[0]) state.selectedOfferId = offers[0].id;
+    if (state.selectedOfferId && !offers.some((offer) => offer.id === state.selectedOfferId)) {
+      state.selectedOfferId = offers[0]?.id || null;
+    }
+
+    const groups = splitOffersByType(offers);
+    const renderOfferRows = (items, heading, groupType) => {
+      if (!items.length) return "";
+      return `
+        <tr class="table-section-row"><td colspan="5">${escapeHtml(heading)}</td></tr>
+        ${items.map((offer) => {
+          if (groupType === "rests") {
+            const restNames = desktopRestVarietyNames(offer);
+            const restLabel = restNames.length ? shortRestText(restNames.join(", "), 72) : "";
+            const customerText = desktopRestCustomerText(offer);
+            return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+              <td class="offer-main-cell">
+                <div class="offer-mobile-card">
+                  <strong>${escapeHtml(offer.title)}</strong>
+                  <small>${escapeHtml([formatDate(offer.date), customerText].join(" \u00b7 "))}</small>
+                  <span class="pill warning">Resty</span>
+                  ${restLabel ? `<small>${escapeHtml(restLabel)}</small>` : ""}
+                  ${desktopRestNotePreview(offer, 62)}
+                </div>
+                <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)} <span class="pill warning">Resty</span></span>
+                <span class="cell-sub offer-desktop-sub">${escapeHtml([formatDate(offer.date), customerText].join(" \u00b7 "))}</span>
+                ${restLabel ? `<span class="cell-sub">${escapeHtml(restLabel)}</span>` : ""}
+                ${desktopRestNotePreview(offer, 88)}
+              </td>
+              <td><span class="cell-sub">-</span></td>
+              <td>
+                <span class="cell-main">${restNames.length || "\u2014"}</span>
+                ${restNames.length ? `<span class="cell-sub">odrůd</span>` : ""}
+              </td>
+              <td>
+                <span class="cell-main">${escapeHtml(customerText)}</span>
+                <span class="cell-sub">${escapeHtml(clean(offer.note) ? shortRestText(offer.note, 48) : "Bez rezervac\u00ed")}</span>
+              </td>
+              <td>
+                <span class="row-actions">
+                  <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">\u270e</button>
+                  <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">\u00d7</button>
+                </span>
+              </td>
+            </tr>`;
+          }
+
+          const confirmed = offerConfirmedCount(offer);
+          const alternates = offerAlternateCount(offer);
+          const available = offerAvailableCount(offer);
+          const itemCount = Array.isArray(offer.items) ? offer.items.length : 0;
+          const metaLine = [formatDate(offer.date), offerTypeLabel(offer)].filter(Boolean).join(" \u00b7 ");
+          const statLine = [`Voln\u00e9 ${available}`, alternates ? `N\u00e1hradn\u00edci ${alternates}` : ""].filter(Boolean).join(" \u00b7 ");
+          return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+            <td class="offer-main-cell">
+              <div class="offer-mobile-card">
+                <strong>${escapeHtml(offer.title)}</strong>
+                <small>${escapeHtml(metaLine)}</small>
+                <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+                <div class="offer-mobile-stats">
+                  <span><small>Polo\u017eky</small><b>${itemCount}</b></span>
+                  <span><small>Voln\u00e9</small><b>${available}</b></span>
+                  <span><small>Rezervace</small><b>${confirmed}</b></span>
+                </div>
+              </div>
+              <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}</span>
+              <span class="cell-sub offer-desktop-sub">${escapeHtml(metaLine)}</span>
+            </td>
+            <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
+            <td>${itemCount}</td>
+            <td>
+              <span class="cell-main">${confirmed}</span>
+              <span class="cell-sub">${escapeHtml(statLine)}</span>
+            </td>
+            <td>
+              <span class="row-actions">
+                <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">\u270e</button>
+                <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">\u00d7</button>
+              </span>
+            </td>
+          </tr>`;
+        }).join("")}
+      `;
+    };
+
+    els.offersTable.innerHTML = offers.length
+      ? [
+          renderOfferRows(groups.offers, "Nab\u00eddky", "offers"),
+          renderOfferRows(groups.rests, "Resty", "rests"),
+        ].filter(Boolean).join("")
+      : `<tr><td colspan="5">${emptyState("\u017d\u00e1dn\u00e1 nab\u00eddka.")}</td></tr>`;
+
+    els.offersTable.querySelectorAll("[data-offer-row]").forEach((row) => {
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button")) return;
+        state.selectedOfferId = row.dataset.offerRow;
+        renderOffers();
+      });
+    });
+    els.offersTable.querySelectorAll("[data-edit-offer]").forEach((button) => {
+      button.addEventListener("click", () => openOfferDialog(button.dataset.editOffer));
+    });
+    els.offersTable.querySelectorAll("[data-delete-offer]").forEach((button) => {
+      button.addEventListener("click", () => deleteOffer(button.dataset.deleteOffer));
+    });
+    renderOfferDetail();
+  };
+
+  renderOfferDetail = function renderOfferDetailFinal() {
+    const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+    if (!offer || !isRestOffer(offer)) return previousRenderOfferDetail();
+    state.selectedOfferId = offer.id;
+    const restNames = desktopRestVarietyNames(offer);
+    els.offerDetail.innerHTML = `
+      <div class="detail-header">
+        <div>
+          <h2>${escapeHtml(offer.title)}</h2>
+          <div class="pills">
+            <span class="pill warning">Resty</span>
+          </div>
+          <p class="fb-name">${formatDate(offer.date)}</p>
+          ${renderRestMetaPanel(offer)}
+          ${restNames.length ? `<div class="pills">${restNames.map((name) => `<span class="pill">${escapeHtml(name)}</span>`).join("")}</div>` : ""}
+          ${clean(offer.note) ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : `<p class="detail-note-text">Bez pozn\u00e1mky.</p>`}
+        </div>
+        <div class="detail-actions">
+          <button class="button ghost" type="button" data-edit-offer="${offer.id}">Upravit resty</button>
+          <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvo\u0159it objedn\u00e1vku</button>
+        </div>
+      </div>
+    `;
+    els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+    els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  };
+})();
+(() => {
+  const previousOpenOfferDialogFinal = openOfferDialog;
+  const previousDesktopRestOpenFinal = typeof window.openDesktopRestOfferDialog === "function"
+    ? window.openDesktopRestOfferDialog
+    : null;
+
+  function setImportant(node, property, value) {
+    if (!node) return;
+    if (value === null) node.style.removeProperty(property);
+    else node.style.setProperty(property, value, "important");
+  }
+
+  function clearDesktopRestSimpleLayout() {
+    const form = els.offerForm;
+    if (!form) return;
+    const titleField = form.elements.title?.closest("label");
+    const dateField = form.elements.date?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const restGrid = form.querySelector("[data-rest-offer-fields]");
+    const statusField = form.querySelector(".offer-status-field");
+    const divider = form.querySelector(".form-divider");
+    const noteField = form.elements.note?.closest("label");
+    const addRow = form.querySelector(".rest-variety-picker-row");
+    const list = form.querySelector("[data-rest-variety-list]");
+    const restCustomerField = form.elements.restCustomerId?.closest("label");
+    const restVarietyField = form.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || form.querySelector('[name="restVarietyName"]')?.closest("label");
+
+    form.classList.remove("rest-dialog-simple-final");
+    form.dataset.restMode = normalizeOfferType(form.elements.type?.value) === "rests" ? "true" : "false";
+    setImportant(form, "grid-template-columns", null);
+
+    [titleField, dateField, facebookDateField, facebookTimeField, restGrid, statusField, divider, noteField, addRow, list, restCustomerField, restVarietyField].forEach((node) => {
+      setImportant(node, "display", null);
+      setImportant(node, "grid-column", null);
+      setImportant(node, "grid-template-columns", null);
+    });
+
+    if (titleField) titleField.hidden = false;
+    if (facebookDateField) facebookDateField.hidden = false;
+    if (facebookTimeField) facebookTimeField.hidden = false;
+    if (statusField) statusField.hidden = false;
+    if (divider) divider.hidden = false;
+    if (typeof syncOfferRestFieldsVisibility === "function") syncOfferRestFieldsVisibility();
+  }
+
+  function applyDesktopRestSimpleLayoutFinal() {
+    const form = els.offerForm;
+    if (!form) return;
+    const titleField = form.elements.title?.closest("label");
+    const dateField = form.elements.date?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const restGrid = form.querySelector("[data-rest-offer-fields]");
+    const statusField = form.querySelector(".offer-status-field");
+    const divider = form.querySelector(".form-divider");
+    const noteField = form.elements.note?.closest("label");
+    const addRow = form.querySelector(".rest-variety-picker-row");
+    const list = form.querySelector("[data-rest-variety-list]");
+    const restCustomerField = form.elements.restCustomerId?.closest("label");
+    const restVarietyField = form.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || form.querySelector('[name="restVarietyName"]')?.closest("label");
+
+    form.classList.add("rest-dialog-simple-final");
+    form.dataset.restMode = "true";
+    setImportant(form, "grid-template-columns", "minmax(0, 1fr)");
+
+    [titleField, facebookDateField, facebookTimeField, statusField, divider].forEach((node) => {
+      if (!node) return;
+      node.hidden = true;
+      setImportant(node, "display", "none");
+    });
+
+    if (restGrid) {
+      restGrid.hidden = false;
+      setImportant(restGrid, "display", "grid");
+      setImportant(restGrid, "grid-template-columns", "minmax(0, 1fr)");
+      setImportant(restGrid, "grid-column", "1 / -1");
+    }
+
+    [dateField, restCustomerField, restVarietyField, noteField, addRow, list].forEach((node) => {
+      if (!node) return;
+      node.hidden = false;
+      setImportant(node, "display", null);
+      setImportant(node, "grid-column", "1 / -1");
+    });
+
+    if (restCustomerField) {
+      const label = restCustomerField.querySelector("span");
+      if (label) label.textContent = "Z\u00e1kazn\u00edk";
+    }
+    if (restVarietyField) {
+      const label = restVarietyField.querySelector("span");
+      if (label) label.textContent = "Odr\u016fdy";
+    }
+  }
+
+  function openDesktopRestOfferDialogLast(id = null, defaults = {}) {
+    if (previousDesktopRestOpenFinal) previousDesktopRestOpenFinal(id, defaults);
+    else previousOpenOfferDialogFinal(id, { ...defaults, type: "rests" });
+    if (typeof setupRestVarietyPickerForOfferForm === "function") {
+      setupRestVarietyPickerForOfferForm(els.offerForm, els.offerForm?.elements?.restVarietyName?.value || "");
+    }
+    applyDesktopRestSimpleLayoutFinal();
+  }
+
+  window.openDesktopRestOfferDialog = openDesktopRestOfferDialogLast;
+
+  openOfferDialog = function openOfferDialogLast(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    if (isRest) return openDesktopRestOfferDialogLast(id, defaults);
+    const result = previousOpenOfferDialogFinal(id, defaults);
+    clearDesktopRestSimpleLayout();
+    return result;
+  };
+
+  [document.querySelector("#addRestOfferTopBtn"), document.querySelector("#addRestOfferBtn")].forEach((button) => {
+    if (!button) return;
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDesktopRestOfferDialogLast();
+    };
+  });
+})();
+(() => {
+  function setImportantStyle(node, property, value) {
+    if (!node) return;
+    if (!value) node.style.removeProperty(property);
+    else node.style.setProperty(property, value, "important");
+  }
+
+  function applyDesktopRestSimpleLayout(isRest) {
+    const form = els.offerForm;
+    if (!form) return;
+
+    const titleField = form.elements.title?.closest("label");
+    const dateField = form.elements.date?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const restCustomerField = form.elements.restCustomerId?.closest("label");
+    const restVarietyField = form.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || form.querySelector('[name="restVarietyName"]')?.closest("label");
+    const statusField = form.querySelector(".offer-status-field");
+    const divider = form.querySelector(".form-divider");
+    const noteField = form.elements.note?.closest("label");
+    const addRow = form.querySelector(".rest-variety-picker-row");
+    const list = form.querySelector("[data-rest-variety-list]");
+
+    form.classList.toggle("rest-dialog-simple", Boolean(isRest));
+    setImportantStyle(form, "grid-template-columns", isRest ? "minmax(0, 1fr)" : "");
+
+    [titleField, facebookDateField, facebookTimeField, statusField, divider].forEach((node) => {
+      setImportantStyle(node, "display", isRest ? "none" : "");
+    });
+
+    [dateField, restCustomerField, restVarietyField, noteField, addRow, list].forEach((node) => {
+      setImportantStyle(node, "grid-column", isRest ? "1 / -1" : "");
+      if (node) setImportantStyle(node, "display", "");
+    });
+
+    if (restCustomerField) {
+      const label = restCustomerField.querySelector("span");
+      if (label && isRest) label.textContent = "Zákazník";
+    }
+    if (restVarietyField) {
+      const label = restVarietyField.querySelector("span");
+      if (label && isRest) label.textContent = "Odrůdy";
+    }
+  }
+
+  if (typeof window.openDesktopRestOfferDialog === "function") {
+    const previousOpenDesktopRestOfferDialog = window.openDesktopRestOfferDialog;
+    window.openDesktopRestOfferDialog = function openDesktopRestOfferDialogSimple(...args) {
+      const result = previousOpenDesktopRestOfferDialog(...args);
+      applyDesktopRestSimpleLayout(true);
+      return result;
+    };
+  }
+
+  const previousOpenOfferDialog = openOfferDialog;
+  openOfferDialog = function openOfferDialogDesktopRestSimple(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    const result = previousOpenOfferDialog(id, defaults);
+    applyDesktopRestSimpleLayout(isRest);
+    return result;
+  };
+})();
+(() => {
+  window.__akRestPatchVersion = "20260531-73";
+  const baseOpenOfferDialog = openOfferDialog;
+  const baseSaveOfferFromForm = saveOfferFromForm;
+
+  function renderRestSelectionEof(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>×</span></button>`).join("")
+      : '<div class="rest-variety-empty">Zatím bez odrůd.</div>';
+  }
+
+  function desktopRestCustomerOptionsEof(selectedId = "") {
+    return ['<option value="">Bez zákazníka</option>']
+      .concat(
+        [...(state.data.customers || [])]
+          .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }))
+          .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(selectedId) === clean(customer.id) ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`),
+      )
+      .join("");
+  }
+
+  function ensureDesktopRestPickerEof(form, initialValue = "") {
+    const restGrid = form.querySelector("[data-rest-offer-fields]");
+    if (!restGrid) return null;
+    let varietyLabel = restGrid.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || restGrid.querySelector('[name="restVarietyName"]')?.closest("label");
+    if (!varietyLabel) {
+      varietyLabel = document.createElement("label");
+      varietyLabel.innerHTML = '<span>Odrůdy</span><select name="restVarietyPicker"></select>';
+      restGrid.appendChild(varietyLabel);
+    } else {
+      const title = varietyLabel.querySelector("span");
+      if (title) title.textContent = "Odrůdy";
+    }
+
+    let picker = varietyLabel.querySelector('[name="restVarietyPicker"]');
+    if (!picker || picker.tagName !== "SELECT") {
+      const select = document.createElement("select");
+      select.name = "restVarietyPicker";
+      varietyLabel.querySelector('[name="restVarietyName"], [name="restVarietyPicker"]')?.replaceWith(select);
+      picker = select;
+    }
+
+    let hidden = form.querySelector('textarea[name="restVarietyName"]');
+    if (!hidden) {
+      hidden = document.createElement("textarea");
+      hidden.name = "restVarietyName";
+      hidden.hidden = true;
+      hidden.setAttribute("aria-hidden", "true");
+      restGrid.appendChild(hidden);
+    }
+
+    let actionRow = form.querySelector(".rest-variety-picker-row");
+    if (!actionRow) {
+      actionRow = document.createElement("div");
+      actionRow.className = "wide rest-variety-picker-row";
+      actionRow.innerHTML = '<button class="button ghost" type="button" data-rest-variety-add>Přidat odrůdu</button>';
+      restGrid.after(actionRow);
+    }
+
+    let list = form.querySelector("[data-rest-variety-list]");
+    if (!list) {
+      list = document.createElement("div");
+      list.className = "wide rest-variety-selection";
+      list.dataset.restVarietyList = "";
+      actionRow.after(list);
+    }
+
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+    const addButton = actionRow.querySelector("[data-rest-variety-add]");
+
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odrůdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) picker.value = previousValue;
+    };
+
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestSelectionEof(list, form.__restVarietyNames);
+      renderPicker();
+    };
+
+    addButton.onclick = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      picker.value = "";
+      sync();
+    };
+
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+
+    sync();
+    return { picker, hidden, list };
+  }
+
+  function toggleDesktopRestFieldsEof(form, isRest) {
+    const titleField = form.elements.title?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const statusField = form.querySelector(".offer-status-field");
+    const optionalDivider = form.querySelector(".form-divider");
+    const restGrid = form.querySelector("[data-rest-offer-fields]");
+    if (titleField) titleField.hidden = Boolean(isRest);
+    if (facebookDateField) facebookDateField.hidden = Boolean(isRest);
+    if (facebookTimeField) facebookTimeField.hidden = Boolean(isRest);
+    if (statusField) statusField.hidden = Boolean(isRest);
+    if (optionalDivider) optionalDivider.hidden = Boolean(isRest);
+    if (restGrid) restGrid.hidden = !isRest;
+  }
+
+  window.openDesktopRestOfferDialog = function openDesktopRestOfferDialogEof(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const form = els.offerForm;
+    if (!form) return;
+    const initialDate = clean(offer?.date || defaults.date) || toDateInput(new Date());
+    const names = restFormVarietyNames(offer?.restVarietyName);
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    els.offerDialogTitle.textContent = offer ? "Upravit resty" : "Nové resty";
+    form.reset();
+    form.dataset.restMode = "true";
+    form.elements.id.value = offer?.id || "";
+    form.elements.type.value = "rests";
+    form.elements.title.value = defaultOfferTitle("rests", initialDate);
+    form.elements.date.value = initialDate;
+    form.elements.facebookPublishDate.value = initialDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "připravená";
+    form.elements.note.value = offer?.note || "";
+    form.elements.restCustomerId.innerHTML = desktopRestCustomerOptionsEof(offer?.restCustomerId || defaults.restCustomerId || "");
+    form.elements.restCustomerId.value = clean(offer?.restCustomerId || defaults.restCustomerId);
+    form.elements.restVarietyId.value = clean(matchedVariety?.id || offer?.restVarietyId);
+    toggleDesktopRestFieldsEof(form, true);
+    ensureDesktopRestPickerEof(form, names.join("\n"));
+    showDialog(els.offerDialog);
+  };
+
+  openOfferDialog = function openOfferDialogRestEof(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    if (isRest) return window.openDesktopRestOfferDialog(id, defaults);
+    if (els.offerForm) {
+      els.offerForm.dataset.restMode = "false";
+      toggleDesktopRestFieldsEof(els.offerForm, false);
+    }
+    return baseOpenOfferDialog(id, defaults);
+  };
+
+  saveOfferFromForm = function saveOfferFromFormRestEof() {
+    const formEl = els.offerForm;
+    const isRest = normalizeOfferType(formEl?.elements?.type?.value) === "rests" || formEl?.dataset?.restMode === "true";
+    if (!isRest) return baseSaveOfferFromForm();
+    if (!formEl?.reportValidity()) return;
+    const form = new FormData(formEl);
+    const existing = findOffer(clean(form.get("id")));
+    const nextDate = clean(form.get("date")) || toDateInput(new Date());
+    const names = restFormVarietyNames(form.get("restVarietyName"));
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    const now = new Date().toISOString();
+    const offer = normalizeOffer({
+      ...existing,
+      id: clean(form.get("id")) || uid(),
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "připravená",
+      note: clean(form.get("note")),
+      restCustomerId: clean(form.get("restCustomerId")),
+      restVarietyId: clean(matchedVariety?.id),
+      restVarietyName: names.join("\n"),
+      items: existing?.items || [],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    });
+    if (existing) Object.assign(existing, offer);
+    else state.data.offers.push(offer);
+    state.selectedOfferId = offer.id;
+    saveData();
+    renderAll();
+    els.offerDialog.close();
+    toast("Resty uloženy.");
+  };
+
+  function hardRebindRestButton(selector) {
+    const current = document.querySelector(selector);
+    if (!current) return;
+    const next = current.cloneNode(true);
+    next.removeAttribute("onclick");
+    next.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      window.openDesktopRestOfferDialog();
+    });
+    current.replaceWith(next);
+  }
+
+  hardRebindRestButton("#addRestOfferTopBtn");
+  hardRebindRestButton("#addRestOfferBtn");
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("#addRestOfferTopBtn, #addRestOfferBtn");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    window.openDesktopRestOfferDialog();
+  }, true);
+})();
+(() => {
+  function renderRestVarietySelectionSafe(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>×</span></button>`).join("")
+      : '<div class="rest-variety-empty">Zatím bez odrůd.</div>';
+  }
+
+  if (typeof window.openDesktopRestOfferDialog === "function") {
+    const previousOpenDesktopRestOfferDialog = window.openDesktopRestOfferDialog;
+    window.openDesktopRestOfferDialog = function openDesktopRestOfferDialogSafe(...args) {
+      const originalRender = typeof renderRestVarietySelection === "function" ? renderRestVarietySelection : null;
+      renderRestVarietySelection = renderRestVarietySelectionSafe;
+      try {
+        return previousOpenDesktopRestOfferDialog(...args);
+      } finally {
+        if (originalRender) renderRestVarietySelection = originalRender;
+      }
+    };
+  }
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("#addRestOfferTopBtn, #addRestOfferBtn");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (typeof window.openDesktopRestOfferDialog === "function") {
+      window.openDesktopRestOfferDialog();
+    } else {
+      openOfferDialog(null, { type: "rests" });
+    }
+  }, true);
+})();
+(() => {
+  const previousOpenOfferDialog = openOfferDialog;
+  const previousSaveOfferFromForm = saveOfferFromForm;
+
+  function restCustomerOptionsFinal(selectedId = "") {
+    return ['<option value="">Bez z\u00e1kazn\u00edka</option>']
+      .concat(
+        [...(state.data.customers || [])]
+          .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }))
+          .map((customer) => {
+            const id = clean(customer.id);
+            return `<option value="${escapeHtml(id)}" ${id === clean(selectedId) ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`;
+          }),
+      )
+      .join("");
+  }
+
+  function toggleDesktopRestDialogMode(form, isRest) {
+    if (!form) return;
+    form.dataset.restMode = isRest ? "true" : "false";
+    const titleField = form.elements.title?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const statusField = form.querySelector(".offer-status-field");
+    const optionalDivider = form.querySelector(".form-divider");
+    const restFields = form.querySelector("[data-rest-offer-fields]");
+    if (titleField) titleField.hidden = Boolean(isRest);
+    if (facebookDateField) facebookDateField.hidden = Boolean(isRest);
+    if (facebookTimeField) facebookTimeField.hidden = Boolean(isRest);
+    if (statusField) statusField.hidden = Boolean(isRest);
+    if (optionalDivider) optionalDivider.hidden = Boolean(isRest);
+    if (restFields) restFields.hidden = !isRest;
+  }
+
+  function ensureDesktopRestPickerFinal(form, initialValue = "") {
+    if (!form) return;
+    const restFields = form.querySelector("[data-rest-offer-fields]");
+    if (!restFields) return;
+    const varietyLabel = form.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || form.querySelector('[name="restVarietyName"]')?.closest("label");
+    if (!varietyLabel) return;
+    const heading = varietyLabel.querySelector("span");
+    if (heading) heading.textContent = "Odr\u016fdy";
+
+    let picker = varietyLabel.querySelector('[name="restVarietyPicker"]');
+    if (!picker || picker.tagName !== "SELECT") {
+      const nextPicker = document.createElement("select");
+      nextPicker.name = "restVarietyPicker";
+      const current = varietyLabel.querySelector('[name="restVarietyPicker"], [name="restVarietyName"]');
+      current?.replaceWith(nextPicker);
+      picker = nextPicker;
+    }
+
+    let hidden = form.querySelector('textarea[name="restVarietyName"]');
+    if (!hidden) {
+      hidden = document.createElement("textarea");
+      hidden.name = "restVarietyName";
+      hidden.hidden = true;
+      hidden.setAttribute("aria-hidden", "true");
+      restFields.appendChild(hidden);
+    }
+
+    let actionRow = form.querySelector(".rest-variety-picker-row");
+    if (!actionRow) {
+      actionRow = document.createElement("div");
+      actionRow.className = "wide rest-variety-picker-row";
+      restFields.appendChild(actionRow);
+    }
+
+    let addButton = actionRow.querySelector("[data-rest-variety-add]");
+    if (!addButton) {
+      addButton = document.createElement("button");
+      addButton.className = "button ghost";
+      addButton.type = "button";
+      addButton.dataset.restVarietyAdd = "";
+      addButton.textContent = "P\u0159idat odr\u016fdu";
+      actionRow.appendChild(addButton);
+    }
+
+    let list = form.querySelector("[data-rest-variety-list]");
+    if (!list) {
+      list = document.createElement("div");
+      list.className = "wide rest-variety-selection";
+      list.dataset.restVarietyList = "";
+      actionRow.after(list);
+    }
+
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odr\u016fdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) picker.value = previousValue;
+    };
+
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(list, form.__restVarietyNames);
+      renderPicker();
+    };
+
+    addButton.onclick = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      picker.value = "";
+      sync();
+      picker.focus();
+    };
+
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+
+    sync();
+  }
+
+  function openDesktopRestOfferDialog(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const form = els.offerForm;
+    if (!form) return;
+    const initialDate = clean(offer?.date || defaults.date) || toDateInput(new Date());
+    const names = restFormVarietyNames(offer?.restVarietyName);
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    els.offerDialogTitle.textContent = offer ? "Upravit resty" : "Nov\u00e9 resty";
+    form.reset();
+    form.elements.id.value = offer?.id || "";
+    form.elements.type.value = "rests";
+    form.elements.title.value = defaultOfferTitle("rests", initialDate);
+    form.elements.date.value = initialDate;
+    form.elements.facebookPublishDate.value = initialDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "p\u0159ipraven\u00e1";
+    form.elements.note.value = offer?.note || "";
+    form.elements.restCustomerId.innerHTML = restCustomerOptionsFinal(offer?.restCustomerId || defaults.restCustomerId || "");
+    form.elements.restCustomerId.value = clean(offer?.restCustomerId || defaults.restCustomerId);
+    form.elements.restVarietyId.value = clean(matchedVariety?.id || offer?.restVarietyId);
+    toggleDesktopRestDialogMode(form, true);
+    ensureDesktopRestPickerFinal(form, names.join("\n"));
+    showDialog(els.offerDialog);
+  }
+
+  function saveDesktopRestOfferForm() {
+    const formEl = els.offerForm;
+    if (!formEl?.reportValidity()) return;
+    const form = new FormData(formEl);
+    const existing = findOffer(clean(form.get("id")));
+    const nextDate = clean(form.get("date")) || toDateInput(new Date());
+    const names = restFormVarietyNames(form.get("restVarietyName"));
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    const now = new Date().toISOString();
+    const offer = normalizeOffer({
+      ...existing,
+      id: clean(form.get("id")) || uid(),
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "p\u0159ipraven\u00e1",
+      note: clean(form.get("note")),
+      restCustomerId: clean(form.get("restCustomerId")),
+      restVarietyId: clean(matchedVariety?.id),
+      restVarietyName: names.join("\n"),
+      items: existing?.items || [],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    });
+    if (existing) Object.assign(existing, offer);
+    else state.data.offers.push(offer);
+    state.selectedOfferId = offer.id;
+    saveData();
+    renderAll();
+    els.offerDialog.close();
+    toast("Resty ulo\u017eeny.");
+  }
+
+  window.openDesktopRestOfferDialog = openDesktopRestOfferDialog;
+
+  openOfferDialog = function openOfferDialogRestDirect(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    if (isRest) return openDesktopRestOfferDialog(id, defaults);
+    toggleDesktopRestDialogMode(els.offerForm, false);
+    return previousOpenOfferDialog(id, defaults);
+  };
+
+  saveOfferFromForm = function saveOfferFromFormRestDirect() {
+    const form = els.offerForm;
+    const isRest = normalizeOfferType(form?.elements?.type?.value) === "rests" || form?.dataset?.restMode === "true";
+    if (isRest) return saveDesktopRestOfferForm();
+    toggleDesktopRestDialogMode(form, false);
+    return previousSaveOfferFromForm();
+  };
+
+  [document.querySelector("#addRestOfferTopBtn"), document.querySelector("#addRestOfferBtn")].forEach((button) => {
+    if (!button) return;
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDesktopRestOfferDialog();
+    };
+  });
+})();
 
 function renderOfferItem(offer, item) {
   const confirmed = offerItemConfirmedCount(item);
@@ -2896,7 +3938,8 @@ function renderFeeSettings() {
   els.defaultShippingFeeCz.value = settings.shippingFeeCz || "";
   els.defaultShippingFeeSk.value = settings.shippingFeeSk || "";
   if (els.defaultPostalFee) els.defaultPostalFee.value = settings.postalFee || "";
-  if (els.defaultShippingFeeAddress) els.defaultShippingFeeAddress.value = settings.shippingFeeAddress || "";
+  if (els.defaultShippingFeeAddressCz) els.defaultShippingFeeAddressCz.value = settings.shippingFeeAddressCz || "";
+  if (els.defaultShippingFeeAddressSk) els.defaultShippingFeeAddressSk.value = settings.shippingFeeAddressSk || "";
   els.defaultPackingFee.value = settings.packingFee || "";
   if (els.defaultCodFeeCz) els.defaultCodFeeCz.value = settings.codFeeCz || "";
   if (els.defaultCodFeeSk) els.defaultCodFeeSk.value = settings.codFeeSk || "";
@@ -2927,7 +3970,8 @@ function readFeeSettingsDraftFromPanel() {
     shippingFeeCz: els.defaultShippingFeeCz?.value,
     shippingFeeSk: els.defaultShippingFeeSk?.value,
     postalFee: els.defaultPostalFee?.value,
-    shippingFeeAddress: els.defaultShippingFeeAddress?.value,
+    shippingFeeAddressCz: els.defaultShippingFeeAddressCz?.value,
+    shippingFeeAddressSk: els.defaultShippingFeeAddressSk?.value,
     packingFee: els.defaultPackingFee?.value,
     codFeeCz: els.defaultCodFeeCz?.value,
     codFeeSk: els.defaultCodFeeSk?.value,
@@ -3058,6 +4102,9 @@ function captureOrderFormSnapshot() {
     codAmount: clean(els.orderForm.elements.codAmount.value),
     note: clean(els.orderForm.elements.note.value),
     varietiesText: clean(els.orderForm.elements.varietiesText.value),
+    stornoLines: clean(els.orderForm.elements.stornoLines?.value),
+    cancelledAt: clean(els.orderForm.elements.cancelledAt?.value),
+    cancelledNote: clean(els.orderForm.elements.cancelledNote?.value),
     extraFees: normalizeNamedFees(collectOrderExtraFeesFromForm()),
     priceManual: els.orderForm.dataset.priceManual === "1",
     feesBasePrice: clean(els.orderForm.dataset.feesBasePrice),
@@ -3086,6 +4133,9 @@ function applyOrderFormSnapshot(snapshot = {}) {
   els.orderForm.elements.codAmount.value = snapshot.codAmount || "";
   els.orderForm.elements.note.value = snapshot.note || "";
   els.orderForm.elements.varietiesText.value = snapshot.varietiesText || "";
+  if (els.orderForm.elements.stornoLines) els.orderForm.elements.stornoLines.value = snapshot.stornoLines || "";
+  if (els.orderForm.elements.cancelledAt) els.orderForm.elements.cancelledAt.value = snapshot.cancelledAt || "";
+  if (els.orderForm.elements.cancelledNote) els.orderForm.elements.cancelledNote.value = snapshot.cancelledNote || "";
   els.orderForm.dataset.priceManual = snapshot.priceManual ? "1" : "";
   els.orderForm.dataset.feesBasePrice = snapshot.feesBasePrice || "";
   renderOrderExtraFeeFields(snapshot.extraFees || [], { preserveValues: false, activateValues: true });
@@ -3417,12 +4467,17 @@ async function openOrderDialog(id = null, customerId = null, defaults = {}) {
     els.orderForm.elements.shippingFee.dataset.shippingLabel = currentOrderShippingLabel();
   }
   els.orderForm.elements.varietiesText.value = draft.varietiesText || "";
+  if (els.orderForm.elements.stornoLines) els.orderForm.elements.stornoLines.value = JSON.stringify(orderStornoLines(draft));
+  if (els.orderForm.elements.cancelledAt) els.orderForm.elements.cancelledAt.value = clean(draft.cancelledAt);
+  if (els.orderForm.elements.cancelledNote) els.orderForm.elements.cancelledNote.value = clean(draft.cancelledNote);
   resetOrderVarietyComposer();
   hideOrderVarietySuggestions();
   els.orderForm.elements.note.value = draft.note || "";
   refreshOrderRateHint(true);
   syncOrderPaymentTextSentButton(order);
   syncOrderAlternateBlock();
+  syncOrderStornoBlock();
+  syncOrderRestWarningBlock();
   showDialog(els.orderDialog);
   await autoCalculateOrderPrice({ silent: true });
   state.orderDialogBaseline = orderDialogFingerprint(captureOrderFormSnapshot());
@@ -3470,6 +4525,9 @@ async function saveOrderFromForm() {
     priceManualOverride: false,
     feesIncludedInTotal: feeSummary.total > 0,
     varietiesText: clean(form.get("varietiesText")),
+    stornoLines: normalizeOrderStornoLines(form.get("stornoLines")),
+    cancelledAt: clean(form.get("cancelledAt")),
+    cancelledNote: clean(form.get("cancelledNote")),
     note: clean(form.get("note")),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
@@ -3868,6 +4926,7 @@ function renderOrderLineSummary(estimate = {}) {
           <div class="order-line-meta">
             ${clearLabel ? `<button class="mini-button order-line-clear-button" type="button" data-order-line-price-clear="${index}">${escapeHtml(clearLabel)}</button>` : ""}
             <span class="order-line-badge ${badgeClass}">${badgeText}</span>
+            <button class="mini-button order-line-storno-button" type="button" data-order-line-storno="${index}" title="Stornovat položku">Storno</button>
             <button class="order-line-remove-button" type="button" data-order-line-remove="${index}" aria-label="${escapeHtml(`Odebrat ${line.name}`)}" title="Odebrat položku">×</button>
           </div>
         </div>
@@ -3892,6 +4951,9 @@ function renderOrderLineSummary(estimate = {}) {
   els.orderLineSummary.querySelectorAll("[data-order-line-price-clear]").forEach((button) => {
     button.addEventListener("click", () => clearOrderLinePrice(Number(button.dataset.orderLinePriceClear)));
   });
+  els.orderLineSummary.querySelectorAll("[data-order-line-storno]").forEach((button) => {
+    button.addEventListener("click", () => stornoOrderLine(Number(button.dataset.orderLineStorno)));
+  });
   els.orderLineSummary.querySelectorAll("[data-order-line-remove]").forEach((button) => {
     button.addEventListener("click", () => removeOrderLine(Number(button.dataset.orderLineRemove)));
   });
@@ -3900,6 +4962,7 @@ function renderOrderLineSummary(estimate = {}) {
 function writeOrderLineText(updateLines) {
   els.orderForm.elements.varietiesText.value = updateLines.filter(Boolean).join("\n");
   els.orderForm.dataset.feesBasePrice = "";
+  renderOrderStornoBlock();
 }
 
 function defaultExplicitPriceForOrderLine(line) {
@@ -3990,6 +5053,208 @@ function removeOrderLine(index) {
   syncOrderDialogState();
 }
 
+function readOrderFormStornoLines(form = els.orderForm) {
+  return normalizeOrderStornoLines(form?.elements?.stornoLines?.value);
+}
+
+function syncOrderStornoBlock() {
+  renderOrderStornoBlock();
+}
+
+function writeOrderFormStornoLines(lines = [], form = els.orderForm) {
+  if (!form?.elements?.stornoLines) return;
+  form.elements.stornoLines.value = JSON.stringify(normalizeOrderStornoLines(lines));
+}
+
+function appendOrderFormStornoEntry(entry, form = els.orderForm) {
+  const lines = readOrderFormStornoLines(form);
+  lines.push(normalizeOrderStornoEntry(entry));
+  writeOrderFormStornoLines(lines, form);
+}
+
+function clearOrderFormCancellation(form = els.orderForm) {
+  if (!form?.elements) return;
+  if (form.elements.cancelledAt) form.elements.cancelledAt.value = "";
+  if (form.elements.cancelledNote) form.elements.cancelledNote.value = "";
+}
+
+function currentActiveOrderLines(form = els.orderForm) {
+  return parseVarietyOrderLines(form?.elements?.varietiesText?.value || "");
+}
+
+function formatDateTime(value = "") {
+  const date = value ? new Date(value) : null;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("cs-CZ", {
+    day: "numeric",
+    month: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function renderOrderStornoBlock() {
+  const form = els.orderForm;
+  const block = els.orderStornoBlock;
+  if (!form || !block) return;
+  const activeLines = currentActiveOrderLines(form);
+  const stornoLines = readOrderFormStornoLines(form);
+  if (activeLines.length && clean(form.elements.cancelledAt?.value)) clearOrderFormCancellation(form);
+  const cancelledAt = clean(form.elements.cancelledAt?.value);
+  const cancelledNote = clean(form.elements.cancelledNote?.value);
+  const cancelledInfo = cancelledAt
+    ? `Objednávka stornována ${formatDateTime(cancelledAt)}${cancelledNote ? ` · ${cancelledNote}` : ""}`
+    : "";
+  block.innerHTML = `
+    <div class="order-storno-heading">
+      <div>
+        <strong>Storna</strong>
+        <small>Toto se nepočítá do ceny.</small>
+      </div>
+      <div class="order-storno-actions">
+        <button class="button ghost" type="button" data-order-cancel-all ${activeLines.length ? "" : "disabled"}>Stornovat celou objednávku</button>
+      </div>
+    </div>
+    ${cancelledInfo ? `<div class="order-storno-status">${escapeHtml(cancelledInfo)}</div>` : ""}
+    <div class="order-storno-list">
+      ${stornoLines.length
+        ? stornoLines.map((entry, index) => `
+            <div class="order-storno-item">
+              <div class="order-storno-copy">
+                <span>✕ Storno: ${escapeHtml(entry.name)} · ${escapeHtml(quantityText(entry.quantity))} ks</span>
+                ${clean(entry.note) ? `<small>${escapeHtml(entry.note)}</small>` : ""}
+              </div>
+              <button class="mini-button order-storno-restore-button" type="button" data-order-storno-restore="${index}">Obnovit</button>
+            </div>
+          `).join("")
+        : '<div class="order-storno-status">Zatím bez storna.</div>'}
+    </div>
+  `;
+  block.querySelector("[data-order-cancel-all]")?.addEventListener("click", cancelEntireOrder);
+  block.querySelectorAll("[data-order-storno-restore]").forEach((button) => {
+    button.addEventListener("click", () => restoreOrderStornoLine(Number(button.dataset.orderStornoRestore)));
+  });
+}
+
+function stornoOrderLine(index) {
+  const form = els.orderForm;
+  const lines = currentActiveOrderLines(form);
+  const line = lines[index];
+  if (!form || !line) return;
+  const rawQuantity = window.prompt(`Kolik ks stornovat u ${line.name}?`, String(Math.max(line.quantity || 1, 1)));
+  if (rawQuantity === null) return;
+  const stornoQuantity = Number.parseInt(clean(rawQuantity), 10);
+  const maxQuantity = Math.max(line.quantity || 1, 1);
+  if (!Number.isFinite(stornoQuantity) || stornoQuantity < 1 || stornoQuantity > maxQuantity) {
+    toast("Napiš platný počet kusů ke storno.");
+    return;
+  }
+  const note = window.prompt("Důvod storna (volitelně):", "") ?? "";
+  const priceInfo = defaultExplicitPriceForOrderLine(line);
+  appendOrderFormStornoEntry({
+    name: line.name,
+    quantity: stornoQuantity,
+    unitPrice: priceInfo.amount,
+    currency: priceInfo.currency,
+    note,
+  }, form);
+  const next = lines.flatMap((item, itemIndex) => {
+    if (itemIndex !== index) return [item.raw];
+    const remaining = Math.max(maxQuantity - stornoQuantity, 0);
+    if (!remaining) return [];
+    const price = clean(item.explicitPrice) ? item.explicitPrice : priceInfo.amount;
+    return [buildOrderLineText(item.name, remaining, price, item.explicitCurrency || priceInfo.currency)];
+  });
+  writeOrderLineText(next);
+  els.orderForm.dataset.priceManual = "";
+  renderOrderStornoBlock();
+  autoCalculateOrderPrice({ silent: true });
+  syncOrderDialogState();
+  toast("Položka přesunuta do storna.");
+}
+
+function restoreOrderStornoLine(index) {
+  const form = els.orderForm;
+  const stornoLines = readOrderFormStornoLines(form);
+  const entry = stornoLines[index];
+  if (!form || !entry) return;
+  const activeLines = currentActiveOrderLines(form);
+  const existingIndex = activeLines.findIndex((line) => varietyNameMatchKey(line.name) === varietyNameMatchKey(entry.name));
+  if (existingIndex >= 0) {
+    const target = activeLines[existingIndex];
+    const nextQuantity = Math.max(target.quantity || 1, 1) + Math.max(entry.quantity || 1, 1);
+    const price = clean(target.explicitPrice) || clean(entry.unitPrice);
+    activeLines[existingIndex] = {
+      ...target,
+      quantity: nextQuantity,
+      explicitPrice: price,
+      explicitCurrency: target.explicitCurrency || entry.currency || currentOrderCurrency(),
+    };
+  } else {
+    activeLines.push({
+      raw: "",
+      name: entry.name,
+      quantity: Math.max(entry.quantity || 1, 1),
+      explicitPrice: clean(entry.unitPrice),
+      explicitCurrency: entry.currency || currentOrderCurrency(),
+    });
+  }
+  writeOrderLineText(activeLines.map((line) => {
+    const price = clean(line.explicitPrice);
+    return price
+      ? buildOrderLineText(line.name, line.quantity, price, line.explicitCurrency || currentOrderCurrency())
+      : buildOrderLineText(line.name, line.quantity);
+  }));
+  writeOrderFormStornoLines(stornoLines.filter((_, itemIndex) => itemIndex !== index), form);
+  clearOrderFormCancellation(form);
+  els.orderForm.dataset.priceManual = "";
+  renderOrderStornoBlock();
+  autoCalculateOrderPrice({ silent: true });
+  syncOrderDialogState();
+  toast("Storno vráceno do objednávky.");
+}
+
+function cancelEntireOrder() {
+  const form = els.orderForm;
+  const lines = currentActiveOrderLines(form);
+  if (!form || !lines.length) {
+    toast("Objednávka už nemá žádné aktivní položky.");
+    return;
+  }
+  const note = window.prompt("Důvod storna celé objednávky (volitelně):", clean(form.elements.cancelledNote?.value)) ;
+  if (note === null) return;
+  lines.forEach((line) => {
+    const priceInfo = defaultExplicitPriceForOrderLine(line);
+    appendOrderFormStornoEntry({
+      name: line.name,
+      quantity: Math.max(line.quantity || 1, 1),
+      unitPrice: clean(line.explicitPrice) || priceInfo.amount,
+      currency: line.explicitCurrency || priceInfo.currency,
+      note: clean(note),
+    }, form);
+  });
+  form.elements.varietiesText.value = "";
+  form.elements.shippingFee.value = "";
+  delete form.elements.shippingFee.dataset.shippingLabel;
+  form.elements.packingFee.value = "";
+  form.elements.codFee.value = "";
+  form.elements.codAmount.value = "";
+  form.elements.cancelledAt.value = new Date().toISOString();
+  form.elements.cancelledNote.value = clean(note);
+  [...(els.orderExtraFeeFields?.querySelectorAll("[data-order-extra-fee]") || [])].forEach((input) => {
+    input.value = "";
+  });
+  els.orderForm.dataset.priceManual = "";
+  els.orderForm.dataset.feesBasePrice = "";
+  refreshOrderFeePresetButtons();
+  refreshOrderExtraFeeButtons();
+  renderOrderStornoBlock();
+  autoCalculateOrderPrice({ silent: true });
+  syncOrderDialogState();
+  toast("Celá objednávka přesunuta do storna.");
+}
+
 function sumOrderEstimateLines(lines = [], source) {
   return lines
     .filter((line) => line.source === source)
@@ -4072,6 +5337,13 @@ function shippingLabelForCustomer(customer) {
   return "Zásilkovna";
 }
 
+function shippingAddressLabelForCustomer(customer) {
+  const country = normalize(normalizeCountry(customer?.country || ""));
+  if (country.includes("slovensko")) return "Zásilkovna na adresu Slovensko";
+  if (country.includes("cesko") || country.includes("česko")) return "Zásilkovna na adresu ČR";
+  return "Zásilkovna na adresu";
+}
+
 function shippingLabelForOrder(order = {}) {
   return clean(order.shippingFeeLabel) || shippingLabelForCustomer(findCustomer(order.customerId));
 }
@@ -4115,8 +5387,10 @@ function refreshOrderFeePresetButtons() {
       active = delivery !== "personal_pickup" && shippingLabel === label && Number.isFinite(shippingValue) && shippingValue > 0;
     } else if (preset === "shipping-address") {
       label = "Zásilkovna na adresu";
-      displayAmount = shippingLabel === label && Number.isFinite(shippingValue) ? form.elements.shippingFee.value : settings.shippingFeeAddress;
-      active = delivery !== "personal_pickup" && shippingLabel === label && Number.isFinite(shippingValue) && shippingValue > 0;
+      displayAmount = isShippingAddressLabel(shippingLabel) && Number.isFinite(shippingValue)
+        ? form.elements.shippingFee.value
+        : defaultShippingAddressFeeForCustomer(settings, currentOrderCustomer());
+      active = delivery !== "personal_pickup" && isShippingAddressLabel(shippingLabel) && Number.isFinite(shippingValue) && shippingValue > 0;
     } else if (preset === "packing") {
       label = "Balné";
       displayAmount = Number.isFinite(packingValue) && packingValue > 0 ? form.elements.packingFee.value : settings.packingFee;
@@ -4579,14 +5853,14 @@ function applyOrderFeePreset(preset) {
     }
   }
   if (preset === "shipping-address") {
-    const isActive = currentOrderShippingLabel() === "Zásilkovna na adresu" && Number.isFinite(parseDecimal(form.elements.shippingFee.value));
+    const isActive = isShippingAddressLabel(currentOrderShippingLabel()) && Number.isFinite(parseDecimal(form.elements.shippingFee.value));
     if (isActive) {
       form.elements.shippingFee.value = "";
       delete form.elements.shippingFee.dataset.shippingLabel;
     } else {
       form.elements.deliveryMethod.value = "ship";
-      form.elements.shippingFee.value = settings.shippingFeeAddress || "";
-      form.elements.shippingFee.dataset.shippingLabel = "Zásilkovna na adresu";
+      form.elements.shippingFee.value = defaultShippingAddressFeeForCustomer(settings, currentOrderCustomer()) || "";
+      form.elements.shippingFee.dataset.shippingLabel = shippingAddressLabelForCustomer(currentOrderCustomer());
     }
   }
   if (preset === "packing") {
@@ -5761,15 +7035,20 @@ function setOfferStatus(status) {
   syncOfferStatusToggle();
 }
 
-function openOfferDialog(id = null) {
+function openOfferDialog(id = null, defaults = {}) {
   const offer = id ? findOffer(id) : null;
-  els.offerDialogTitle.textContent = offer ? "Upravit nabídku" : "Nová nabídka";
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty" : "Upravit nabídku")
+    : (initialType === "rests" ? "Nové resty" : "Nová nabídka");
   els.offerForm.reset();
   els.offerForm.elements.id.value = offer?.id || "";
-  els.offerForm.elements.title.value = offer?.title || `Nabídka ${formatDate(toDateInput(new Date()))}`;
-  els.offerForm.elements.date.value = offer?.date || toDateInput(new Date());
-  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || offer?.date || toDateInput(new Date());
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
   els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
   els.offerForm.elements.status.value = offer?.status || "připravená";
   els.offerForm.elements.note.value = offer?.note || "";
   syncOfferStatusToggle();
@@ -5782,12 +7061,16 @@ function saveOfferFromForm() {
   const id = form.get("id") || uid();
   const existing = findOffer(id);
   const now = new Date().toISOString();
+  const nextDate = clean(form.get("date")) || toDateInput(new Date());
+  const nextType = normalizeOfferType(form.get("type"));
+  const sourceType = existing ? normalizeOfferType(existing.type) : nextType;
   const offer = normalizeOffer({
     id,
-    title: clean(form.get("title")),
-    date: clean(form.get("date")) || toDateInput(new Date()),
-    facebookPublishDate: clean(form.get("facebookPublishDate")) || clean(form.get("date")) || toDateInput(new Date()),
+    title: adjustedOfferTitleForType(clean(form.get("title")), sourceType, nextType, nextDate),
+    date: nextDate,
+    facebookPublishDate: clean(form.get("facebookPublishDate")) || nextDate,
     facebookPublishTime: clean(form.get("facebookPublishTime")) || "20:00",
+    type: nextType,
     status: clean(form.get("status")) || "připravená",
     note: clean(form.get("note")),
     items: existing?.items || [],
@@ -6208,7 +7491,8 @@ function defaultFacebookOfferTemplate(settings = feeSettings()) {
     `• balné: ${formatMoney(settings.packingFee || 20, "CZK")}`,
     `• Zásilkovna ČR: ${formatMoney(settings.shippingFeeCz || 89, "CZK")}`,
     `• Zásilkovna SK: ${formatMoney(settings.shippingFeeSk || 99, "CZK")}`,
-    clean(settings.shippingFeeAddress) ? `• Zásilkovna na adresu: ${formatMoney(settings.shippingFeeAddress, "CZK")}` : "",
+    clean(settings.shippingFeeAddressCz) ? `• Zásilkovna na adresu ČR: ${formatMoney(settings.shippingFeeAddressCz, "CZK")}` : "",
+    clean(settings.shippingFeeAddressSk) ? `• Zásilkovna na adresu Slovensko: ${formatMoney(settings.shippingFeeAddressSk, "CZK")}` : "",
     clean(settings.postalFee) ? `• Balíkovna: ${formatMoney(settings.postalFee, "CZK")}` : "",
     clean(settings.codFeeCz) ? `• dobírka ČR: ${formatMoney(settings.codFeeCz, "CZK")}` : "",
     clean(settings.codFeeSk) ? `• dobírka Slovensko: ${formatMoney(settings.codFeeSk, "CZK")}` : "",
@@ -7501,12 +8785,15 @@ async function runAutoSupabaseSync() {
   await pushSupabaseSync({ auto: true, silent: true });
 }
 
-async function maybeAutoPullSupabaseSync() {
-  if (state.supabasePullRunning || state.supabaseSyncRunning || !canAutoSupabaseSync()) return;
+async function maybeAutoPullSupabaseSync(options = {}) {
+  if (state.supabasePullRunning || state.supabaseSyncRunning || !canAutoSupabaseSync() || document.visibilityState === "hidden") return;
+  const now = Date.now();
+  if (!options.force && now - Number(state.lastSupabaseAutoPullAt || 0) < SUPABASE_SYNC_PULL_MIN_GAP_MS) return;
   if (hasPendingSupabaseSync()) {
     if (!state.supabaseSyncTimer) scheduleAutoSupabaseSync("retry");
     return;
   }
+  state.lastSupabaseAutoPullAt = now;
   await pullSupabaseSync({ auto: true, silent: true });
 }
 
@@ -7658,14 +8945,21 @@ async function pullSupabaseSync(options = {}) {
     state.supabasePullRunning = true;
     const session = await ensureSupabaseSession();
     updateSupabaseSyncStatus(options.auto ? "Kontroluji cloud..." : "Stahuji a dešifruji data...");
-    const rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, {
+    const metadataOnly = Boolean(options.auto && !options.verify);
+    let rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=${metadataOnly ? "updated_at" : "encrypted_data,updated_at"}`, {
       method: "GET",
     });
-    const cloudUpdatedAt = clean(rows?.[0]?.updated_at);
+    let cloudUpdatedAt = clean(rows?.[0]?.updated_at);
     const passwordAlreadyVerified = state.syncEncryptionVerifiedPassword === encryptionPassword;
-    if (options.auto && !options.verify && passwordAlreadyVerified && cloudUpdatedAt && cloudUpdatedAt === loadSupabaseSyncConfig().lastPulledAt) {
+    if (metadataOnly && passwordAlreadyVerified && cloudUpdatedAt && cloudUpdatedAt === loadSupabaseSyncConfig().lastPulledAt) {
       updateSupabaseSyncStatus();
       return true;
+    }
+    if (metadataOnly && cloudUpdatedAt) {
+      rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, {
+        method: "GET",
+      });
+      cloudUpdatedAt = clean(rows?.[0]?.updated_at);
     }
     const encrypted = rows?.[0]?.encrypted_data;
     if (!encrypted) {
@@ -8388,6 +9682,7 @@ function filteredOffers() {
       );
       return matchesSearchText([
         offer.title,
+        offerTypeLabel(offer),
         offer.status,
         offer.note,
         ...items.map((item) => offerItemNameSafe(item)),
@@ -8460,7 +9755,7 @@ function seasonOptions() {
 
 function totalByCurrencyText(orders) {
   const totals = orders.reduce((map, order) => {
-    const amount = parseDecimal(order.price);
+    const amount = orderResolvedTotal(order);
     if (!Number.isFinite(amount)) return map;
     const currency = normalizeCurrency(order.currency);
     map.set(currency, (map.get(currency) || 0) + amount);
@@ -8484,7 +9779,7 @@ function paidVarietyProfitText(orders) {
 }
 
 function paidVarietyProfitAmount(order) {
-  const total = parseDecimal(order?.price);
+  const total = orderResolvedTotal(order);
   if (!Number.isFinite(total)) return Number.NaN;
   return Math.max(total - orderFeeTotal(order), 0);
 }
@@ -8492,8 +9787,10 @@ function paidVarietyProfitAmount(order) {
 function orderFeeTotal(order) {
   const shippingFee = parseDecimal(order?.shippingFee);
   const packingFee = parseDecimal(order?.packingFee);
+  const codFee = parseDecimal(order?.codFee);
   return (Number.isFinite(shippingFee) && shippingFee > 0 ? shippingFee : 0)
     + (Number.isFinite(packingFee) && packingFee > 0 ? packingFee : 0)
+    + (Number.isFinite(codFee) && codFee > 0 ? codFee : 0)
     + sumNamedFees(order?.extraFees);
 }
 
@@ -8617,7 +9914,8 @@ function normalizeFeeSettings(settings = {}) {
     shippingFeeCz: normalizeAmount(settings?.shippingFeeCz ?? settings?.shippingFee),
     shippingFeeSk: normalizeAmount(settings?.shippingFeeSk),
     postalFee: normalizeAmount(settings?.postalFee ?? settings?.postageFee),
-    shippingFeeAddress: normalizeAmount(settings?.shippingFeeAddress ?? settings?.shippingFeeHome ?? settings?.shippingFeeAddressHome),
+    shippingFeeAddressCz: normalizeAmount(settings?.shippingFeeAddressCz ?? settings?.shippingFeeAddress ?? settings?.shippingFeeHome ?? settings?.shippingFeeAddressHome),
+    shippingFeeAddressSk: normalizeAmount(settings?.shippingFeeAddressSk ?? settings?.shippingFeeAddress ?? settings?.shippingFeeHome ?? settings?.shippingFeeAddressHome),
     packingFee: normalizeAmount(settings?.packingFee),
     codFeeCz: normalizeAmount(settings?.codFeeCz ?? settings?.codFee),
     codFeeSk: normalizeAmount(settings?.codFeeSk),
@@ -8637,7 +9935,8 @@ function feeSettingsSummary(settings = feeSettings()) {
   if (clean(settings.shippingFeeCz)) parts.push(`Zásilkovna ČR ${formatMoney(settings.shippingFeeCz, currency)}`);
   if (clean(settings.shippingFeeSk)) parts.push(`Zásilkovna Slovensko ${formatMoney(settings.shippingFeeSk, currency)}`);
   if (clean(settings.postalFee)) parts.push(`Balíkovna ${formatMoney(settings.postalFee, currency)}`);
-  if (clean(settings.shippingFeeAddress)) parts.push(`Zásilkovna na adresu ${formatMoney(settings.shippingFeeAddress, currency)}`);
+  if (clean(settings.shippingFeeAddressCz)) parts.push(`Zásilkovna na adresu ČR ${formatMoney(settings.shippingFeeAddressCz, currency)}`);
+  if (clean(settings.shippingFeeAddressSk)) parts.push(`Zásilkovna na adresu Slovensko ${formatMoney(settings.shippingFeeAddressSk, currency)}`);
   if (clean(settings.packingFee)) parts.push(`Balné ${formatMoney(settings.packingFee, currency)}`);
   if (clean(settings.codFeeCz)) parts.push(`Dobírka ČR ${formatMoney(settings.codFeeCz, currency)}`);
   if (clean(settings.codFeeSk)) parts.push(`Dobírka Slovensko ${formatMoney(settings.codFeeSk, currency)}`);
@@ -8723,6 +10022,13 @@ function defaultShippingFeeForCustomer(settings, customer) {
   return "";
 }
 
+function defaultShippingAddressFeeForCustomer(settings, customer) {
+  const normalizedCountry = normalize(normalizeCountry(customer?.country, customerAddress(customer)));
+  if (normalizedCountry.includes("slovensko")) return settings.shippingFeeAddressSk || settings.shippingFeeAddressCz || "";
+  if (normalizedCountry.includes("cesko") || normalizedCountry.includes("česko")) return settings.shippingFeeAddressCz || settings.shippingFeeAddressSk || "";
+  return settings.shippingFeeAddressCz || settings.shippingFeeAddressSk || "";
+}
+
 function isCountryDefaultShippingLabel(label) {
   const normalizedLabel = normalize(clean(label));
   return [
@@ -8730,6 +10036,18 @@ function isCountryDefaultShippingLabel(label) {
     normalize("Zásilkovna ČR"),
     normalize("Zásilkovna SK"),
     normalize("Zásilkovna Slovensko"),
+    normalize("Zásilkovna na adresu"),
+    normalize("Zásilkovna na adresu ČR"),
+    normalize("Zásilkovna na adresu Slovensko"),
+  ].includes(normalizedLabel);
+}
+
+function isShippingAddressLabel(label) {
+  const normalizedLabel = normalize(clean(label));
+  return [
+    normalize("Zásilkovna na adresu"),
+    normalize("Zásilkovna na adresu ČR"),
+    normalize("Zásilkovna na adresu Slovensko"),
   ].includes(normalizedLabel);
 }
 
@@ -8843,11 +10161,18 @@ function applyDefaultShippingFeeForSelectedCustomer() {
   }
   const defaults = defaultOrderFees(form.elements.currency.value, form.elements.customerId.value);
   delete form.elements.shippingFee.dataset.shippingLabel;
-  if (!clean(form.elements.id.value) || currentShippingFee) {
-    form.elements.shippingFee.value = defaults.shippingFee || "";
-  }
-  if (clean(form.elements.shippingFee.value)) {
-    form.elements.shippingFee.dataset.shippingLabel = shippingLabelForCustomer(currentOrderCustomer());
+  if (isShippingAddressLabel(currentLabel)) {
+    form.elements.shippingFee.value = defaultShippingAddressFeeForCustomer(feeSettings(), currentOrderCustomer()) || "";
+    if (clean(form.elements.shippingFee.value)) {
+      form.elements.shippingFee.dataset.shippingLabel = shippingAddressLabelForCustomer(currentOrderCustomer());
+    }
+  } else {
+    if (!clean(form.elements.id.value) || currentShippingFee) {
+      form.elements.shippingFee.value = defaults.shippingFee || "";
+    }
+    if (clean(form.elements.shippingFee.value)) {
+      form.elements.shippingFee.dataset.shippingLabel = shippingLabelForCustomer(currentOrderCustomer());
+    }
   }
   if (!clean(form.elements.packingFee.value) && defaults.packingFee) form.elements.packingFee.value = defaults.packingFee;
   updateOrderAdvancedSummary();
@@ -9376,7 +10701,7 @@ function hasWarningTag(customer) {
 
 function isAttentionCustomer(customer) {
   if (hasWarningTag(customer)) return true;
-  return state.data.orders.some((order) => order.customerId === customer.id && order.paymentStatus === "nezaplaceno");
+  return state.data.orders.some((order) => order.customerId === customer.id && (order.paymentStatus === "nezaplaceno" || orderHasStorno(order)));
 }
 
 function parsePaymentStatus(text) {
@@ -9670,6 +10995,9 @@ function normalizeOrder(order = {}) {
     exchangeRate: "",
     priceManualOverride: false,
     feesIncludedInTotal: false,
+    stornoLines: [],
+    cancelledAt: "",
+    cancelledNote: "",
     season: defaultSeason(),
     ...order,
     id: clean(order.id) || uid(),
@@ -9696,10 +11024,73 @@ function normalizeOrder(order = {}) {
     packingFee: normalizeAmount(order.packingFee),
     codFee: normalizeAmount(order.codFee),
     extraFees: configuredExtraFees(order.extraFees),
+    stornoLines: normalizeOrderStornoLines(order.stornoLines),
+    cancelledAt: clean(order.cancelledAt),
+    cancelledNote: clean(order.cancelledNote),
     trackingNumber: "",
     packetaPacketId: "",
     note: cleanBusinessNote(order.note),
   };
+}
+
+function normalizeOrderStornoEntry(entry = {}) {
+  const quantity = Number.parseInt(clean(entry.quantity), 10);
+  return {
+    id: clean(entry.id) || uid(),
+    name: clean(entry.name),
+    quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
+    unitPrice: normalizeAmount(entry.unitPrice || entry.explicitPrice),
+    currency: normalizeCurrency(entry.currency || detectCurrency(entry.unitPrice || entry.explicitPrice)),
+    note: clean(entry.note),
+    createdAt: clean(entry.createdAt) || new Date().toISOString(),
+  };
+}
+
+function normalizeOrderStornoLines(lines = []) {
+  const source = Array.isArray(lines) ? lines : parseOrderStornoLinesValue(lines);
+  return source
+    .map((entry) => normalizeOrderStornoEntry(entry))
+    .filter((entry) => clean(entry.name));
+}
+
+function parseOrderStornoLinesValue(value = "") {
+  if (Array.isArray(value)) return value;
+  const text = clean(value);
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function orderStornoLines(order = {}) {
+  return normalizeOrderStornoLines(order?.stornoLines);
+}
+
+function orderHasStorno(order = {}) {
+  return Boolean(orderStornoLines(order).length || clean(order?.cancelledAt));
+}
+
+function customerStornoOrders(customerId = "") {
+  return (state.data.orders || []).filter((order) => clean(order.customerId) === clean(customerId) && orderHasStorno(order));
+}
+
+function customerStornoMeta(customerId = "") {
+  const orders = customerStornoOrders(customerId)
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.cancelledAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.cancelledAt || a.orderDate || "")));
+  const latest = orders[0] || null;
+  let note = clean(latest?.cancelledNote);
+  if (!note && latest) {
+    const entry = orderStornoLines(latest)
+      .slice()
+      .reverse()
+      .find((item) => clean(item.note));
+    note = clean(entry?.note);
+  }
+  return { count: orders.length, note, latest };
 }
 
 function normalizeCross(cross = {}) {
@@ -9729,6 +11120,7 @@ function normalizeOffer(offer = {}) {
     date: clean(offer.date) || toDateInput(new Date()),
     facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || toDateInput(new Date()),
     facebookPublishTime: clean(offer.facebookPublishTime) || "20:00",
+    type: normalizeOfferType(offer.type),
     status: ["připravená", "zveřejněná", "uzavřená"].includes(clean(offer.status)) ? clean(offer.status) : "připravená",
     note: clean(offer.note),
     items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [],
@@ -10030,7 +11422,7 @@ async function resolveOrderExchangeRate(date) {
 }
 
 function orderPriceEur(order) {
-  const amount = parseDecimal(order.price);
+  const amount = orderResolvedTotal(order);
   if (!Number.isFinite(amount)) return "";
   if (normalizeCurrency(order.currency) === "EUR") return amount;
   const rate = exchangeRateForOrder(order);
@@ -10038,12 +11430,23 @@ function orderPriceEur(order) {
 }
 
 function orderConversionText(order) {
-  const amount = parseDecimal(order.price);
+  const amount = orderResolvedTotal(order);
   const rate = exchangeRateForOrder(order);
   if (!Number.isFinite(amount) || !rate?.rate) return "";
   const currency = normalizeCurrency(order.currency);
   if (currency === "EUR") return `≈ ${formatMoney(amount * rate.rate, "CZK")}`;
   return `≈ ${formatMoney(amount / rate.rate, "EUR")}`;
+}
+
+function orderResolvedTotal(order = {}) {
+  const stored = parseDecimal(order?.price);
+  const derived = orderTotalFromText(order?.varietiesText || "") + orderFeeTotal(order);
+  if (Number.isFinite(derived) && derived > 0) {
+    if (!Number.isFinite(stored)) return derived;
+    if (orderHasStorno(order) && Math.abs(stored - derived) > 0.0001) return derived;
+  }
+  if (Number.isFinite(stored)) return stored;
+  return Number.isFinite(derived) ? derived : Number.NaN;
 }
 
 function convertAmount(amount, fromCurrency, toCurrency, rate) {
@@ -10071,7 +11474,8 @@ function rateHintText(rate) {
 }
 
 function formatOrderPrice(order) {
-  return formatMoney(order.price || 0, normalizeCurrency(order.currency));
+  const total = orderResolvedTotal(order);
+  return formatMoney(Number.isFinite(total) ? total : 0, normalizeCurrency(order.currency));
 }
 
 function orderFeesText(order) {
@@ -10342,6 +11746,300 @@ function offerStatusClass(status) {
   return "";
 }
 
+function normalizeOfferType(value) {
+  return clean(value) === "rests" ? "rests" : "offer";
+}
+
+function adjustedOfferTitleForType(title, currentType, nextType, date = toDateInput(new Date())) {
+  const normalizedCurrentType = normalizeOfferType(currentType);
+  const normalizedNextType = normalizeOfferType(nextType);
+  const cleanTitle = clean(title);
+  if (!cleanTitle) return defaultOfferTitle(normalizedNextType, date);
+  return cleanTitle === defaultOfferTitle(normalizedCurrentType, date)
+    ? defaultOfferTitle(normalizedNextType, date)
+    : cleanTitle;
+}
+
+function isRestOffer(offer) {
+  return normalizeOfferType(offer?.type) === "rests";
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty/poznámky"
+    : "Nabídka";
+}
+
+function splitOffersByType(offers = []) {
+  return offers.reduce((groups, offer) => {
+    if (isRestOffer(offer)) groups.rests.push(offer);
+    else groups.offers.push(offer);
+    return groups;
+  }, { offers: [], rests: [] });
+}
+
+function defaultOfferTitle(type = "offer", date = toDateInput(new Date())) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty/poznámky ${formatDate(date)}`
+    : `Nabídka ${formatDate(date)}`;
+}
+
+function openOfferDialog(id = null, defaults = {}) {
+  const offer = id ? findOffer(id) : null;
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty/poznámky" : "Upravit nabĂ­dku")
+    : (initialType === "rests" ? "NovĂ© resty/poznámky" : "NovĂˇ nabĂ­dka");
+  els.offerForm.reset();
+  els.offerForm.elements.id.value = offer?.id || "";
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
+  els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
+  els.offerForm.elements.status.value = offer?.status || "pĹ™ipravenĂˇ";
+  els.offerForm.elements.note.value = offer?.note || "";
+  syncOfferStatusToggle();
+  showDialog(els.offerDialog);
+}
+
+function setOfferType(id, nextType, options = {}) {
+  const offer = findOffer(id);
+  if (!offer) return;
+  const normalizedCurrentType = normalizeOfferType(offer.type);
+  const normalizedNextType = normalizeOfferType(nextType);
+  if (normalizedCurrentType === normalizedNextType) return;
+  const offerDate = clean(offer.date) || toDateInput(new Date());
+  offer.title = adjustedOfferTitleForType(offer.title, normalizedCurrentType, normalizedNextType, offerDate);
+  offer.type = normalizedNextType;
+  offer.updatedAt = new Date().toISOString();
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  if (!options.quiet) {
+    toast(normalizedNextType === "rests" ? "Nabídka přesunuta do restů/poznámek." : "Resty/poznámky přesunuty do nabídek.");
+  }
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty/pozn\u00e1mky"
+    : "Nab\u00eddka";
+}
+
+function defaultOfferTitle(type = "offer", date = toDateInput(new Date())) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty/pozn\u00e1mky ${formatDate(date)}`
+    : `Nab\u00eddka ${formatDate(date)}`;
+}
+
+function openOfferDialog(id = null, defaults = {}) {
+  const offer = id ? findOffer(id) : null;
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty/pozn\u00e1mky" : "Upravit nab\u00eddku")
+    : (initialType === "rests" ? "Nov\u00e9 resty/pozn\u00e1mky" : "Nov\u00e1 nab\u00eddka");
+  els.offerForm.reset();
+  els.offerForm.elements.id.value = offer?.id || "";
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
+  els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
+  els.offerForm.elements.status.value = offer?.status || "p\u0159ipraven\u00e1";
+  els.offerForm.elements.note.value = offer?.note || "";
+  syncOfferStatusToggle();
+  showDialog(els.offerDialog);
+}
+
+function setOfferType(id, nextType, options = {}) {
+  const offer = findOffer(id);
+  if (!offer) return;
+  const normalizedCurrentType = normalizeOfferType(offer.type);
+  const normalizedNextType = normalizeOfferType(nextType);
+  if (normalizedCurrentType === normalizedNextType) return;
+  const offerDate = clean(offer.date) || toDateInput(new Date());
+  offer.title = adjustedOfferTitleForType(offer.title, normalizedCurrentType, normalizedNextType, offerDate);
+  offer.type = normalizedNextType;
+  offer.updatedAt = new Date().toISOString();
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  if (!options.quiet) {
+    toast(normalizedNextType === "rests" ? "Nab\u00eddka p\u0159esunuta do rest\u016f/pozn\u00e1mek." : "Resty/pozn\u00e1mky p\u0159esunuty do nab\u00eddek.");
+  }
+}
+
+function uniqueOfferTitle(baseTitle, excludeId = "") {
+  const originalTitle = clean(baseTitle) || defaultOfferTitle("offer", toDateInput(new Date()));
+  let nextTitle = originalTitle;
+  let index = 2;
+  while (state.data.offers.some((offer) => clean(offer.id) !== clean(excludeId) && clean(offer.title) === nextTitle)) {
+    nextTitle = `${originalTitle} (${index})`;
+    index += 1;
+  }
+  return nextTitle;
+}
+
+function offerLeftoverTransferEntries(offer = {}) {
+  return sortedOfferItems(offer).reduce((entries, item) => {
+    const availableQuantity = reservationAvailableQuantity(item);
+    if (!availableQuantity) return entries;
+    const totalQuantity = Number(normalizeWholeNumber(item.quantity)) || 0;
+    entries.push({
+      item,
+      availableQuantity,
+      remainingQuantity: Math.max(totalQuantity - availableQuantity, 0),
+    });
+    return entries;
+  }, []);
+}
+
+function cloneOfferItemForLeftovers(item = {}, quantity = 0) {
+  return normalizeOfferItem({
+    ...item,
+    id: uid(),
+    quantity: String(Math.max(Number(quantity) || 0, 0)),
+    reservations: [],
+  });
+}
+
+function moveOfferLeftoversToNewOffer(id, options = {}) {
+  const offer = findOffer(id);
+  if (!offer) return null;
+  if (isRestOffer(offer)) {
+    toast("Zbytky p\u0159esouvej jen z klasick\u00e9 nab\u00eddky.");
+    return null;
+  }
+  const entries = offerLeftoverTransferEntries(offer);
+  if (!entries.length) {
+    toast("V nab\u00eddce u\u017e nejsou \u017e\u00e1dn\u00e9 voln\u00e9 kusy k p\u0159esunu.");
+    return null;
+  }
+  const totalQuantity = entries.reduce((sum, entry) => sum + entry.availableQuantity, 0);
+  if (!confirm(`P\u0159esunout ${totalQuantity} voln\u00fdch ks do nov\u00e9 nab\u00eddky?`)) return null;
+
+  const now = new Date().toISOString();
+  const nextDate = clean(options.date) || toDateInput(new Date());
+  const nextOffer = normalizeOffer({
+    id: uid(),
+    title: uniqueOfferTitle(defaultOfferTitle("offer", nextDate)),
+    date: nextDate,
+    facebookPublishDate: nextDate,
+    facebookPublishTime: clean(offer.facebookPublishTime) || "20:00",
+    type: "offer",
+    status: "p\u0159ipraven\u00e1",
+    note: `Zbytky z nab\u00eddky ${offer.title}.`,
+    items: entries.map(({ item, availableQuantity }) => cloneOfferItemForLeftovers(item, availableQuantity)),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const entriesById = new Map(entries.map((entry) => [clean(entry.item.id), entry]));
+  offer.items = (offer.items || []).reduce((items, item) => {
+    const entry = entriesById.get(clean(item.id));
+    if (!entry) {
+      items.push(item);
+      return items;
+    }
+    item.quantity = String(entry.remainingQuantity);
+    if ((Number(normalizeWholeNumber(item.quantity)) || 0) > 0 || (item.reservations || []).length) {
+      items.push(item);
+    }
+    return items;
+  }, []);
+  offer.updatedAt = now;
+  sortOfferItemsInPlace(offer);
+
+  state.data.offers.push(nextOffer);
+  state.selectedOfferId = nextOffer.id;
+  saveData();
+  renderAll();
+  if (!options.quiet) toast("Vytvo\u0159ena nov\u00e1 nab\u00eddka z neprodan\u00fdch zbytk\u016f.");
+  return nextOffer;
+}
+
+function renderOfferDetail() {
+  const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+  if (!offer) {
+    els.offerDetail.innerHTML = emptyState("Vyber nab\u00eddku nebo zalo\u017e novou.");
+    return;
+  }
+  state.selectedOfferId = offer.id;
+  const items = sortedOfferItems(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty/pozn\u00e1mky" : "Upravit nab\u00eddku";
+  const toggleTypeLabel = isRestOffer(offer) ? "P\u0159esunout do nab\u00eddek" : "P\u0159esunout do rest\u016f/pozn\u00e1mek";
+  const moveLeftoversButton = !isRestOffer(offer)
+    ? `<button class="button ghost" type="button" data-move-offer-leftovers="${offer.id}">P\u0159esunout neprodan\u00e9 do nov\u00e9 nab\u00eddky</button>`
+    : "";
+
+  els.offerDetail.innerHTML = `
+    <div class="detail-header">
+      <div>
+        <h2>${escapeHtml(offer.title)}</h2>
+        <div class="pills">
+          <span class="pill">${escapeHtml(offerTypeLabel(offer))}</span>
+          <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+        </div>
+        <p class="fb-name">${formatDate(offer.date)}</p>
+        ${offer.note ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : ""}
+      </div>
+      <div class="detail-actions">
+        <button class="button ghost" type="button" data-edit-offer="${offer.id}">${editLabel}</button>
+        <button class="button ghost" type="button" data-toggle-offer-type="${offer.id}">${toggleTypeLabel}</button>
+        ${moveLeftoversButton}
+        <button class="button primary" type="button" data-add-offer-item="${offer.id}">P\u0159idat od\u0159ezek</button>
+        <button class="button ghost" type="button" data-facebook-offer="${offer.id}">Facebook</button>
+        <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvo\u0159it objedn\u00e1vky</button>
+      </div>
+    </div>
+    <section class="detail-section">
+      <div class="history-summary">
+        <article><span>Polo\u017eky</span><strong>${items.length}</strong></article>
+        <article><span>Potvrzeno</span><strong>${offerConfirmedCount(offer)}</strong></article>
+        <article><span>N\u00e1hradn\u00edci</span><strong>${offerAlternateCount(offer)}</strong></article>
+        <article><span>Hodnota</span><strong>${escapeHtml(offerTotalText(offer))}</strong></article>
+      </div>
+    </section>
+    <section class="detail-section">
+      <div class="stack-list">
+        ${items.length ? items.map((item) => renderOfferItem(offer, item)).join("") : emptyState("Zat\u00edm bez od\u0159ezk\u016f.")}
+      </div>
+    </section>
+  `;
+
+  els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-toggle-offer-type]")?.addEventListener("click", () => {
+    setOfferType(offer.id, isRestOffer(offer) ? "offer" : "rests");
+  });
+  els.offerDetail.querySelector("[data-move-offer-leftovers]")?.addEventListener("click", () => {
+    moveOfferLeftoversToNewOffer(offer.id);
+  });
+  els.offerDetail.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemDialog(offer.id));
+  els.offerDetail.querySelector("[data-facebook-offer]")?.addEventListener("click", () => openFacebookOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  els.offerDetail.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemDialog(offer.id, button.dataset.editOfferItem));
+  });
+  els.offerDetail.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(offer.id, button.dataset.deleteOfferItem));
+  });
+  els.offerDetail.querySelectorAll("[data-add-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationDialog(offer.id, button.dataset.addReservation, null, {
+      status: button.dataset.addReservationStatus || "",
+    }));
+  });
+  els.offerDetail.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationDialog(offer.id, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.offerDetail.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(offer.id, button.dataset.itemId, button.dataset.deleteReservation));
+  });
+  hydrateLocalPhotoImages(els.offerDetail);
+}
+
 function compareOfferItems(a = {}, b = {}) {
   const nameDelta = naturalCompare(a.varietyName || a.name, b.varietyName || b.name);
   return nameDelta || naturalCompare(a.id, b.id);
@@ -10566,7 +12264,7 @@ async function paymentMessage(customer, order) {
   const payment = await buildOrderPaymentDescriptor({ order, customer, promptIfMissingCountry: false });
   const context = {
     lines,
-    total: parseDecimal(order.price),
+    total: orderResolvedTotal(order),
     order,
     paymentStatus: parsePaymentStatus(order.paymentStatus),
     payment,
@@ -10824,6 +12522,10 @@ function orderTotalFromText(text) {
   }, 0);
 }
 
+const ORDER_LINE_CURRENCY_TOKEN = "(?:kč|kÄŤ|kc|czk|eur|€|â‚¬)";
+const ORDER_LINE_QUANTITY_TOKEN = "(?:ks|kus|kusy|řízků|Ĺ™Ă­zkĹŻ|rizku|sazenic)";
+const ORDER_LINE_FILLER_TOKEN = "(?:celkem|bonus|kusy|sazenice|řízky|Ĺ™Ă­zky|rizky|kč|kÄŤ|kc|eur|euro|kopřivy|kopĹ™ivy|koprivy)";
+
 function rawLineWithoutQuantity(line) {
   return clean(line)
     .replace(/\b\d+\s*x\b/gi, " ")
@@ -10906,6 +12608,76 @@ function stripMatchedVarietyName(text, matchedName) {
   const escapedName = escapeRegExp(clean(matchedName)).replace(/\s+/g, "\\s+");
   if (!escapedName) return text;
   return clean(text).replace(new RegExp(escapedName, "i"), " ");
+}
+
+var ORDER_LINE_CURRENCY_TOKEN_V2 = "(?:k\\u010d|k\\u00c4\\u0164|kc|czk|eur|\\u20ac|\\u00e2\\u201a\\u00ac)";
+var ORDER_LINE_QUANTITY_TOKEN_V2 = "(?:ks|kus|kusy|\\u0159\\u00edzk\\u016f|\\u0139\\u2122\\u0102\\u00adzk\\u0139\\u017b|rizku|sazenic)";
+var ORDER_LINE_FILLER_TOKEN_V2 = "(?:celkem|bonus|kusy|sazenice|\\u0159\\u00edzky|\\u0139\\u2122\\u0102\\u00adzky|rizky|k\\u010d|k\\u00c4\\u0164|kc|eur|euro|kop\\u0159ivy|kop\\u0139\\u2122ivy|koprivy)";
+
+function rawLineWithoutQuantity(line) {
+  const quantityToken = "(?:ks|kus|kusy|\\u0159\\u00edzk\\u016f|\\u0139\\u2122\\u0102\\u00adzk\\u0139\\u017b|rizku|sazenic)";
+  return clean(line)
+    .replace(/\b\d+\s*x\b/gi, " ")
+    .replace(/\bx\s*\d+\b/gi, " ")
+    .replace(new RegExp(`\\b\\d+\\s*${quantityToken}\\b`, "giu"), " ")
+    .replace(new RegExp(`\\b${quantityToken}\\s*\\d+\\b`, "giu"), " ");
+}
+
+function quantityFromVarietyLine(line) {
+  const quantityToken = "(?:ks|kus|kusy|\\u0159\\u00edzk\\u016f|\\u0139\\u2122\\u0102\\u00adzk\\u0139\\u017b|rizku|sazenic)";
+  const value = clean(line);
+  const match =
+    value.match(/\b(\d+)\s*x\b/i) ||
+    value.match(/\bx\s*(\d+)\b/i) ||
+    value.match(new RegExp(`\\b(\\d+)\\s*${quantityToken}\\b`, "iu"));
+  const quantity = match ? Number(match[1]) : 1;
+  return Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+}
+
+function cleanVarietyNameFromOrderLine(line) {
+  const currencyToken = "(?:k\\u010d|k\\u00c4\\u0164|kc|czk|eur|\\u20ac|\\u00e2\\u201a\\u00ac)";
+  const fillerToken = "(?:celkem|bonus|kusy|sazenice|\\u0159\\u00edzky|\\u0139\\u2122\\u0102\\u00adzky|rizky|k\\u010d|k\\u00c4\\u0164|kc|eur|euro|kop\\u0159ivy|kop\\u0139\\u2122ivy|koprivy)";
+  return rawLineWithoutQuantity(line)
+    .replace(new RegExp(`(?:@|=)\\s*\\d+([,.]\\d+)?\\s*${currencyToken}?`, "giu"), " ")
+    .replace(new RegExp(`-\\s*\\d+([,.]\\d+)?\\s*${currencyToken}?`, "giu"), " ")
+    .replace(new RegExp(`\\b\\d+([,.]\\d+)?\\s*${currencyToken}\\b`, "giu"), " ")
+    .replace(/[@=]/g, " ")
+    .replace(new RegExp(`\\b${fillerToken}\\b`, "giu"), " ")
+    .replace(/^[\s\-/?.,]+|[\s\-/?.,]+$/g, "");
+}
+
+function explicitPriceFromOrderLine(line, matchedName = "") {
+  const text = clean(line);
+  const marked = text.match(new RegExp(`(?:@|=)\\s*(-?\\d+(?:[.,]\\d+)?)\\s*${ORDER_LINE_CURRENCY_TOKEN_V2}?`, "iu"));
+  if (marked) {
+    return {
+      amount: marked[1],
+      currency: detectCurrency(marked[0]),
+    };
+  }
+  const dashed = text.match(new RegExp(`(?:-|â€“|â€”|–|—)\\s*(\\d+(?:[.,]\\d+)?)\\s*${ORDER_LINE_CURRENCY_TOKEN_V2}?$`, "iu"));
+  if (dashed) {
+    return {
+      amount: dashed[1],
+      currency: detectCurrency(dashed[0]),
+    };
+  }
+
+  const withoutName = matchedName ? stripMatchedVarietyName(text, matchedName) : text;
+  const remainder = clean(rawLineWithoutQuantity(withoutName))
+    .replace(/\b(celkem|bonus|zdarma|navic|navĂ­c|plus|pozdÄ›ji|pokud|bude)\b/gi, " ")
+    .replace(/[=:@]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const plain = remainder.match(new RegExp(`^[-+]?\\s*(\\d+(?:[.,]\\d+)?)(?:\\s*${ORDER_LINE_CURRENCY_TOKEN_V2})?$`, "iu"));
+  if (plain) {
+    return {
+      amount: plain[1],
+      currency: detectCurrency(plain[0]),
+    };
+  }
+
+  return { amount: "", currency: detectCurrency(text) };
 }
 
 function escapeRegExp(value) {
@@ -11317,6 +13089,49 @@ async function resolveIndexedPhotoUrl(ref, { original = false } = {}) {
   return url;
 }
 
+function isSupabasePhotoNearViewport(image) {
+  if (!image?.getBoundingClientRect) return true;
+  const rect = image.getBoundingClientRect();
+  const margin = SUPABASE_PHOTO_LAZY_MARGIN_PX;
+  const width = window.innerWidth || document.documentElement?.clientWidth || 0;
+  const height = window.innerHeight || document.documentElement?.clientHeight || 0;
+  return rect.bottom >= -margin
+    && rect.top <= height + margin
+    && rect.right >= -margin
+    && rect.left <= width + margin;
+}
+
+function ensureSupabasePhotoObserver() {
+  if (photoRuntime.supabaseObserver || typeof IntersectionObserver !== "function") return photoRuntime.supabaseObserver;
+  photoRuntime.supabaseObserver = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting && entry.intersectionRatio <= 0) return;
+      runDeferredSupabasePhotoLoad(entry.target);
+    });
+  }, { rootMargin: SUPABASE_PHOTO_OBSERVER_ROOT_MARGIN });
+  return photoRuntime.supabaseObserver;
+}
+
+function queueDeferredSupabasePhotoLoad(image, load) {
+  const observer = ensureSupabasePhotoObserver();
+  if (!observer || image.dataset.photoQueued === "1" || image.dataset.photoLoaded === "1") return false;
+  photoRuntime.deferredSupabaseLoads.set(image, load);
+  image.dataset.photoQueued = "1";
+  observer.observe(image);
+  return true;
+}
+
+function runDeferredSupabasePhotoLoad(image) {
+  const observer = photoRuntime.supabaseObserver;
+  if (observer) observer.unobserve(image);
+  const load = photoRuntime.deferredSupabaseLoads.get(image);
+  if (!load) return;
+  photoRuntime.deferredSupabaseLoads.delete(image);
+  Promise.resolve(load()).catch(() => {
+    markPhotoMissing(image);
+  });
+}
+
 function hydrateLocalPhotoImages(root = document) {
   if (!root?.querySelectorAll) return;
   root.querySelectorAll("[data-local-photo-ref]").forEach(async (image) => {
@@ -11348,36 +13163,43 @@ function hydrateLocalPhotoImages(root = document) {
     const ref = image.dataset.supabasePhotoRef;
     const fallbackRef = image.dataset.supabasePhotoFallback || "";
     const fallbackAllowed = image.dataset.supabasePhotoAllowFallback === "1";
-    image.onerror = async () => {
-      if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") {
-        markPhotoMissing(image);
-        return;
-      }
-      image.dataset.photoFallbackLoaded = "1";
-      const fallbackUrl = await resolveSupabasePhotoUrl(fallbackRef);
-      if (fallbackUrl) {
-        image.src = fallbackUrl;
+    const load = async () => {
+      image.dataset.photoQueued = "";
+      image.onerror = async () => {
+        if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") {
+          markPhotoMissing(image);
+          return;
+        }
+        image.dataset.photoFallbackLoaded = "1";
+        const fallbackUrl = await resolveSupabasePhotoUrl(fallbackRef);
+        if (fallbackUrl) {
+          image.src = fallbackUrl;
+          image.dataset.photoLoaded = "1";
+          clearPhotoMissing(image);
+        } else {
+          markPhotoMissing(image);
+        }
+      };
+      try {
+        let url = await resolveSupabasePhotoUrl(ref);
+        if (!url && fallbackAllowed && fallbackRef) {
+          url = await resolveSupabasePhotoUrl(fallbackRef);
+        }
+        if (!url) {
+          markPhotoMissing(image);
+          return;
+        }
+        image.src = url;
         image.dataset.photoLoaded = "1";
         clearPhotoMissing(image);
-      } else {
+      } catch {
         markPhotoMissing(image);
       }
     };
-    try {
-      let url = await resolveSupabasePhotoUrl(ref);
-      if (!url && fallbackAllowed && fallbackRef) {
-        url = await resolveSupabasePhotoUrl(fallbackRef);
-      }
-      if (!url) {
-        markPhotoMissing(image);
-        return;
-      }
-      image.src = url;
-      image.dataset.photoLoaded = "1";
-      clearPhotoMissing(image);
-    } catch {
-      markPhotoMissing(image);
-    }
+    const lazyEligible = clean(ref).startsWith(SUPABASE_PHOTO_PREFIX)
+      || clean(fallbackRef).startsWith(SUPABASE_PHOTO_PREFIX);
+    if (lazyEligible && !isSupabasePhotoNearViewport(image) && queueDeferredSupabasePhotoLoad(image, load)) return;
+    await load();
   });
 }
 
@@ -12382,3 +14204,1770 @@ const PAYMENT_QR_RS_BLOCK_TABLE = [
   [20, 147, 117, 4, 148, 118], [40, 75, 47, 7, 76, 48], [43, 54, 24, 22, 55, 25], [10, 45, 15, 67, 46, 16],
   [19, 148, 118, 6, 149, 119], [18, 75, 47, 31, 76, 48], [34, 54, 24, 34, 55, 25], [20, 45, 15, 61, 46, 16],
 ];
+
+function restFormVarietyNames(value = "") {
+  return unique(clean(value).split(/\r?\n|[,;]+/).map(clean).filter(Boolean));
+}
+
+function restOfferVarietyLabel(offer = {}) {
+  const values = restFormVarietyNames(offer.restVarietyName);
+  if (values.length) return values.join(", ");
+  const linked = findVariety(clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  return clean(linked?.name || offer.restVarietyName);
+}
+
+function restOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = restOfferCustomer(offer);
+  const variety = restOfferVarietyLabel(offer);
+  const itemLines = sortedOfferItems(offer)
+    .slice(0, 2)
+    .map((item) => `${offerItemNameSafe(item)} · ${quantityText(item.quantity)} ks`);
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (itemLines.length) parts.push(itemLines.join(", "));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function ensureRestVarietyPickerScaffold(form) {
+  if (!form) return null;
+  let picker = form.elements.restVarietyPicker || form.querySelector('[name="restVarietyPicker"]');
+  let hidden = form.elements.restVarietyName;
+  let list = form.querySelector("[data-rest-variety-list]");
+  let addButton = form.querySelector("[data-rest-variety-add]");
+  let suggestions = form.querySelector("[data-rest-variety-suggestions]");
+  if (!picker) {
+    const original = form.querySelector('[name="restVarietyName"]');
+    if (!original) return null;
+    original.name = "restVarietyPicker";
+    original.placeholder = "začni psát a přidej";
+    const label = original.closest("label");
+    const heading = label?.querySelector("span");
+    if (heading) heading.textContent = "Odrůdy";
+    hidden = document.createElement("textarea");
+    hidden.name = "restVarietyName";
+    hidden.hidden = true;
+    hidden.setAttribute("aria-hidden", "true");
+    label?.after(hidden);
+    const actions = document.createElement("div");
+    actions.className = "wide rest-variety-picker-row";
+    actions.innerHTML = '<button class="button ghost" type="button" data-rest-variety-add>Přidat odrůdu</button>';
+    hidden.after(actions);
+    list = document.createElement("div");
+    list.className = "wide rest-variety-selection";
+    list.setAttribute("data-rest-variety-list", "");
+    actions.after(list);
+    suggestions = document.createElement("div");
+    suggestions.className = "wide rest-variety-suggestions";
+    suggestions.setAttribute("data-rest-variety-suggestions", "");
+    suggestions.hidden = true;
+    label?.after(suggestions);
+    picker = original;
+    addButton = actions.querySelector("[data-rest-variety-add]");
+  }
+  if (!suggestions) {
+    suggestions = document.createElement("div");
+    suggestions.className = "wide rest-variety-suggestions";
+    suggestions.setAttribute("data-rest-variety-suggestions", "");
+    suggestions.hidden = true;
+    picker?.closest("label")?.after(suggestions);
+  }
+  return { picker, hidden, list, addButton, suggestions };
+}
+
+function renderRestVarietySelection(container, names = []) {
+  if (!container) return;
+  container.innerHTML = names.length
+    ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>×</span></button>`).join("")
+    : '<div class="rest-variety-empty">Zatím bez odrůd.</div>';
+}
+
+function setupRestVarietyPickerForOfferForm(form, initialValue = "") {
+  const scaffold = ensureRestVarietyPickerScaffold(form);
+  if (!scaffold) return;
+  form.__restVarietyNames = restFormVarietyNames(initialValue || scaffold.hidden.value);
+  const suggestionNames = (query = "") => {
+    const needle = normalize(clean(query));
+    const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+    return [...(state.data.varieties || [])]
+      .map((variety) => clean(variety.name))
+      .filter(Boolean)
+      .filter((name) => !selected.has(normalize(name)))
+      .filter((name) => !needle || normalize(name).includes(needle))
+      .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }))
+      .slice(0, 8);
+  };
+  const renderSuggestions = () => {
+    if (!scaffold.suggestions) return;
+    const names = suggestionNames(scaffold.picker.value);
+    scaffold.suggestions.hidden = !names.length;
+    scaffold.suggestions.innerHTML = names
+      .map((name) => `<button class="rest-variety-suggestion" type="button" data-rest-variety-pick="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+      .join("");
+  };
+  const sync = () => {
+    scaffold.hidden.value = form.__restVarietyNames.join("\n");
+    renderRestVarietySelection(scaffold.list, form.__restVarietyNames);
+    renderSuggestions();
+  };
+  const addCurrent = () => {
+    const raw = clean(scaffold.picker.value);
+    if (!raw) return;
+    const exact = findVarietyByName(raw);
+    const nextName = clean(exact?.name || raw);
+    if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+      form.__restVarietyNames.push(nextName);
+    }
+    scaffold.picker.value = "";
+    sync();
+    scaffold.picker.focus();
+  };
+  scaffold.addButton.onclick = addCurrent;
+  scaffold.picker.oninput = renderSuggestions;
+  scaffold.picker.onkeydown = (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addCurrent();
+  };
+  scaffold.list.onclick = (event) => {
+    const button = event.target.closest("[data-rest-variety-remove]");
+    if (!button) return;
+    form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+    sync();
+  };
+  if (scaffold.suggestions) {
+    scaffold.suggestions.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-pick]");
+      if (!button) return;
+      scaffold.picker.value = button.dataset.restVarietyPick || "";
+      addCurrent();
+    };
+  }
+  sync();
+}
+
+function syncOfferRestFieldsVisibility() {
+  const form = els.offerForm;
+  if (!form) return;
+  const isRest = normalizeOfferType(form.elements.type?.value) === "rests";
+  const restBlock = form.querySelector("[data-rest-offer-fields]");
+  const titleField = form.elements.title?.closest("label");
+  const dateField = form.elements.date?.closest("label");
+  const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+  const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+  const statusField = form.querySelector(".offer-status-field");
+  const optionalDivider = form.querySelector(".form-divider");
+  const noteField = form.elements.note?.closest("label");
+  const setVisible = (node, visible) => {
+    if (!node) return;
+    node.hidden = false;
+    node.style.display = visible ? "" : "none";
+  };
+  setVisible(titleField, !isRest);
+  setVisible(dateField, true);
+  setVisible(facebookDateField, !isRest);
+  setVisible(facebookTimeField, !isRest);
+  setVisible(statusField, !isRest);
+  setVisible(optionalDivider, !isRest);
+  setVisible(noteField, true);
+  if (restBlock) {
+    restBlock.hidden = !isRest;
+    restBlock.style.display = isRest ? "" : "none";
+  }
+  if (isRest) {
+    const nextDate = clean(form.elements.date?.value) || toDateInput(new Date());
+    form.elements.title.value = defaultOfferTitle("rests", nextDate);
+    form.elements.facebookPublishDate.value = nextDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "připravená";
+  }
+}
+
+function openOfferDialog(id = null, defaults = {}) {
+  const offer = id ? findOffer(id) : null;
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty" : "Upravit nabídku")
+    : (initialType === "rests" ? "Nové resty" : "Nová nabídka");
+  els.offerForm.reset();
+  els.offerForm.elements.id.value = offer?.id || "";
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
+  els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
+  els.offerForm.elements.status.value = offer?.status || "připravená";
+  els.offerForm.elements.note.value = offer?.note || "";
+  renderOfferRestCustomerOptions(offer?.restCustomerId || defaults.restCustomerId || "");
+  els.offerForm.elements.restVarietyId.value = "";
+  els.offerForm.elements.date.oninput = syncOfferRestFieldsVisibility;
+  els.offerForm.elements.date.onchange = syncOfferRestFieldsVisibility;
+  syncOfferStatusToggle();
+  syncOfferRestFieldsVisibility();
+  setupRestVarietyPickerForOfferForm(els.offerForm, offer?.restVarietyName || "");
+  showDialog(els.offerDialog);
+}
+
+function saveOfferFromForm() {
+  if (!els.offerForm.reportValidity()) return;
+  const form = new FormData(els.offerForm);
+  const id = form.get("id") || uid();
+  const existing = findOffer(id);
+  const now = new Date().toISOString();
+  const nextDate = clean(form.get("date")) || toDateInput(new Date());
+  const nextType = normalizeOfferType(form.get("type") || existing?.type);
+  const sourceType = existing ? normalizeOfferType(existing.type) : nextType;
+  const isRest = nextType === "rests";
+  const names = isRest ? restFormVarietyNames(form.get("restVarietyName")) : [];
+  const offer = normalizeOffer({
+    ...existing,
+    id,
+    title: isRest ? defaultOfferTitle("rests", nextDate) : adjustedOfferTitleForType(clean(form.get("title")), sourceType, nextType, nextDate),
+    date: nextDate,
+    facebookPublishDate: isRest ? nextDate : (clean(form.get("facebookPublishDate")) || nextDate),
+    facebookPublishTime: isRest ? "20:00" : (clean(form.get("facebookPublishTime")) || "20:00"),
+    type: nextType,
+    status: isRest ? "připravená" : (clean(form.get("status")) || "připravená"),
+    note: clean(form.get("note")),
+    restCustomerId: isRest ? clean(form.get("restCustomerId")) : "",
+    restVarietyId: "",
+    restVarietyName: isRest ? names.join("\n") : "",
+    items: existing?.items || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  if (existing) Object.assign(existing, offer);
+  else state.data.offers.push(offer);
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  els.offerDialog.close();
+  toast(isRest ? "Resty uloženy." : "Nabídka uložena.");
+}
+
+function restOfferOrderLines(offer = {}) {
+  const lines = [];
+  sortedOfferItems(offer).forEach((item) => {
+    const quantity = Math.max(Number(normalizeWholeNumber(item.quantity)) || 0, 0);
+    if (!quantity) return;
+    const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
+    const explicitPrice = parseDecimal(item.price);
+    const fallbackPrice = parseDecimal(variety?.salePrice);
+    const unitPrice = Number.isFinite(explicitPrice) ? item.price : (Number.isFinite(fallbackPrice) ? variety.salePrice : "");
+    lines.push(unitPrice ? buildOrderLineText(offerItemNameSafe(item), quantity, unitPrice, normalizeCurrency(item.currency || variety?.saleCurrency || "CZK")) : `${offerItemNameSafe(item)} ${quantity}x`);
+  });
+  if (lines.length) return lines;
+  return restFormVarietyNames(offer.restVarietyName).map((name) => {
+    const variety = findVarietyByName(name);
+    const fallbackPrice = parseDecimal(variety?.salePrice);
+    return Number.isFinite(fallbackPrice) ? buildOrderLineText(name, 1, variety.salePrice, normalizeCurrency(variety?.saleCurrency || "CZK")) : `${name} 1x`;
+  });
+}
+
+function restOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = restOfferCustomer(offer);
+  const variety = restOfferVarietyLabel(offer);
+  const itemLines = sortedOfferItems(offer)
+    .slice(0, 2)
+    .map((item) => `${offerItemNameSafe(item)} · ${quantityText(item.quantity)} ks`);
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (itemLines.length) parts.push(itemLines.join(", "));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function syncOfferRestFieldsVisibility() {
+  const form = els.offerForm;
+  if (!form) return;
+  const isRest = normalizeOfferType(form.elements.type?.value) === "rests";
+  const restBlock = form.querySelector("[data-rest-offer-fields]");
+  const titleField = form.elements.title?.closest("label");
+  const dateField = form.elements.date?.closest("label");
+  const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+  const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+  const statusField = form.querySelector(".offer-status-field");
+  const optionalDivider = form.querySelector(".form-divider");
+  const noteField = form.elements.note?.closest("label");
+  const setVisible = (node, visible) => {
+    if (!node) return;
+    node.hidden = false;
+    node.style.display = visible ? "" : "none";
+  };
+
+  setVisible(titleField, !isRest);
+  setVisible(dateField, true);
+  setVisible(facebookDateField, !isRest);
+  setVisible(facebookTimeField, !isRest);
+  setVisible(statusField, !isRest);
+  setVisible(optionalDivider, !isRest);
+  setVisible(noteField, true);
+  if (restBlock) {
+    restBlock.hidden = !isRest;
+    restBlock.style.display = isRest ? "" : "none";
+  }
+
+  if (isRest) {
+    const nextDate = clean(form.elements.date?.value) || toDateInput(new Date());
+    form.elements.title.value = defaultOfferTitle("rests", nextDate);
+    form.elements.facebookPublishDate.value = nextDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "připravená";
+  } else if (restBlock) {
+    form.elements.restCustomerId.value = "";
+    form.elements.restVarietyId.value = "";
+    form.elements.restVarietyName.value = "";
+  }
+}
+
+function openOfferDialog(id = null, defaults = {}) {
+  const offer = id ? findOffer(id) : null;
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  const linkedVariety = findVariety(clean(offer?.restVarietyId)) || findVarietyByName(clean(offer?.restVarietyName));
+
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty" : "Upravit nabídku")
+    : (initialType === "rests" ? "Nové resty" : "Nová nabídka");
+  els.offerForm.reset();
+  els.offerForm.elements.id.value = offer?.id || "";
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
+  els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
+  els.offerForm.elements.status.value = offer?.status || "připravená";
+  els.offerForm.elements.note.value = offer?.note || "";
+  renderOfferRestCustomerOptions(offer?.restCustomerId || defaults.restCustomerId || "");
+  els.offerForm.elements.restVarietyId.value = clean(offer?.restVarietyId || linkedVariety?.id);
+  els.offerForm.elements.restVarietyName.value = clean(offer?.restVarietyName || linkedVariety?.name);
+  els.offerForm.elements.restVarietyName.oninput = syncOfferRestVarietySelection;
+  els.offerForm.elements.restVarietyName.onchange = syncOfferRestVarietySelection;
+  els.offerForm.elements.date.oninput = syncOfferRestFieldsVisibility;
+  els.offerForm.elements.date.onchange = syncOfferRestFieldsVisibility;
+  syncOfferStatusToggle();
+  syncOfferRestFieldsVisibility();
+  showDialog(els.offerDialog);
+}
+
+function saveOfferFromForm() {
+  if (!els.offerForm.reportValidity()) return;
+  const form = new FormData(els.offerForm);
+  const id = form.get("id") || uid();
+  const existing = findOffer(id);
+  const now = new Date().toISOString();
+  const nextDate = clean(form.get("date")) || toDateInput(new Date());
+  const nextType = normalizeOfferType(form.get("type") || existing?.type);
+  const sourceType = existing ? normalizeOfferType(existing.type) : nextType;
+  const isRest = nextType === "rests";
+  const rawRestVarietyName = isRest ? clean(form.get("restVarietyName")) : "";
+  const matchedRestVariety = rawRestVarietyName ? findVarietyByName(rawRestVarietyName) : null;
+  const nextRestVarietyId = isRest ? clean(form.get("restVarietyId")) || clean(matchedRestVariety?.id) : "";
+  const nextRestVarietyName = isRest ? clean(matchedRestVariety?.name || rawRestVarietyName || findVariety(nextRestVarietyId)?.name) : "";
+  const offer = normalizeOffer({
+    ...existing,
+    id,
+    title: isRest ? defaultOfferTitle("rests", nextDate) : adjustedOfferTitleForType(clean(form.get("title")), sourceType, nextType, nextDate),
+    date: nextDate,
+    facebookPublishDate: isRest ? nextDate : (clean(form.get("facebookPublishDate")) || nextDate),
+    facebookPublishTime: isRest ? "20:00" : (clean(form.get("facebookPublishTime")) || "20:00"),
+    type: nextType,
+    status: isRest ? "připravená" : (clean(form.get("status")) || "připravená"),
+    note: clean(form.get("note")),
+    restCustomerId: isRest ? clean(form.get("restCustomerId")) : "",
+    restVarietyId: isRest ? nextRestVarietyId : "",
+    restVarietyName: isRest ? nextRestVarietyName : "",
+    items: existing?.items || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  if (existing) Object.assign(existing, offer);
+  else state.data.offers.push(offer);
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  els.offerDialog.close();
+  toast(isRest ? "Resty uloženy." : "Nabídka uložena.");
+}
+
+function renderOffers() {
+  const offers = filteredOffers();
+  if (!state.selectedOfferId && offers[0]) state.selectedOfferId = offers[0].id;
+  if (state.selectedOfferId && !offers.some((offer) => offer.id === state.selectedOfferId)) {
+    state.selectedOfferId = offers[0]?.id || null;
+  }
+
+  const groups = splitOffersByType(offers);
+  const renderOfferRows = (items, heading) => {
+    if (!items.length) return "";
+    return `
+      <tr class="table-section-row"><td colspan="5">${escapeHtml(heading)}</td></tr>
+      ${items.map((offer) => {
+        const isRest = isRestOffer(offer);
+        if (isRest) {
+          const summary = restOfferSummaryText(offer);
+          const notePreview = clean(offer.note) ? `<small>${escapeHtml(shortRestText(offer.note, 88))}</small>` : "";
+          return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+            <td class="offer-main-cell">
+              <div class="offer-mobile-card">
+                <strong>${escapeHtml(offer.title)}</strong>
+                <small>${escapeHtml([formatDate(offer.date), summary].filter(Boolean).join(" · "))}</small>
+                <span class="pill warning">Resty</span>
+                ${notePreview}
+              </div>
+              <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)} <span class="pill warning">Resty</span></span>
+              <span class="cell-sub offer-desktop-sub">${escapeHtml([formatDate(offer.date), summary].filter(Boolean).join(" · "))}</span>
+              ${notePreview}
+            </td>
+            <td><span class="pill warning">Resty</span></td>
+            <td>—</td>
+            <td>
+              <span class="cell-main">—</span>
+              <span class="cell-sub">Jen poznámka / dluh</span>
+            </td>
+            <td>
+              <span class="row-actions">
+                <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">✎</button>
+                <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">×</button>
+              </span>
+            </td>
+          </tr>`;
+        }
+
+        const confirmed = offerConfirmedCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const available = offerAvailableCount(offer);
+        const itemCount = Array.isArray(offer.items) ? offer.items.length : 0;
+        const statLine = [`Volné ${available}`, alternates ? `Náhradníci ${alternates}` : ""].filter(Boolean).join(" · ");
+        return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+          <td class="offer-main-cell">
+            <div class="offer-mobile-card">
+              <strong>${escapeHtml(offer.title)}</strong>
+              <small>${formatDate(offer.date)} · ${escapeHtml(offerTypeLabel(offer))}</small>
+              <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+              <div class="offer-mobile-stats">
+                <span><small>Položky</small><b>${itemCount}</b></span>
+                <span><small>Volné</small><b>${available}</b></span>
+                <span><small>Rezervace</small><b>${confirmed}</b></span>
+              </div>
+            </div>
+            <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}</span>
+            <span class="cell-sub offer-desktop-sub">${formatDate(offer.date)} · ${escapeHtml(offerTypeLabel(offer))}</span>
+          </td>
+          <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
+          <td>${itemCount}</td>
+          <td>
+            <span class="cell-main">${confirmed}</span>
+            <span class="cell-sub">${escapeHtml(statLine)}</span>
+          </td>
+          <td>
+            <span class="row-actions">
+              <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">✎</button>
+              <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">×</button>
+            </span>
+          </td>
+        </tr>`;
+      }).join("")}
+    `;
+  };
+
+  els.offersTable.innerHTML = offers.length
+    ? [
+        renderOfferRows(groups.offers, "Nabídky"),
+        renderOfferRows(groups.rests, "Resty"),
+      ].filter(Boolean).join("")
+    : `<tr><td colspan="5">${emptyState("Žádná nabídka.")}</td></tr>`;
+
+  els.offersTable.querySelectorAll("[data-offer-row]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      state.selectedOfferId = row.dataset.offerRow;
+      renderOffers();
+    });
+  });
+  els.offersTable.querySelectorAll("[data-edit-offer]").forEach((button) => {
+    button.addEventListener("click", () => openOfferDialog(button.dataset.editOffer));
+  });
+  els.offersTable.querySelectorAll("[data-delete-offer]").forEach((button) => {
+    button.addEventListener("click", () => deleteOffer(button.dataset.deleteOffer));
+  });
+  renderOfferDetail();
+}
+
+function restOfferOrderLines(offer = {}) {
+  const lines = [];
+  sortedOfferItems(offer).forEach((item) => {
+    const quantity = Math.max(Number(normalizeWholeNumber(item.quantity)) || 0, 0);
+    if (!quantity) return;
+    const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
+    const explicitPrice = parseDecimal(item.price);
+    const fallbackPrice = parseDecimal(variety?.salePrice);
+    const unitPrice = Number.isFinite(explicitPrice) ? item.price : (Number.isFinite(fallbackPrice) ? variety.salePrice : "");
+    lines.push(unitPrice ? buildOrderLineText(offerItemNameSafe(item), quantity, unitPrice, normalizeCurrency(item.currency || variety?.saleCurrency || "CZK")) : `${offerItemNameSafe(item)} ${quantity}x`);
+  });
+  if (lines.length) return lines;
+  const restVariety = restOfferVarietyLabel(offer);
+  if (!restVariety) return [];
+  const variety = findVariety(clean(offer.restVarietyId)) || findVarietyByName(restVariety);
+  const fallbackPrice = parseDecimal(variety?.salePrice);
+  return [Number.isFinite(fallbackPrice) ? buildOrderLineText(restVariety, 1, variety.salePrice, normalizeCurrency(variety?.saleCurrency || "CZK")) : `${restVariety} 1x`];
+}
+
+function restOfferOrderNote(offer = {}) {
+  return [`Z restů: ${offer.title}`, clean(offer.note)].filter(Boolean).join("\n");
+}
+
+var __akPrevSyncOfferRestFieldsVisibility = syncOfferRestFieldsVisibility;
+syncOfferRestFieldsVisibility = function syncOfferRestFieldsVisibilityOverride() {
+  if (typeof __akPrevSyncOfferRestFieldsVisibility === "function") __akPrevSyncOfferRestFieldsVisibility();
+  const form = els.offerForm;
+  if (!form) return;
+  const isRest = normalizeOfferType(form.elements.type?.value) === "rests";
+  const titleField = form.elements.title?.closest("label");
+  const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+  const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+  const statusField = form.querySelector(".offer-status-field");
+  const optionalDivider = form.querySelector(".form-divider");
+  if (titleField) titleField.hidden = isRest;
+  if (facebookDateField) facebookDateField.hidden = isRest;
+  if (facebookTimeField) facebookTimeField.hidden = isRest;
+  if (statusField) statusField.hidden = isRest;
+  if (optionalDivider) optionalDivider.hidden = isRest;
+  if (isRest) {
+    const nextDate = clean(form.elements.date?.value) || toDateInput(new Date());
+    form.elements.title.value = defaultOfferTitle("rests", nextDate);
+    form.elements.facebookPublishDate.value = nextDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "připravená";
+  }
+};
+
+var __akPrevOpenOfferDialog = openOfferDialog;
+openOfferDialog = function openOfferDialogOverride(id = null, defaults = {}) {
+  __akPrevOpenOfferDialog(id, defaults);
+  const form = els.offerForm;
+  if (!form) return;
+  form.elements.date.oninput = syncOfferRestFieldsVisibility;
+  form.elements.date.onchange = syncOfferRestFieldsVisibility;
+  syncOfferRestFieldsVisibility();
+};
+
+var __akPrevSaveOfferFromForm = saveOfferFromForm;
+saveOfferFromForm = function saveOfferFromFormOverride() {
+  if (normalizeOfferType(els.offerForm?.elements?.type?.value) !== "rests") {
+    return __akPrevSaveOfferFromForm();
+  }
+  if (!els.offerForm.reportValidity()) return;
+  const form = new FormData(els.offerForm);
+  const id = form.get("id") || uid();
+  const existing = findOffer(id);
+  const now = new Date().toISOString();
+  const nextDate = clean(form.get("date")) || toDateInput(new Date());
+  const rawRestVarietyName = clean(form.get("restVarietyName"));
+  const matchedRestVariety = rawRestVarietyName ? findVarietyByName(rawRestVarietyName) : null;
+  const nextRestVarietyId = clean(form.get("restVarietyId")) || clean(matchedRestVariety?.id);
+  const nextRestVarietyName = clean(matchedRestVariety?.name || rawRestVarietyName || findVariety(nextRestVarietyId)?.name);
+  const offer = normalizeOffer({
+    ...existing,
+    id,
+    title: defaultOfferTitle("rests", nextDate),
+    date: nextDate,
+    facebookPublishDate: nextDate,
+    facebookPublishTime: "20:00",
+    type: "rests",
+    status: "připravená",
+    note: clean(form.get("note")),
+    restCustomerId: clean(form.get("restCustomerId")),
+    restVarietyId: nextRestVarietyId,
+    restVarietyName: nextRestVarietyName,
+    items: existing?.items || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  if (existing) Object.assign(existing, offer);
+  else state.data.offers.push(offer);
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  els.offerDialog.close();
+  toast("Resty uloženy.");
+};
+
+var __akPrevCreateOrdersFromOffer = createOrdersFromOffer;
+createOrdersFromOffer = async function createOrdersFromOfferOverride(id) {
+  const offer = findOffer(id);
+  if (!offer) return;
+  if (!isRestOffer(offer)) return __akPrevCreateOrdersFromOffer(id);
+  const customerId = clean(offer.restCustomerId);
+  if (!customerId) {
+    toast("U restů nejdřív vyber zákazníka.");
+    return;
+  }
+  const lines = restOfferOrderLines(offer);
+  const note = restOfferOrderNote(offer);
+  if (!lines.length && !note) {
+    toast("Rest nemá co převést do objednávky.");
+    return;
+  }
+  if (state.data.orders.some((order) => clean(order.offerId) === clean(offer.id)) && !confirm("Z těchto restů už objednávka vznikla. Vytvořit další?")) {
+    return;
+  }
+  const order = normalizeOrder({
+    id: uid(),
+    offerId: offer.id,
+    customerId,
+    orderDate: offer.date || toDateInput(new Date()),
+    season: seasonFromDate(offer.date),
+    varietiesText: lines.join("\n"),
+    price: "",
+    paymentStatus: "čeká",
+    shippingStatus: "nová",
+    deliveryMethod: "ship",
+    shippingFee: "",
+    shippingFeeLabel: "",
+    packingFee: "",
+    codFee: "",
+    extraFees: [],
+    note,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  state.data.orders.push(order);
+  saveData();
+  renderAll();
+  openOrderDialog(order.id);
+  toast("Vytvořena objednávka z restů.");
+};
+
+var __akPrevRenderOfferDetail = renderOfferDetail;
+renderOfferDetail = function renderOfferDetailOverride() {
+  const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+  if (!offer || !isRestOffer(offer)) return __akPrevRenderOfferDetail();
+  state.selectedOfferId = offer.id;
+  const items = sortedOfferItems(offer);
+  const detailCards = [
+    { label: "Zákazník", value: customerName(restOfferCustomer(offer)) },
+    { label: "Odrůda", value: restOfferVarietyLabel(offer) },
+  ].filter((entry) => clean(entry.value));
+
+  els.offerDetail.innerHTML = `
+    <div class="detail-header">
+      <div>
+        <h2>${escapeHtml(offer.title)}</h2>
+        <div class="pills">
+          <span class="pill warning">Resty</span>
+        </div>
+        <p class="fb-name">${formatDate(offer.date)}</p>
+        ${detailCards.length ? `<section class="rest-meta-panel"><div class="rest-meta-grid">${detailCards.map((entry) => `<div class="rest-meta-item"><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}</div></section>` : ""}
+        ${offer.note ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : ""}
+      </div>
+      <div class="detail-actions">
+        <button class="button ghost" type="button" data-edit-offer="${offer.id}">Upravit resty</button>
+        <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvořit objednávku</button>
+      </div>
+    </div>
+    ${items.length ? `
+      <section class="detail-section">
+        <div class="stack-list">
+          ${items.map((item) => renderOfferItem(offer, item)).join("")}
+        </div>
+      </section>
+    ` : `
+      <section class="detail-section">
+        <p class="detail-note-text">Bez odřezků. Rest může být jen poznámka nebo připomínka.</p>
+      </section>
+    `}
+  `;
+
+  els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  els.offerDetail.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemDialog(offer.id, button.dataset.editOfferItem));
+  });
+  els.offerDetail.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(offer.id, button.dataset.deleteOfferItem));
+  });
+  hydrateLocalPhotoImages(els.offerDetail);
+};
+
+function normalizeOffer(offer = {}) {
+  const now = new Date().toISOString();
+  const nextDate = clean(offer.date) || toDateInput(new Date());
+  const nextType = normalizeOfferType(offer.type);
+  const title = clean(offer.title);
+  const legacyRestTitle = `Resty/poznámky ${formatDate(nextDate)}`;
+  const defaultTitle = defaultOfferTitle(nextType, nextDate);
+  const normalizedTitle = nextType === "rests" && title === legacyRestTitle
+    ? defaultTitle
+    : (title || defaultTitle);
+
+  return {
+    ...offer,
+    id: clean(offer.id) || uid(),
+    title: normalizedTitle,
+    date: nextDate,
+    facebookPublishDate: clean(offer.facebookPublishDate || offer.date) || nextDate,
+    facebookPublishTime: clean(offer.facebookPublishTime) || "20:00",
+    type: nextType,
+    status: ["připravená", "zveřejněná", "uzavřená"].includes(clean(offer.status)) ? clean(offer.status) : "připravená",
+    note: clean(offer.note),
+    restCustomerId: nextType === "rests" ? clean(offer.restCustomerId) : "",
+    restVarietyId: nextType === "rests" ? clean(offer.restVarietyId) : "",
+    restVarietyName: nextType === "rests" ? clean(offer.restVarietyName) : "",
+    items: Array.isArray(offer.items) ? offer.items.map(normalizeOfferItem) : [],
+    createdAt: offer.createdAt || now,
+    updatedAt: offer.updatedAt || now,
+  };
+}
+
+function offerStatusClass(status) {
+  if (status === "uzavřená") return "done";
+  if (status === "zveřejněná") return "ready";
+  return "";
+}
+
+function offerTypeLabel(offerOrType) {
+  return normalizeOfferType(typeof offerOrType === "string" ? offerOrType : offerOrType?.type) === "rests"
+    ? "Resty"
+    : "Nabídka";
+}
+
+function defaultOfferTitle(type = "offer", date = toDateInput(new Date())) {
+  return normalizeOfferType(type) === "rests"
+    ? `Resty ${formatDate(date)}`
+    : `Nabídka ${formatDate(date)}`;
+}
+
+function restOfferCustomer(offer = {}) {
+  return findCustomer(clean(offer.restCustomerId));
+}
+
+function restOfferVarietyLabel(offer = {}) {
+  const linked = findVariety(clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+  return clean(linked?.name || offer.restVarietyName);
+}
+
+function shortRestText(value = "", max = 96) {
+  const text = clean(value);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function restOfferSummaryText(offer = {}) {
+  const parts = [];
+  const customer = restOfferCustomer(offer);
+  const variety = restOfferVarietyLabel(offer);
+  const itemLines = sortedOfferItems(offer)
+    .slice(0, 2)
+    .map((item) => `${offerItemNameSafe(item)} · ${quantityText(item.quantity)} ks`);
+
+  if (customer) parts.push(customerName(customer));
+  if (variety) parts.push(variety);
+  else if (itemLines.length) parts.push(itemLines.join(", "));
+  if (offer.note) parts.push(shortRestText(offer.note, 68));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function renderRestMetaPanel(offer = {}) {
+  if (!isRestOffer(offer)) return "";
+  const meta = [
+    { label: "Zákazník", value: customerName(restOfferCustomer(offer)) },
+    { label: "Odrůda", value: restOfferVarietyLabel(offer) },
+  ].filter((entry) => clean(entry.value));
+  if (!meta.length) return "";
+  return `<section class="rest-meta-panel">
+    <div class="rest-meta-grid">
+      ${meta.map((entry) => `<div class="rest-meta-item"><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}
+    </div>
+  </section>`;
+}
+
+function restOffersForCustomer(customerId = "") {
+  const id = clean(customerId);
+  if (!id) return [];
+  return (state.data.offers || [])
+    .filter((offer) => isRestOffer(offer) && clean(offer.restCustomerId) === id && offer.status !== "uzavřená")
+    .sort((a, b) => String(b.date || b.updatedAt || "").localeCompare(String(a.date || a.updatedAt || "")));
+}
+
+function restOfferAlertLines(offer = {}) {
+  const lines = [];
+  const variety = restOfferVarietyLabel(offer);
+  const itemSummary = sortedOfferItems(offer)
+    .slice(0, 3)
+    .map((item) => `${offerItemNameSafe(item)} · ${quantityText(item.quantity)} ks`)
+    .join(", ");
+  if (variety) lines.push(variety);
+  if (!variety && itemSummary) lines.push(itemSummary);
+  if (offer.note) lines.push(shortRestText(offer.note, 90));
+  return lines.length ? lines : [shortRestText(offer.title, 90)];
+}
+
+function syncOrderRestWarningBlock() {
+  const block = document.querySelector("#orderRestBlock");
+  const form = els.orderForm;
+  if (!block || !form) return;
+  const customerId = form.elements.customerId?.value;
+  const offers = restOffersForCustomer(customerId);
+  const stornoOrders = customerStornoOrders(customerId);
+  if (!offers.length && !stornoOrders.length) {
+    block.hidden = true;
+    block.innerHTML = "";
+    return;
+  }
+  block.hidden = false;
+  block.innerHTML = `
+    ${offers.length ? `
+      <div class="order-rest-heading">
+        <strong>Má resty</strong>
+        <small>Zkontroluj, jestli je potřeba něco doplnit nebo připomenout.</small>
+      </div>
+      <div class="order-rest-list">
+        ${offers.map((offer) => `
+          <article class="order-rest-item">
+            <strong>${escapeHtml(offer.title)}</strong>
+            <small>${escapeHtml(restOfferAlertLines(offer).join(" · "))}</small>
+          </article>
+        `).join("")}
+      </div>
+    ` : ""}
+    ${stornoOrders.length ? `
+      <div class="order-rest-heading">
+        <strong>Stornuje</strong>
+        <small>Pozor, tenhle zákazník už má v historii storna.</small>
+      </div>
+      <div class="order-rest-list">
+        ${stornoOrders.map((order) => `
+          <article class="order-rest-item">
+            <strong>${escapeHtml(formatDate(order.orderDate) || "Bez data")}</strong>
+            <small>${escapeHtml(orderStornoLines(order).map((entry) => `${entry.name} · ${quantityText(entry.quantity)} ks`).join(" · ") || "Stornovaná objednávka")}</small>
+          </article>
+        `).join("")}
+      </div>
+    ` : ""}
+  `;
+}
+
+function renderOfferRestCustomerOptions(selectedId = "") {
+  const select = els.offerForm?.elements?.restCustomerId;
+  if (!select) return;
+  const options = [`<option value="">Bez zákazníka</option>`]
+    .concat(
+      [...state.data.customers]
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}">${escapeHtml(customerName(customer))}</option>`),
+    );
+  select.innerHTML = options.join("");
+  select.value = state.data.customers.some((customer) => customer.id === clean(selectedId)) ? clean(selectedId) : "";
+}
+
+function syncOfferRestVarietySelection() {
+  const form = els.offerForm;
+  if (!form) return;
+  const name = clean(form.elements.restVarietyName?.value);
+  const exact = name ? findVarietyByName(name) : null;
+  form.elements.restVarietyId.value = exact?.id || "";
+}
+
+function syncOfferRestFieldsVisibility() {
+  const form = els.offerForm;
+  const block = form?.querySelector("[data-rest-offer-fields]");
+  if (!form || !block) return;
+  const isRest = normalizeOfferType(form.elements.type?.value) === "rests";
+  block.hidden = !isRest;
+  if (!isRest) {
+    form.elements.restCustomerId.value = "";
+    form.elements.restVarietyId.value = "";
+    form.elements.restVarietyName.value = "";
+  }
+}
+
+function openOfferDialog(id = null, defaults = {}) {
+  const offer = id ? findOffer(id) : null;
+  const initialType = offer ? normalizeOfferType(offer.type) : normalizeOfferType(defaults.type);
+  const initialDate = offer?.date || clean(defaults.date) || toDateInput(new Date());
+  const linkedVariety = findVariety(clean(offer?.restVarietyId)) || findVarietyByName(clean(offer?.restVarietyName));
+
+  els.offerDialogTitle.textContent = offer
+    ? (initialType === "rests" ? "Upravit resty" : "Upravit nabídku")
+    : (initialType === "rests" ? "Nové resty" : "Nová nabídka");
+  els.offerForm.reset();
+  els.offerForm.elements.id.value = offer?.id || "";
+  els.offerForm.elements.title.value = offer?.title || defaultOfferTitle(initialType, initialDate);
+  els.offerForm.elements.date.value = initialDate;
+  els.offerForm.elements.facebookPublishDate.value = offer?.facebookPublishDate || initialDate;
+  els.offerForm.elements.facebookPublishTime.value = offer?.facebookPublishTime || "20:00";
+  els.offerForm.elements.type.value = initialType;
+  els.offerForm.elements.status.value = offer?.status || "připravená";
+  els.offerForm.elements.note.value = offer?.note || "";
+  renderOfferRestCustomerOptions(offer?.restCustomerId || defaults.restCustomerId || "");
+  els.offerForm.elements.restVarietyId.value = clean(offer?.restVarietyId || linkedVariety?.id);
+  els.offerForm.elements.restVarietyName.value = clean(offer?.restVarietyName || linkedVariety?.name);
+  els.offerForm.elements.restVarietyName.oninput = syncOfferRestVarietySelection;
+  els.offerForm.elements.restVarietyName.onchange = syncOfferRestVarietySelection;
+  syncOfferStatusToggle();
+  syncOfferRestFieldsVisibility();
+  showDialog(els.offerDialog);
+}
+
+function saveOfferFromForm() {
+  if (!els.offerForm.reportValidity()) return;
+  const form = new FormData(els.offerForm);
+  const id = form.get("id") || uid();
+  const existing = findOffer(id);
+  const now = new Date().toISOString();
+  const nextDate = clean(form.get("date")) || toDateInput(new Date());
+  const nextType = normalizeOfferType(form.get("type") || existing?.type);
+  const sourceType = existing ? normalizeOfferType(existing.type) : nextType;
+  const rawRestVarietyName = nextType === "rests" ? clean(form.get("restVarietyName")) : "";
+  const matchedRestVariety = rawRestVarietyName ? findVarietyByName(rawRestVarietyName) : null;
+  const nextRestVarietyId = nextType === "rests" ? clean(form.get("restVarietyId")) || clean(matchedRestVariety?.id) : "";
+  const nextRestVarietyName = nextType === "rests"
+    ? clean(matchedRestVariety?.name || rawRestVarietyName || findVariety(nextRestVarietyId)?.name)
+    : "";
+  const offer = normalizeOffer({
+    ...existing,
+    id,
+    title: adjustedOfferTitleForType(clean(form.get("title")), sourceType, nextType, nextDate),
+    date: nextDate,
+    facebookPublishDate: clean(form.get("facebookPublishDate")) || nextDate,
+    facebookPublishTime: clean(form.get("facebookPublishTime")) || "20:00",
+    type: nextType,
+    status: clean(form.get("status")) || "připravená",
+    note: clean(form.get("note")),
+    restCustomerId: nextType === "rests" ? clean(form.get("restCustomerId")) : "",
+    restVarietyId: nextRestVarietyId,
+    restVarietyName: nextRestVarietyName,
+    items: existing?.items || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+
+  if (existing) Object.assign(existing, offer);
+  else state.data.offers.push(offer);
+  state.selectedOfferId = offer.id;
+  saveData();
+  renderAll();
+  els.offerDialog.close();
+  toast(nextType === "rests" ? "Resty uloženy." : "Nabídka uložena.");
+}
+
+function customerAlerts(customer, orders) {
+  const alerts = [];
+  const unpaid = orders.filter((order) => order.paymentStatus === "čeká" || order.paymentStatus === "nezaplaceno").length;
+  const ready = orders.filter((order) => order.shippingStatus === "připraveno").length;
+  const rests = restOffersForCustomer(customer?.id);
+  const stornos = orders.filter((order) => orderHasStorno(order)).length;
+
+  if (!customer.phone && !customer.email) alerts.push({ label: "Chybí kontakt", type: "danger" });
+  if (!customerHasAddress(customer)) alerts.push({ label: "Chybí adresa", type: "warning" });
+  if (hasWarningTag(customer)) alerts.push({ label: "Pozor zákazník", type: "danger" });
+  if (customer.customerRating) alerts.push({ label: customerRatingLabel(customer), type: customer.customerRating.includes("neposílat") ? "danger" : "warning" });
+  if (unpaid) alerts.push({ label: `${unpaid} čeká na platbu`, type: "warning" });
+  if (ready) alerts.push({ label: `${ready} připraveno`, type: "info" });
+  if (rests.length) alerts.push({ label: rests.length === 1 ? "Má resty" : `Má resty (${rests.length})`, type: "danger" });
+  if (stornos) alerts.push({ label: stornos === 1 ? "Stornuje" : `Stornuje (${stornos})`, type: "danger" });
+  return alerts;
+}
+
+function renderOffers() {
+  const offers = filteredOffers();
+  if (!state.selectedOfferId && offers[0]) state.selectedOfferId = offers[0].id;
+  if (state.selectedOfferId && !offers.some((offer) => offer.id === state.selectedOfferId)) {
+    state.selectedOfferId = offers[0]?.id || null;
+  }
+
+  const groups = splitOffersByType(offers);
+  const renderOfferRows = (items, heading) => {
+    if (!items.length) return "";
+    return `
+      <tr class="table-section-row"><td colspan="5">${escapeHtml(heading)}</td></tr>
+      ${items.map((offer) => {
+        const confirmed = offerConfirmedCount(offer);
+        const alternates = offerAlternateCount(offer);
+        const available = offerAvailableCount(offer);
+        const itemCount = Array.isArray(offer.items) ? offer.items.length : 0;
+        const restSummary = isRestOffer(offer) ? restOfferSummaryText(offer) : "";
+        const notePreview = isRestOffer(offer) && clean(offer.note) ? `<small>${escapeHtml(shortRestText(offer.note, 88))}</small>` : "";
+        const metaLine = [formatDate(offer.date), offerTypeLabel(offer), restSummary].filter(Boolean).join(" · ");
+        const statLine = [`Volné ${available}`, alternates ? `Náhradníci ${alternates}` : ""].filter(Boolean).join(" · ");
+        return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+          <td class="offer-main-cell">
+            <div class="offer-mobile-card">
+              <strong>${escapeHtml(offer.title)}</strong>
+              <small>${escapeHtml(metaLine)}</small>
+              ${isRestOffer(offer) ? '<span class="pill warning">Resty</span>' : ""}
+              <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+              ${notePreview}
+              <div class="offer-mobile-stats">
+                <span><small>Položky</small><b>${itemCount}</b></span>
+                <span><small>Volné</small><b>${available}</b></span>
+                <span><small>Rezervace</small><b>${confirmed}</b></span>
+              </div>
+            </div>
+            <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}${isRestOffer(offer) ? ' <span class="pill warning">Resty</span>' : ""}</span>
+            <span class="cell-sub offer-desktop-sub">${escapeHtml(metaLine)}</span>
+            ${notePreview}
+          </td>
+          <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
+          <td>${itemCount}</td>
+          <td>
+            <span class="cell-main">${confirmed}</span>
+            <span class="cell-sub">${escapeHtml(statLine)}</span>
+          </td>
+          <td>
+            <span class="row-actions">
+              <button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">✎</button>
+              <button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">×</button>
+            </span>
+          </td>
+        </tr>`;
+      }).join("")}
+    `;
+  };
+
+  els.offersTable.innerHTML = offers.length
+    ? [
+        renderOfferRows(groups.offers, "Nabídky"),
+        renderOfferRows(groups.rests, "Resty"),
+      ].filter(Boolean).join("")
+    : `<tr><td colspan="5">${emptyState("Žádná nabídka.")}</td></tr>`;
+
+  els.offersTable.querySelectorAll("[data-offer-row]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      state.selectedOfferId = row.dataset.offerRow;
+      renderOffers();
+    });
+  });
+  els.offersTable.querySelectorAll("[data-edit-offer]").forEach((button) => {
+    button.addEventListener("click", () => openOfferDialog(button.dataset.editOffer));
+  });
+  els.offersTable.querySelectorAll("[data-delete-offer]").forEach((button) => {
+    button.addEventListener("click", () => deleteOffer(button.dataset.deleteOffer));
+  });
+  renderOfferDetail();
+}
+
+function renderOfferDetail() {
+  const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+  if (!offer) {
+    els.offerDetail.innerHTML = emptyState("Vyber nabídku nebo založ novou.");
+    return;
+  }
+  state.selectedOfferId = offer.id;
+  const items = sortedOfferItems(offer);
+  const editLabel = isRestOffer(offer) ? "Upravit resty" : "Upravit nabídku";
+  const moveLeftoversButton = !isRestOffer(offer)
+    ? `<button class="button ghost" type="button" data-move-offer-leftovers="${offer.id}">Přesunout neprodané do nové nabídky</button>`
+    : "";
+  const facebookButtons = !isRestOffer(offer)
+    ? `
+        <button class="button ghost" type="button" data-facebook-offer="${offer.id}">Facebook</button>
+      `
+    : "";
+
+  els.offerDetail.innerHTML = `
+    <div class="detail-header">
+      <div>
+        <h2>${escapeHtml(offer.title)}</h2>
+        <div class="pills">
+          <span class="pill ${isRestOffer(offer) ? "warning" : ""}">${escapeHtml(offerTypeLabel(offer))}</span>
+          <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+        </div>
+        <p class="fb-name">${formatDate(offer.date)}</p>
+        ${renderRestMetaPanel(offer)}
+        ${offer.note ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : ""}
+      </div>
+      <div class="detail-actions">
+        <button class="button ghost" type="button" data-edit-offer="${offer.id}">${editLabel}</button>
+        ${moveLeftoversButton}
+        <button class="button primary" type="button" data-add-offer-item="${offer.id}">Přidat odřezek</button>
+        ${facebookButtons}
+        <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvořit objednávky</button>
+      </div>
+    </div>
+    <section class="detail-section">
+      <div class="history-summary">
+        <article><span>Položky</span><strong>${items.length}</strong></article>
+        <article><span>Potvrzeno</span><strong>${offerConfirmedCount(offer)}</strong></article>
+        <article><span>Náhradníci</span><strong>${offerAlternateCount(offer)}</strong></article>
+        <article><span>Hodnota</span><strong>${escapeHtml(offerTotalText(offer))}</strong></article>
+      </div>
+    </section>
+    <section class="detail-section">
+      <div class="stack-list">
+        ${items.length ? items.map((item) => renderOfferItem(offer, item)).join("") : emptyState("Zatím bez odřezků.")}
+      </div>
+    </section>
+  `;
+
+  els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-move-offer-leftovers]")?.addEventListener("click", () => {
+    moveOfferLeftoversToNewOffer(offer.id);
+  });
+  els.offerDetail.querySelector("[data-add-offer-item]")?.addEventListener("click", () => openOfferItemDialog(offer.id));
+  els.offerDetail.querySelector("[data-facebook-offer]")?.addEventListener("click", () => openFacebookOfferDialog(offer.id));
+  els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  els.offerDetail.querySelectorAll("[data-edit-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => openOfferItemDialog(offer.id, button.dataset.editOfferItem));
+  });
+  els.offerDetail.querySelectorAll("[data-delete-offer-item]").forEach((button) => {
+    button.addEventListener("click", () => deleteOfferItem(offer.id, button.dataset.deleteOfferItem));
+  });
+  els.offerDetail.querySelectorAll("[data-add-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationDialog(offer.id, button.dataset.addReservation, null, {
+      status: button.dataset.addReservationStatus || "",
+    }));
+  });
+  els.offerDetail.querySelectorAll("[data-edit-reservation]").forEach((button) => {
+    button.addEventListener("click", () => openReservationDialog(offer.id, button.dataset.itemId, button.dataset.editReservation));
+  });
+  els.offerDetail.querySelectorAll("[data-delete-reservation]").forEach((button) => {
+    button.addEventListener("click", () => deleteReservation(offer.id, button.dataset.itemId, button.dataset.deleteReservation));
+  });
+  hydrateLocalPhotoImages(els.offerDetail);
+}
+(() => {
+  function eofLegacyRest(offer = {}) {
+    const title = clean(offer.title);
+    if (!/^Resty(?:\/pozn.*)?/i.test(title)) return false;
+    return Boolean(clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName) || clean(offer.note));
+  }
+
+  function eofRestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findVariety(clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function eofRestCustomer(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez z\u00e1kazn\u00edka";
+  }
+
+  function eofRestOptions(selectedId = "") {
+    return [`<option value="">Bez z\u00e1kazn\u00edka</option>`].concat(
+      [...state.data.customers]
+        .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs", { sensitivity: "base" }))
+        .map((customer) => `<option value="${escapeHtml(customer.id)}" ${clean(selectedId) === clean(customer.id) ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
+    ).join("");
+  }
+
+  const baseOpenOfferDialog = openOfferDialog;
+  const baseSaveOfferFromForm = saveOfferFromForm;
+  const baseRenderOfferDetail = renderOfferDetail;
+
+  isRestOffer = function isRestOfferEof(offer) {
+    return normalizeOfferType(offer?.type) === "rests" || eofLegacyRest(offer);
+  };
+
+  offerTypeLabel = function offerTypeLabelEof(offerOrType) {
+    if (typeof offerOrType === "string") return normalizeOfferType(offerOrType) === "rests" ? "Resty" : "Nab\u00eddka";
+    return isRestOffer(offerOrType) ? "Resty" : "Nab\u00eddka";
+  };
+
+  restOfferVarietyLabel = function restOfferVarietyLabelEof(offer = {}) {
+    return eofRestNames(offer).join(", ");
+  };
+
+  restOfferSummaryText = function restOfferSummaryTextEof(offer = {}) {
+    return [eofRestCustomer(offer), restOfferVarietyLabel(offer)].filter(Boolean).join(" \u00b7 ");
+  };
+
+  renderRestMetaPanel = function renderRestMetaPanelEof(offer = {}) {
+    if (!isRestOffer(offer)) return "";
+    const names = eofRestNames(offer);
+    const meta = [
+      { label: "Z\u00e1kazn\u00edk", value: eofRestCustomer(offer) },
+      { label: names.length > 1 ? "Odr\u016fdy" : "Odr\u016fda", value: names.join(", ") },
+    ].filter((entry) => clean(entry.value));
+    if (!meta.length) return "";
+    return `<section class="rest-meta-panel"><div class="rest-meta-grid">${meta.map((entry) => `<div class="rest-meta-item"><span>${escapeHtml(entry.label)}</span><strong>${escapeHtml(entry.value)}</strong></div>`).join("")}</div></section>`;
+  };
+
+  syncOfferRestFieldsVisibility = function syncOfferRestFieldsVisibilityEof() {
+    const form = els.offerForm;
+    if (!form) return;
+    const isRest = isRestOffer({ type: form.elements.type?.value, title: form.elements.title?.value, note: form.elements.note?.value });
+    const nodes = [
+      form.elements.title?.closest("label"),
+      form.elements.facebookPublishDate?.closest("label"),
+      form.elements.facebookPublishTime?.closest("label"),
+      form.querySelector(".offer-status-field"),
+      form.querySelector(".form-divider"),
+    ];
+    nodes.forEach((node) => {
+      if (!node) return;
+      node.hidden = false;
+      node.style.display = isRest ? "none" : "";
+    });
+    const restBlock = form.querySelector("[data-rest-offer-fields]");
+    if (restBlock) {
+      restBlock.hidden = !isRest;
+      restBlock.style.display = isRest ? "" : "none";
+    }
+    if (isRest) {
+      const nextDate = clean(form.elements.date?.value) || toDateInput(new Date());
+      form.elements.title.value = defaultOfferTitle("rests", nextDate);
+      form.elements.facebookPublishDate.value = nextDate;
+      form.elements.facebookPublishTime.value = "20:00";
+      form.elements.status.value = "p\u0159ipraven\u00e1";
+      setupRestVarietyPickerForOfferForm(form, form.elements.restVarietyName?.value || "");
+    }
+  };
+
+  function setupRestSelectPicker(form, initialValue = "") {
+    if (!form) return;
+    const label = form.querySelector('[name="restVarietyName"]')?.closest("label");
+    if (!label) return;
+    let hidden = form.querySelector('textarea[name="restVarietyName"]');
+    if (!hidden) {
+      hidden = document.createElement("textarea");
+      hidden.name = "restVarietyName";
+      hidden.hidden = true;
+      hidden.setAttribute("aria-hidden", "true");
+      label.after(hidden);
+    }
+    let picker = form.querySelector('[name="restVarietyPicker"]');
+    if (!picker || picker.tagName !== "SELECT") {
+      const source = label.querySelector('[name="restVarietyName"], [name="restVarietyPicker"]');
+      const select = document.createElement("select");
+      select.name = "restVarietyPicker";
+      source?.replaceWith(select);
+      picker = select;
+      const heading = label.querySelector("span");
+      if (heading) heading.textContent = "Odrůda";
+    }
+    let addRow = form.querySelector(".rest-variety-picker-row");
+    if (!addRow) {
+      addRow = document.createElement("div");
+      addRow.className = "wide rest-variety-picker-row";
+      addRow.innerHTML = '<button class="button ghost" type="button" data-rest-variety-add>Přidat odrůdu</button>';
+      label.after(addRow);
+    }
+    let list = form.querySelector("[data-rest-variety-list]");
+    if (!list) {
+      list = document.createElement("div");
+      list.className = "wide rest-variety-selection";
+      list.setAttribute("data-rest-variety-list", "");
+      addRow.after(list);
+    }
+    form.__restVarietyNames = restFormVarietyNames(initialValue || hidden.value);
+    const renderPicker = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      picker.innerHTML = ['<option value="">Vyber odrůdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.includes(previousValue)) picker.value = previousValue;
+    };
+    const sync = () => {
+      hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(list, form.__restVarietyNames);
+      renderPicker();
+    };
+    const addCurrent = () => {
+      const raw = clean(picker.value);
+      if (!raw) return;
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(raw))) form.__restVarietyNames.push(raw);
+      picker.value = "";
+      sync();
+    };
+    addRow.querySelector("[data-rest-variety-add]").onclick = addCurrent;
+    list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+    sync();
+  }
+  setupRestVarietyPickerForOfferForm = setupRestSelectPicker;
+
+  openOfferDialog = function openOfferDialogEof(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const initialIsRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults.type) === "rests";
+    if (!initialIsRest) return baseOpenOfferDialog(id, defaults);
+    const form = els.offerForm;
+    const initialDate = clean(offer?.date || defaults.date) || toDateInput(new Date());
+    const names = eofRestNames(offer);
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    els.offerDialogTitle.textContent = offer ? "Upravit resty" : "Nov\u00e9 resty";
+    form.reset();
+    form.elements.id.value = offer?.id || "";
+    form.elements.type.value = "rests";
+    form.elements.title.value = defaultOfferTitle("rests", initialDate);
+    form.elements.date.value = initialDate;
+    form.elements.facebookPublishDate.value = initialDate;
+    form.elements.facebookPublishTime.value = "20:00";
+    form.elements.status.value = "p\u0159ipraven\u00e1";
+    form.elements.note.value = offer?.note || "";
+    form.elements.restCustomerId.innerHTML = eofRestOptions(offer?.restCustomerId || defaults.restCustomerId || "");
+    form.elements.restCustomerId.value = clean(offer?.restCustomerId || defaults.restCustomerId);
+    form.elements.restVarietyId.value = clean(matchedVariety?.id || offer?.restVarietyId);
+    form.elements.restVarietyName.value = names.join("\n");
+    syncOfferStatusToggle();
+    setupRestSelectPicker(form, names.join("\n"));
+    syncOfferRestFieldsVisibility();
+    const onDateChange = () => syncOfferRestFieldsVisibility();
+    form.elements.date.oninput = onDateChange;
+    form.elements.date.onchange = onDateChange;
+    showDialog(els.offerDialog);
+  };
+
+  saveOfferFromForm = function saveOfferFromFormEof() {
+    const formEl = els.offerForm;
+    const shouldSaveAsRest = isRestOffer({
+      type: formEl?.elements?.type?.value,
+      title: formEl?.elements?.title?.value,
+      restCustomerId: formEl?.elements?.restCustomerId?.value,
+      restVarietyName: formEl?.elements?.restVarietyName?.value,
+      note: formEl?.elements?.note?.value,
+    });
+    if (!shouldSaveAsRest) return baseSaveOfferFromForm();
+    if (!formEl.reportValidity()) return;
+    const form = new FormData(formEl);
+    const id = form.get("id") || uid();
+    const existing = findOffer(id);
+    const now = new Date().toISOString();
+    const nextDate = clean(form.get("date")) || toDateInput(new Date());
+    const names = restFormVarietyNames(form.get("restVarietyName"));
+    const matchedVariety = names.length === 1 ? findVarietyByName(names[0]) : null;
+    const offer = normalizeOffer({
+      ...existing,
+      id,
+      title: defaultOfferTitle("rests", nextDate),
+      date: nextDate,
+      facebookPublishDate: nextDate,
+      facebookPublishTime: "20:00",
+      type: "rests",
+      status: "p\u0159ipraven\u00e1",
+      note: clean(form.get("note")),
+      restCustomerId: clean(form.get("restCustomerId")),
+      restVarietyId: clean(matchedVariety?.id),
+      restVarietyName: names.join("\n"),
+      items: existing?.items || [],
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    });
+    if (existing) Object.assign(existing, offer);
+    else state.data.offers.push(offer);
+    state.selectedOfferId = offer.id;
+    saveData();
+    renderAll();
+    els.offerDialog.close();
+    toast("Resty ulo\u017eeny.");
+  };
+
+  renderOffers = function renderOffersEof() {
+    const offers = filteredOffers();
+    if (!state.selectedOfferId && offers[0]) state.selectedOfferId = offers[0].id;
+    if (state.selectedOfferId && !offers.some((offer) => offer.id === state.selectedOfferId)) {
+      state.selectedOfferId = offers[0]?.id || null;
+    }
+    const groups = splitOffersByType(offers);
+    const renderOfferRows = (items, heading, isRestGroup = false) => {
+      if (!items.length) return "";
+      return `
+        <tr class="table-section-row"><td colspan="5">${escapeHtml(heading)}</td></tr>
+        ${items.map((offer) => {
+          if (isRestGroup) {
+            const names = eofRestNames(offer);
+            const customerText = eofRestCustomer(offer);
+            const restLabel = names.length ? shortRestText(names.join(", "), 72) : "";
+            const notePreview = clean(offer.note) ? `<small>${escapeHtml(shortRestText(offer.note, 88))}</small>` : "";
+            return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+              <td class="offer-main-cell">
+                <div class="offer-mobile-card">
+                  <strong>${escapeHtml(offer.title)}</strong>
+                  <small>${escapeHtml([formatDate(offer.date), customerText].join(" \u00b7 "))}</small>
+                  <span class="pill warning">Resty</span>
+                  ${restLabel ? `<small>${escapeHtml(restLabel)}</small>` : ""}
+                  ${notePreview}
+                </div>
+                <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)} <span class="pill warning">Resty</span></span>
+                <span class="cell-sub offer-desktop-sub">${escapeHtml([formatDate(offer.date), customerText].join(" \u00b7 "))}</span>
+                ${restLabel ? `<span class="cell-sub">${escapeHtml(restLabel)}</span>` : ""}
+                ${notePreview}
+              </td>
+              <td><span class="cell-sub">-</span></td>
+              <td><span class="cell-main">${names.length || "\u2014"}</span>${names.length ? `<span class="cell-sub">odrůd</span>` : ""}</td>
+              <td><span class="cell-main">${escapeHtml(customerText)}</span><span class="cell-sub">${escapeHtml(clean(offer.note) ? shortRestText(offer.note, 48) : "Bez rezervac\u00ed")}</span></td>
+              <td><span class="row-actions"><button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">\u270e</button><button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">\u00d7</button></span></td>
+            </tr>`;
+          }
+
+          const confirmed = offerConfirmedCount(offer);
+          const alternates = offerAlternateCount(offer);
+          const available = offerAvailableCount(offer);
+          const itemCount = Array.isArray(offer.items) ? offer.items.length : 0;
+          const metaLine = [formatDate(offer.date), offerTypeLabel(offer)].filter(Boolean).join(" \u00b7 ");
+          const statLine = [`Voln\u00e9 ${available}`, alternates ? `N\u00e1hradn\u00edci ${alternates}` : ""].filter(Boolean).join(" \u00b7 ");
+          return `<tr class="${offer.id === state.selectedOfferId ? "selected" : ""}" data-offer-row="${offer.id}">
+            <td class="offer-main-cell">
+              <div class="offer-mobile-card">
+                <strong>${escapeHtml(offer.title)}</strong>
+                <small>${escapeHtml(metaLine)}</small>
+                <span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span>
+                <div class="offer-mobile-stats">
+                  <span><small>Polo\u017eky</small><b>${itemCount}</b></span>
+                  <span><small>Voln\u00e9</small><b>${available}</b></span>
+                  <span><small>Rezervace</small><b>${confirmed}</b></span>
+                </div>
+              </div>
+              <span class="cell-main offer-desktop-main">${escapeHtml(offer.title)}</span>
+              <span class="cell-sub offer-desktop-sub">${escapeHtml(metaLine)}</span>
+            </td>
+            <td><span class="pill ${offerStatusClass(offer.status)}">${escapeHtml(offer.status)}</span></td>
+            <td>${itemCount}</td>
+            <td><span class="cell-main">${confirmed}</span><span class="cell-sub">${escapeHtml(statLine)}</span></td>
+            <td><span class="row-actions"><button class="mini-button" type="button" title="Upravit" data-edit-offer="${offer.id}">\u270e</button><button class="mini-button" type="button" title="Smazat" data-delete-offer="${offer.id}">\u00d7</button></span></td>
+          </tr>`;
+        }).join("")}
+      `;
+    };
+    els.offersTable.innerHTML = offers.length
+      ? [renderOfferRows(groups.offers, "Nab\u00eddky"), renderOfferRows(groups.rests, "Resty", true)].filter(Boolean).join("")
+      : `<tr><td colspan="5">${emptyState("\u017d\u00e1dn\u00e1 nab\u00eddka.")}</td></tr>`;
+    els.offersTable.querySelectorAll("[data-offer-row]").forEach((row) => {
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button")) return;
+        state.selectedOfferId = row.dataset.offerRow;
+        renderOffers();
+      });
+    });
+    els.offersTable.querySelectorAll("[data-edit-offer]").forEach((button) => {
+      button.addEventListener("click", () => openOfferDialog(button.dataset.editOffer));
+    });
+    els.offersTable.querySelectorAll("[data-delete-offer]").forEach((button) => {
+      button.addEventListener("click", () => deleteOffer(button.dataset.deleteOffer));
+    });
+    renderOfferDetail();
+  };
+
+  renderOfferDetail = function renderOfferDetailEof() {
+    const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+    if (!offer || !isRestOffer(offer)) return baseRenderOfferDetail();
+    state.selectedOfferId = offer.id;
+    const names = eofRestNames(offer);
+    els.offerDetail.innerHTML = `
+      <div class="detail-header">
+        <div>
+          <h2>${escapeHtml(offer.title)}</h2>
+          <div class="pills"><span class="pill warning">Resty</span></div>
+          <p class="fb-name">${formatDate(offer.date)}</p>
+          ${renderRestMetaPanel(offer)}
+          ${names.length ? `<div class="pills">${names.map((name) => `<span class="pill">${escapeHtml(name)}</span>`).join("")}</div>` : ""}
+          ${clean(offer.note) ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : `<p class="detail-note-text">Bez pozn\u00e1mky.</p>`}
+        </div>
+        <div class="detail-actions">
+          <button class="button ghost" type="button" data-edit-offer="${offer.id}">Upravit resty</button>
+          <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvo\u0159it objedn\u00e1vku</button>
+        </div>
+      </div>
+    `;
+    els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+    els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  };
+
+  const bindRestCreateButtons = () => {
+    [document.querySelector("#addRestOfferTopBtn"), document.querySelector("#addRestOfferBtn")].forEach((button) => {
+      if (!button) return;
+      button.onclick = (event) => {
+        event.preventDefault();
+        openOfferDialog(null, { type: "rests" });
+      };
+    });
+  };
+
+  bindRestCreateButtons();
+})();
+(() => {
+  const previousRenderOfferDetail = renderOfferDetail;
+
+  function finalRestNames(offer = {}) {
+    const names = restFormVarietyNames(offer.restVarietyName);
+    if (names.length) return names;
+    const linked = findVariety(clean(offer.restVarietyId)) || findVarietyByName(clean(offer.restVarietyName));
+    return clean(linked?.name || offer.restVarietyName) ? [clean(linked?.name || offer.restVarietyName)] : [];
+  }
+
+  function finalRestCustomerText(offer = {}) {
+    return customerName(findCustomer(clean(offer.restCustomerId))) || "Bez zákazníka";
+  }
+
+  ensureRestVarietyPickerScaffold = function ensureRestVarietyPickerScaffoldFinal(form) {
+    if (!form) return null;
+    let picker = form.elements.restVarietyPicker || form.querySelector('[name="restVarietyPicker"]');
+    let hidden = form.querySelector('textarea[name="restVarietyName"]');
+    let list = form.querySelector("[data-rest-variety-list]");
+    let addButton = form.querySelector("[data-rest-variety-add]");
+    if (!picker || picker.tagName !== "SELECT") {
+      const original = picker || form.querySelector('[name="restVarietyName"]');
+      if (!original) return null;
+      const label = original.closest("label");
+      const heading = label?.querySelector("span");
+      if (heading) heading.textContent = "Odrůda";
+      const select = document.createElement("select");
+      select.name = "restVarietyPicker";
+      original.replaceWith(select);
+      picker = select;
+      if (!hidden) {
+        hidden = document.createElement("textarea");
+        hidden.name = "restVarietyName";
+        hidden.hidden = true;
+        hidden.setAttribute("aria-hidden", "true");
+        label?.after(hidden);
+      }
+      if (!addButton) {
+        const actions = document.createElement("div");
+        actions.className = "wide rest-variety-picker-row";
+        actions.innerHTML = '<button class="button ghost" type="button" data-rest-variety-add>Přidat odrůdu</button>';
+        hidden.after(actions);
+        addButton = actions.querySelector("[data-rest-variety-add]");
+      }
+      if (!list) {
+        list = document.createElement("div");
+        list.className = "wide rest-variety-selection";
+        list.setAttribute("data-rest-variety-list", "");
+        addButton.closest(".rest-variety-picker-row")?.after(list);
+      }
+    }
+    return { picker, hidden, list, addButton };
+  };
+
+  renderRestVarietySelection = function renderRestVarietySelectionFinal(container, names = []) {
+    if (!container) return;
+    container.innerHTML = names.length
+      ? names.map((name, index) => `<button class="rest-variety-chip" type="button" data-rest-variety-remove="${index}">${escapeHtml(name)} <span>×</span></button>`).join("")
+      : '<div class="rest-variety-empty">Zatím bez odrůd.</div>';
+  };
+
+  setupRestVarietyPickerForOfferForm = function setupRestVarietyPickerForOfferFormFinal(form, initialValue = "") {
+    const scaffold = ensureRestVarietyPickerScaffold(form);
+    if (!scaffold) return;
+    form.__restVarietyNames = restFormVarietyNames(initialValue || scaffold.hidden?.value);
+    const renderPickerOptions = () => {
+      const selected = new Set(form.__restVarietyNames.map((name) => normalize(name)));
+      const previousValue = clean(scaffold.picker.value);
+      const options = [...(state.data.varieties || [])]
+        .map((variety) => clean(variety.name))
+        .filter(Boolean)
+        .filter((name) => !selected.has(normalize(name)))
+        .sort((a, b) => a.localeCompare(b, "cs", { sensitivity: "base" }));
+      scaffold.picker.innerHTML = ['<option value="">Vyber odrůdu</option>']
+        .concat(options.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`))
+        .join("");
+      if (options.some((name) => name === previousValue)) scaffold.picker.value = previousValue;
+    };
+    const sync = () => {
+      scaffold.hidden.value = form.__restVarietyNames.join("\n");
+      renderRestVarietySelection(scaffold.list, form.__restVarietyNames);
+      renderPickerOptions();
+    };
+    const addCurrent = () => {
+      const raw = clean(scaffold.picker.value);
+      if (!raw) return;
+      const exact = findVarietyByName(raw);
+      const nextName = clean(exact?.name || raw);
+      if (!form.__restVarietyNames.some((name) => normalize(name) === normalize(nextName))) {
+        form.__restVarietyNames.push(nextName);
+      }
+      scaffold.picker.value = "";
+      sync();
+      scaffold.picker.focus();
+    };
+    scaffold.addButton.onclick = addCurrent;
+    scaffold.list.onclick = (event) => {
+      const button = event.target.closest("[data-rest-variety-remove]");
+      if (!button) return;
+      form.__restVarietyNames.splice(Number(button.dataset.restVarietyRemove), 1);
+      sync();
+    };
+    sync();
+  };
+
+  renderOfferDetail = function renderOfferDetailNoDuplicateRest() {
+    const offer = findOffer(state.selectedOfferId) || filteredOffers()[0];
+    if (!offer || !isRestOffer(offer)) return previousRenderOfferDetail();
+    state.selectedOfferId = offer.id;
+    els.offerDetail.innerHTML = `
+      <div class="detail-header">
+        <div>
+          <h2>${escapeHtml(offer.title)}</h2>
+          <div class="pills"><span class="pill warning">Resty</span></div>
+          <p class="fb-name">${formatDate(offer.date)}</p>
+          ${renderRestMetaPanel(offer)}
+          ${clean(offer.note) ? `<p class="detail-note-text">${escapeHtml(offer.note)}</p>` : `<p class="detail-note-text">Bez poznámky.</p>`}
+        </div>
+        <div class="detail-actions">
+          <button class="button ghost" type="button" data-edit-offer="${offer.id}">Upravit resty</button>
+          <button class="button ghost" type="button" data-create-offer-orders="${offer.id}">Vytvořit objednávku</button>
+        </div>
+      </div>
+    `;
+    els.offerDetail.querySelector("[data-edit-offer]")?.addEventListener("click", () => openOfferDialog(offer.id));
+    els.offerDetail.querySelector("[data-create-offer-orders]")?.addEventListener("click", () => createOrdersFromOffer(offer.id));
+  };
+
+  [document.querySelector("#addRestOfferTopBtn"), document.querySelector("#addRestOfferBtn")].forEach((button) => {
+    if (!button) return;
+    button.onclick = (event) => {
+      event.preventDefault();
+      openOfferDialog(null, { type: "rests" });
+    };
+  });
+})();
+(() => {
+  function setImportantDisplay(node, value) {
+    if (!node) return;
+    node.style.setProperty("display", value, "important");
+  }
+
+  function setImportantGridColumn(node, value) {
+    if (!node) return;
+    node.style.setProperty("grid-column", value, "important");
+  }
+
+  function normalizeDesktopRestDialogLayout() {
+    const form = els.offerForm;
+    if (!form) return;
+    const isRest = normalizeOfferType(form.elements.type?.value) === "rests" || form.dataset.restMode === "true";
+    if (!isRest) return;
+
+    const titleField = form.elements.title?.closest("label");
+    const dateField = form.elements.date?.closest("label");
+    const facebookDateField = form.elements.facebookPublishDate?.closest("label");
+    const facebookTimeField = form.elements.facebookPublishTime?.closest("label");
+    const statusField = form.querySelector(".offer-status-field");
+    const divider = form.querySelector(".form-divider");
+    const noteField = form.elements.note?.closest("label");
+    const restGrid = form.querySelector("[data-rest-offer-fields]");
+    const restCustomerField = form.elements.restCustomerId?.closest("label");
+    const restVarietyField = form.querySelector('[name="restVarietyPicker"]')?.closest("label")
+      || form.querySelector('[name="restVarietyName"]')?.closest("label");
+    const addRow = form.querySelector(".rest-variety-picker-row");
+    const list = form.querySelector("[data-rest-variety-list]");
+
+    form.dataset.restMode = "true";
+    form.style.setProperty("grid-template-columns", "minmax(0, 1fr)", "important");
+
+    [titleField, facebookDateField, facebookTimeField, statusField, divider].forEach((node) => {
+      if (!node) return;
+      node.hidden = true;
+      setImportantDisplay(node, "none");
+    });
+
+    if (restGrid) {
+      restGrid.hidden = false;
+      restGrid.style.setProperty("display", "grid", "important");
+      restGrid.style.setProperty("grid-template-columns", "minmax(0, 1fr)", "important");
+      setImportantGridColumn(restGrid, "1 / -1");
+    }
+
+    [dateField, restCustomerField, restVarietyField, noteField, addRow, list].forEach((node) => {
+      if (!node) return;
+      node.hidden = false;
+      node.style.removeProperty("display");
+      setImportantGridColumn(node, "1 / -1");
+    });
+
+    if (restCustomerField) {
+      const label = restCustomerField.querySelector("span");
+      if (label) label.textContent = "Zákazník";
+    }
+    if (restVarietyField) {
+      const label = restVarietyField.querySelector("span");
+      if (label) label.textContent = "Odrůdy";
+    }
+  }
+
+  function forceDesktopRestDialogLayout() {
+    normalizeDesktopRestDialogLayout();
+    setTimeout(normalizeDesktopRestDialogLayout, 0);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        normalizeDesktopRestDialogLayout();
+        requestAnimationFrame(normalizeDesktopRestDialogLayout);
+      });
+    }
+  }
+
+  const previousOpenOfferDialogEofFinal = openOfferDialog;
+  openOfferDialog = function openOfferDialogDesktopRestFinal(id = null, defaults = {}) {
+    const offer = id ? findOffer(id) : null;
+    const isRest = offer ? isRestOffer(offer) : normalizeOfferType(defaults?.type) === "rests";
+    const result = previousOpenOfferDialogEofFinal(id, defaults);
+    if (isRest) forceDesktopRestDialogLayout();
+    return result;
+  };
+
+  if (typeof window.openDesktopRestOfferDialog === "function") {
+    const previousDesktopRestOpen = window.openDesktopRestOfferDialog;
+    window.openDesktopRestOfferDialog = function openDesktopRestOfferDialogReallyFinal(...args) {
+      const result = previousDesktopRestOpen(...args);
+      forceDesktopRestDialogLayout();
+      return result;
+    };
+  }
+
+  [document.querySelector("#addRestOfferTopBtn"), document.querySelector("#addRestOfferBtn")].forEach((button) => {
+    if (!button) return;
+    button.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openOfferDialog(null, { type: "rests" });
+    };
+  });
+})();
+(() => {
+  function finalRestTitleMatch(value = "") {
+    return /^Resty(?:\/pozn.*)?(?:\s|$)/i.test(clean(value));
+  }
+
+  function finalRestLikeOffer(offer = {}) {
+    if (!offer) return false;
+    if (normalizeOfferType(offer.type) === "rests") return true;
+    if (clean(offer.restCustomerId) || clean(offer.restVarietyId) || clean(offer.restVarietyName)) return true;
+    return finalRestTitleMatch(offer.title);
+  }
+
+  const previousNormalizeOfferBootstrap = normalizeOffer;
+  normalizeOffer = function normalizeOfferRestBootstrap(offer = {}) {
+    const shouldBeRest = finalRestLikeOffer(offer);
+    const normalized = previousNormalizeOfferBootstrap({
+      ...offer,
+      type: shouldBeRest ? "rests" : offer?.type,
+    });
+    return shouldBeRest ? { ...normalized, type: "rests" } : normalized;
+  };
+
+  const previousIsRestOfferBootstrap = isRestOffer;
+  isRestOffer = function isRestOfferRestBootstrap(offer = {}) {
+    return finalRestLikeOffer(offer) || previousIsRestOfferBootstrap(offer);
+  };
+
+  if (Array.isArray(state?.data?.offers) && state.data.offers.length) {
+    state.data.offers = state.data.offers.map((offer) => normalizeOffer(offer));
+    if (typeof invalidateDerivedCache === "function") invalidateDerivedCache();
+  }
+
+  const rerender = () => {
+    if (typeof renderAll === "function") renderAll();
+  };
+
+  rerender();
+  setTimeout(rerender, 0);
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      rerender();
+      requestAnimationFrame(rerender);
+    });
+  }
+})();

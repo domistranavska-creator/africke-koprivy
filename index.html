@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260530-57" />
+    <link rel="stylesheet" href="styles.css?v=20260601-100" />
   </head>
   <body>
     <div class="app-shell">
@@ -43,6 +43,7 @@
         <div class="top-actions">
           <button class="button ghost" type="button" id="commandPaletteTopBtn">⌘ Hledat</button>
           <button class="button primary" type="button" id="addOfferTopBtn">Nová nabídka</button>
+          <button class="button ghost" type="button" id="addRestOfferTopBtn" onclick="window.openDesktopRestOfferDialog && window.openDesktopRestOfferDialog(); return false;">Nové resty</button>
           <button class="button secondary" type="button" id="addOrderTopBtn">Nová objednávka</button>
           <button class="button secondary" type="button" id="addCustomerBtn">Nový zákazník</button>
           <button class="button secondary" type="button" id="addVarietyTopBtn">Nová odrůda</button>
@@ -326,6 +327,7 @@
         <section class="view active" id="offersView">
           <div class="toolbar offers-toolbar-simple">
             <button class="button primary" type="button" id="addOfferBtn">Nová nabídka</button>
+            <button class="button ghost" type="button" id="addRestOfferBtn" onclick="window.openDesktopRestOfferDialog && window.openDesktopRestOfferDialog(); return false;">Nové resty</button>
           </div>
 
           <div class="scene-grid" id="offersScene"></div>
@@ -431,8 +433,12 @@
                   <input id="defaultPostalFee" inputmode="decimal" placeholder="0" />
                 </label>
                 <label>
-                  <span>Zásilkovna na adresu</span>
-                  <input id="defaultShippingFeeAddress" inputmode="decimal" placeholder="0" />
+                  <span>Zásilkovna na adresu ČR</span>
+                  <input id="defaultShippingFeeAddressCz" inputmode="decimal" placeholder="0" />
+                </label>
+                <label>
+                  <span>Zásilkovna na adresu Slovensko</span>
+                  <input id="defaultShippingFeeAddressSk" inputmode="decimal" placeholder="0" />
                 </label>
                 <label>
                   <span>Balné</span>
@@ -599,6 +605,7 @@
           <span>Zákazník</span>
           <select name="customerId" required></select>
         </label>
+        <section class="order-rest-block wide" id="orderRestBlock" hidden></section>
         <label class="order-date-field">
           <span>Datum</span>
           <input name="orderDate" type="date" required />
@@ -684,7 +691,11 @@
             <small class="order-fee-preview" id="orderFeePreview"></small>
           </div>
         </label>
+        <textarea name="stornoLines" hidden aria-hidden="true" tabindex="-1"></textarea>
+        <input type="hidden" name="cancelledAt" />
+        <input type="hidden" name="cancelledNote" />
         <section class="order-alternate-block wide" id="orderAlternateBlock" hidden></section>
+        <section class="order-storno-block wide" id="orderStornoBlock"></section>
         <div class="order-total-row wide">
           <div class="order-total-highlight" id="orderTotalHighlight"></div>
           <small class="order-foreign-total-hint" id="orderForeignTotalHint" hidden></small>
@@ -880,6 +891,18 @@
           <span>Čas na Facebooku</span>
           <input name="facebookPublishTime" type="time" />
         </label>
+        <input name="type" type="hidden" />
+        <input name="restVarietyId" type="hidden" />
+        <div class="wide offer-rest-meta-grid" data-rest-offer-fields hidden>
+          <label>
+            <span>Zákazník</span>
+            <select name="restCustomerId"></select>
+          </label>
+          <label>
+            <span>Odrůda</span>
+            <input name="restVarietyName" list="varietyList" placeholder="volitelně" />
+          </label>
+        </div>
         <label class="offer-status-field">
           <span>Stav</span>
           <div class="offer-status-toggle" role="group" aria-label="Stav nabídky">
@@ -1074,13 +1097,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="vendor/lzma1-browser-setup.js?v=20260530-57" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260530-57" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260530-57" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260530-57" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260530-57" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260530-57" charset="utf-8"></script>
-    <script src="app.js?v=20260530-57" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260601-100" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260601-100" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260601-100" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260601-100" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260601-100" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260601-100" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260601-100" charset="utf-8"></script>
+    <script src="app.js?v=20260601-100" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;
