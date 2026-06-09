@@ -10784,6 +10784,90 @@ function openOfferDetailSheet(id, options = {}) {
     return `${value} fotek`;
   }
 
+  function ak93CatalogThumbMarkup(image = "", fallbackText = "", alt = "") {
+    const safeImage = clean(image);
+    const safeFallback = ak93DisplayText(fallbackText, "AK");
+    if (safeImage) {
+      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" alt="${escapeHtml(alt || safeFallback)}">`;
+    }
+    return `<div class="catalog-mobile-placeholder"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
+  }
+
+  function ak93CatalogActionButtons(id, actions = []) {
+    if (!actions.length) return "";
+    return `<div class="catalog-mobile-actions">${actions.map(([action, label]) => {
+      const titleText = ak93ActionTitle(action, label);
+      return `<button class="round" type="button" data-action-row="${escapeHtml(action)}" data-id="${escapeHtml(id)}" title="${escapeHtml(titleText)}" aria-label="${escapeHtml(titleText)}">${ak93ActionIcon(action, label)}</button>`;
+    }).join("")}</div>`;
+  }
+
+  function ak93VarietyCatalogCard(variety) {
+    const name = ak93DisplayText(variety.name, "Odrůda");
+    const images = varietyImages(variety);
+    const note = ak93DisplayText(variety.note);
+    const usage = varietyUsageCount(variety.name);
+    const priceLabel = variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny";
+    return `<article class="card catalog-mobile-card catalog-mobile-variety${variety.active === false ? " is-inactive" : ""}" data-card="variety" data-id="${escapeHtml(variety.id)}">
+      <div class="catalog-mobile-visual">
+        <span class="catalog-mobile-badge">Odrůda</span>
+        ${ak93CatalogThumbMarkup(images[0], name, name)}
+      </div>
+      <div class="catalog-mobile-copy">
+        <strong class="catalog-mobile-name">${escapeHtml(name)}</strong>
+        ${note ? `<p class="catalog-mobile-note">${escapeHtml(note)}</p>` : ""}
+        <div class="catalog-mobile-tags">
+          ${renderCardPill(ak93PhotoCountLabel(images.length))}
+          ${renderCardPill(`${usage}× v objednávce${usage === 1 ? "" : "ch"}`)}
+          ${renderCardPill(variety.active === false ? "Neaktivní" : "Aktivní")}
+        </div>
+        <div class="catalog-mobile-footer">
+          <span class="catalog-mobile-price">${escapeHtml(priceLabel)}</span>
+          ${ak93CatalogActionButtons(variety.id, [["edit-variety", ak93Icons.edit], ["delete-variety", ak93Icons.delete]])}
+        </div>
+      </div>
+    </article>`;
+  }
+
+  function ak93CrossToneClass(cross) {
+    if (clean(cross.resultRating) === "hnusna") return "reject";
+    if (clean(cross.resultRating) === "krasna" && clean(cross.stage) === "hotovo") return "done";
+    if (["vyseto", "roste"].includes(clean(cross.stage))) return "progress";
+    return "attention";
+  }
+
+  function ak93CrossCatalogCard(cross) {
+    const lineage = ak93DisplayText(crossLineage(cross), "Křížení");
+    const seedlingName = ak93DisplayText(cross.seedlingName);
+    const note = ak93DisplayText(cross.note);
+    const title = seedlingName || lineage;
+    const linkedVariety = findById("varieties", clean(cross.linkedVarietyId)) || (seedlingName ? findVarietyByName(seedlingName) : null);
+    const pills = [
+      ak93CrossStageLabel(cross.stage),
+      ak93CrossRatingLabel(cross.resultRating) || "Bez hodnocení",
+      formatDate(cross.pollinatedAt),
+      linkedVariety?.name || "",
+    ].filter(Boolean);
+
+    return `<article class="card catalog-mobile-card catalog-mobile-cross ${ak93CrossToneClass(cross)}" data-card="cross" data-id="${escapeHtml(cross.id)}">
+      <div class="catalog-mobile-visual">
+        <span class="catalog-mobile-badge">Křížení</span>
+        ${ak93CatalogThumbMarkup(crossSeedlingImages(cross)[0], title, title)}
+      </div>
+      <div class="catalog-mobile-copy">
+        <strong class="catalog-mobile-name">${escapeHtml(title)}</strong>
+        ${seedlingName ? `<p class="catalog-mobile-lineage">${escapeHtml(lineage)}</p>` : ""}
+        ${note ? `<p class="catalog-mobile-note">${escapeHtml(note)}</p>` : ""}
+        <div class="catalog-mobile-tags">
+          ${pills.map((pill) => renderCardPill(pill)).join("")}
+        </div>
+        <div class="catalog-mobile-footer">
+          <span class="catalog-mobile-price">${escapeHtml(ak93CrossStageLabel(cross.stage))}</span>
+          ${ak93CatalogActionButtons(cross.id, [["download-cross", ak93Icons.download], ["edit-cross", ak93Icons.edit], ["delete-cross", ak93Icons.delete]])}
+        </div>
+      </div>
+    </article>`;
+  }
+
   function ak93ReservationLineMarkup(offer, item, reservation) {
     const customer = findCustomer(reservation.customerId);
     const status = reservationStatusValue(reservation.status);
@@ -10857,21 +10941,7 @@ function openOfferDetailSheet(id, options = {}) {
       .slice()
       .sort((a, b) => naturalCompare(ak93DisplayText(a?.name, ""), ak93DisplayText(b?.name, "")));
     if (!varieties.length) return empty("Žádné odrůdy.");
-    return varieties.map((variety) => {
-      const name = ak93DisplayText(variety.name, "Odrůda");
-      const imageCount = varietyImages(variety).length;
-      return card({
-        id: variety.id,
-        type: "variety",
-        title: name,
-        sub: `${ak93PhotoCountLabel(imageCount)} · ${varietyUsageCount(variety.name)} záznamů`,
-        price: variety.salePrice ? formatMoney(variety.salePrice, "CZK") : "Bez ceny",
-        thumb: varietyImages(variety)[0],
-        thumbText: initials(name),
-        pills: [variety.active === false ? "Neaktivní" : "Aktivní"],
-        actions: [["edit-variety", ak93Icons.edit], ["delete-variety", ak93Icons.delete]],
-      });
-    }).join("");
+    return varieties.map((variety) => ak93VarietyCatalogCard(variety)).join("");
   }
 
   function ak93RenderCrosses() {
@@ -10880,27 +10950,7 @@ function openOfferDetailSheet(id, options = {}) {
       .slice()
       .sort((a, b) => String(b.pollinatedAt || "").localeCompare(String(a.pollinatedAt || "")));
     if (!crosses.length) return empty("Žádné křížení.");
-    return crosses.map((cross) => {
-      const title = ak93DisplayText(crossLineage(cross), "Křížení");
-      const seedlingName = ak93DisplayText(cross.seedlingName);
-      const tone = clean(cross.resultRating) === "hnusna" ? "reject" : clean(cross.stage) === "hotovo" ? "done" : "attention";
-      const pills = [
-        ak93CrossStageLabel(cross.stage),
-        ak93CrossRatingLabel(cross.resultRating) || "Bez hodnocení",
-        seedlingName,
-      ].filter(Boolean);
-      return card({
-        id: cross.id,
-        type: "cross",
-        tone,
-        title,
-        sub: seedlingName,
-        thumb: crossSeedlingImages(cross)[0],
-        thumbText: initials(title),
-        pills,
-        actions: [["download-cross", ak93Icons.download], ["edit-cross", ak93Icons.edit], ["delete-cross", ak93Icons.delete]],
-      });
-    }).join("");
+    return crosses.map((cross) => ak93CrossCatalogCard(cross)).join("");
   }
 
   function ak93OpenStandardOfferDetail(id, options = {}) {
