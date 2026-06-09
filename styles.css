@@ -518,6 +518,467 @@
   }
 }
 
+/* Final desktop catalog look for Odrůdy. This only changes the PC list layout and keeps the same data/actions. */
+#varietiesView .varieties-catalog-panel {
+  background:
+    radial-gradient(circle at top right, rgba(255, 228, 190, 0.24), transparent 24%),
+    radial-gradient(circle at bottom left, rgba(191, 218, 208, 0.22), transparent 28%),
+    linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(247, 243, 236, 0.96));
+}
+
+#varietiesView .varieties-catalog-panel .table-scroll {
+  padding: 18px;
+}
+
+#varietiesTable.varieties-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 24px;
+  align-items: stretch;
+}
+
+#varietiesTable.varieties-catalog-grid > .empty-state {
+  grid-column: 1 / -1;
+}
+
+#varietiesTable .variety-catalog-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(231, 210, 206, 0.9);
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 250, 245, 0.99), rgba(251, 245, 238, 0.97));
+  box-shadow: 0 22px 38px rgba(69, 42, 24, 0.12);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+  content-visibility: auto;
+  contain-intrinsic-size: 430px;
+}
+
+#varietiesTable .variety-catalog-card:hover,
+#varietiesTable .variety-catalog-card:focus-visible {
+  transform: translateY(-4px);
+  border-color: rgba(158, 75, 95, 0.26);
+  box-shadow: 0 28px 46px rgba(69, 42, 24, 0.16);
+  outline: none;
+}
+
+#varietiesTable .variety-catalog-card.is-inactive {
+  opacity: 0.82;
+}
+
+#varietiesTable .variety-catalog-card-visual {
+  position: relative;
+  aspect-ratio: 4 / 4.7;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.34), transparent 35%),
+    linear-gradient(180deg, rgba(158, 75, 95, 0.12), rgba(95, 125, 97, 0.18)),
+    linear-gradient(180deg, #f0ded0, #d4b998);
+}
+
+#varietiesTable .variety-catalog-card-photo {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+#varietiesTable .variety-catalog-card-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+#varietiesTable .variety-catalog-card-placeholder-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+  height: 92px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.86);
+  border: 1px solid rgba(86, 60, 39, 0.14);
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+#varietiesTable .variety-catalog-card-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.92);
+  backdrop-filter: blur(10px);
+  color: #8e4056;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+#varietiesTable .variety-catalog-card-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 20px;
+}
+
+#varietiesTable .variety-catalog-card-heading {
+  min-width: 0;
+}
+
+#varietiesTable .variety-catalog-card-name {
+  padding: 0;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1.08;
+  text-align: left;
+}
+
+#varietiesTable .variety-catalog-card-note {
+  margin: 0;
+  min-height: 3.3em;
+  color: var(--muted);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+#varietiesTable .variety-catalog-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#varietiesTable .variety-catalog-card-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(231, 215, 205, 0.54);
+  color: rgba(77, 62, 48, 0.92);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+#varietiesTable .variety-catalog-card-chip-state {
+  background: rgba(174, 84, 103, 0.14);
+  color: #8f4257;
+}
+
+#varietiesTable .variety-catalog-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+}
+
+#varietiesTable .variety-catalog-card-price {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(174, 84, 103, 0.14);
+  color: #8f4257;
+  font-size: 1rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+#varietiesTable .variety-catalog-card-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+#varietiesTable .variety-catalog-card-actions .mini-button {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  border-color: rgba(180, 167, 144, 0.55);
+  background: rgba(255, 252, 248, 0.96);
+  box-shadow: 0 10px 18px rgba(69, 42, 24, 0.08);
+}
+
+#varietiesTable .variety-catalog-card-actions .mini-button:hover,
+#varietiesTable .variety-catalog-card-actions .mini-button:focus-visible {
+  border-color: rgba(112, 149, 126, 0.36);
+  background: rgba(244, 249, 244, 0.98);
+}
+
+@media (max-width: 1100px) {
+  #varietiesTable.varieties-catalog-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 18px;
+  }
+}
+
+@media (max-width: 760px) {
+  #varietiesView .varieties-catalog-panel .table-scroll {
+    padding: 12px;
+  }
+
+  #varietiesTable.varieties-catalog-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  #varietiesTable .variety-catalog-card-copy {
+    padding: 16px;
+  }
+}
+
+/* Final desktop catalog look for Křížení. */
+#crossesView .table-panel .table-scroll {
+  padding: 18px;
+}
+
+#crossesTable.crosses-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 22px;
+  align-items: stretch;
+}
+
+#crossesTable.crosses-catalog-grid > .empty-state {
+  grid-column: 1 / -1;
+}
+
+#crossesTable .cross-catalog-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(213, 194, 139, 0.45);
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.99), rgba(247, 243, 236, 0.97));
+  box-shadow: 0 20px 36px rgba(69, 42, 24, 0.12);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+  content-visibility: auto;
+  contain-intrinsic-size: 440px;
+}
+
+#crossesTable .cross-catalog-card:hover,
+#crossesTable .cross-catalog-card:focus-visible {
+  transform: translateY(-4px);
+  box-shadow: 0 28px 46px rgba(69, 42, 24, 0.16);
+  outline: none;
+}
+
+#crossesTable .cross-catalog-card.is-selected {
+  box-shadow:
+    0 0 0 2px rgba(112, 149, 126, 0.32),
+    0 28px 46px rgba(69, 42, 24, 0.16);
+}
+
+#crossesTable .cross-catalog-card.cross-tone-active,
+#crossesTable .cross-catalog-card.cross-tone-ready {
+  border-color: rgba(79, 139, 204, 0.42);
+}
+
+#crossesTable .cross-catalog-card.cross-tone-success {
+  border-color: rgba(87, 157, 111, 0.42);
+}
+
+#crossesTable .cross-catalog-card.cross-tone-reject {
+  border-color: rgba(184, 92, 92, 0.42);
+}
+
+#crossesTable .cross-catalog-card-visual {
+  position: relative;
+  aspect-ratio: 4 / 4.5;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.34), transparent 35%),
+    linear-gradient(180deg, rgba(228, 216, 187, 0.26), rgba(184, 214, 209, 0.16)),
+    linear-gradient(180deg, #f0ded0, #d4b998);
+}
+
+#crossesTable .cross-catalog-card-photo {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+#crossesTable .cross-catalog-card-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+#crossesTable .cross-catalog-card-placeholder-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 94px;
+  height: 94px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.86);
+  border: 1px solid rgba(86, 60, 39, 0.14);
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+#crossesTable .cross-catalog-card-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 250, 244, 0.92);
+  backdrop-filter: blur(10px);
+  color: #8e4056;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+#crossesTable .cross-catalog-card-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px 20px;
+}
+
+#crossesTable .cross-catalog-card-heading {
+  min-width: 0;
+}
+
+#crossesTable .cross-catalog-card-name {
+  margin: 0;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.18rem;
+  font-weight: 800;
+  line-height: 1.08;
+}
+
+#crossesTable .cross-catalog-card-lineage,
+#crossesTable .cross-catalog-card-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+#crossesTable .cross-catalog-card-lineage {
+  font-weight: 700;
+  color: rgba(33, 50, 40, 0.82);
+}
+
+#crossesTable .cross-catalog-card-note {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+#crossesTable .cross-catalog-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#crossesTable .cross-catalog-card-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(231, 215, 205, 0.54);
+  color: rgba(77, 62, 48, 0.92);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+#crossesTable .cross-catalog-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
+
+#crossesTable .cross-catalog-card-actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+#crossesTable .cross-catalog-card-actions .mini-button {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  border-color: rgba(180, 167, 144, 0.55);
+  background: rgba(255, 252, 248, 0.96);
+  box-shadow: 0 10px 18px rgba(69, 42, 24, 0.08);
+}
+
+#crossesTable .cross-catalog-card-actions .mini-button:hover,
+#crossesTable .cross-catalog-card-actions .mini-button:focus-visible {
+  border-color: rgba(112, 149, 126, 0.36);
+  background: rgba(244, 249, 244, 0.98);
+}
+
+@media (max-width: 1120px) {
+  #crossesTable.crosses-catalog-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 18px;
+  }
+}
+
+@media (max-width: 760px) {
+  #crossesView .table-panel .table-scroll {
+    padding: 12px;
+  }
+
+  #crossesTable.crosses-catalog-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  #crossesTable .cross-catalog-card-copy {
+    padding: 16px;
+  }
+}
+
 #offerForm .offer-rest-meta-grid {
   display: grid;
   gap: 14px;

@@ -8,6 +8,8 @@ const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
 const SUPABASE_SYNC_DIRTY_KEY = `${STORE_KEY}:sync-dirty-at`;
+const SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY = `${STORE_KEY}:supabase-sync-last-local-snapshot`;
+const SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY = `${STORE_KEY}:supabase-sync-last-cloud-snapshot`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
 const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
@@ -6759,8 +6761,9 @@ function fallbackCopyText(text) {
 }
 
 function loadData() {
+  const key = [STORE_KEY, ...LEGACY_STORE_KEYS].find((item) => localStorage.getItem(item));
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED && localStorage.getItem(SEED_SIGNATURE_KEY) !== SEED_SIGNATURE) {
-    if (localStorage.getItem(STORE_KEY) && currentSyncDirtyAt()) {
+    if (key) {
       localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
     } else {
       const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
@@ -6769,7 +6772,6 @@ function loadData() {
       return seeded;
     }
   }
-  const key = [STORE_KEY, ...LEGACY_STORE_KEYS].find((item) => localStorage.getItem(item));
   if (key) {
     try {
       const data = normalizeLoadedData(JSON.parse(localStorage.getItem(key)));
@@ -6795,16 +6797,149 @@ function saveData(options = {}) {
 }
 
 function normalizeLoadedData(data = {}) {
+  const source = repairLoadedDataStrings(data);
   const result = {
-    customers: Array.isArray(data.customers) ? data.customers.map(normalizeCustomer) : [],
-    orders: Array.isArray(data.orders) ? data.orders.map(normalizeOrder) : [],
-    varieties: Array.isArray(data.varieties) ? data.varieties.map(normalizeVariety) : [],
-    crosses: Array.isArray(data.crosses) ? data.crosses.map(normalizeCross) : [],
-    offers: Array.isArray(data.offers) ? data.offers.map(normalizeOffer) : [],
-    exchangeRates: Array.isArray(data.exchangeRates) ? data.exchangeRates : [],
-    settings: data.settings || {},
+    customers: Array.isArray(source.customers) ? source.customers.map(normalizeCustomer) : [],
+    orders: Array.isArray(source.orders) ? source.orders.map(normalizeOrder) : [],
+    varieties: Array.isArray(source.varieties) ? source.varieties.map(normalizeVariety) : [],
+    crosses: Array.isArray(source.crosses) ? source.crosses.map(normalizeCross) : [],
+    offers: Array.isArray(source.offers) ? source.offers.map(normalizeOffer) : [],
+    exchangeRates: Array.isArray(source.exchangeRates) ? source.exchangeRates : [],
+    settings: source.settings || {},
   };
   reconcileOfferItemVarietyLinks(result);
+  return result;
+}
+
+const loadedTextRepairMaps = new Map();
+const BROKEN_TEXT_PAIR_REPLACEMENTS = [
+  ["\u0102\u02c7", "\u00e1"],
+  ["\u0102\u00a9", "\u00e9"],
+  ["\u0102\u00ad", "\u00ed"],
+  ["\u0102\u00b3", "\u00f3"],
+  ["\u0102\u00ba", "\u00fa"],
+  ["\u0102\u02dd", "\u00fd"],
+  ["\u00c4\u0164", "\u010d"],
+  ["\u00c4\u0179", "\u010f"],
+  ["\u00c4\u203a", "\u011b"],
+  ["\u00c4\u013e", "\u013e"],
+  ["\u0139\u02c6", "\u0148"],
+  ["\u0139\u2122", "\u0159"],
+  ["\u0139\u02c7", "\u0161"],
+  ["\u0139\u00a4", "\u0165"],
+  ["\u0139\u017b", "\u016f"],
+  ["\u0139\u013e", "\u017e"],
+  ["\u0102\u2014", "\u00d7"],
+  ["\u00c3\u2014", "\u00d7"],
+  ["\u00c2\u00b7", "\u00b7"],
+];
+
+function repairLoadedDataStrings(value) {
+  if (typeof value === "string") return repairLoadedString(value);
+  if (Array.isArray(value)) return value.map((item) => repairLoadedDataStrings(item));
+  if (!value || typeof value !== "object") return value;
+  const next = {};
+  Object.keys(value).forEach((key) => {
+    next[key] = repairLoadedDataStrings(value[key]);
+  });
+  return next;
+}
+
+function repairLoadedString(value = "") {
+  const text = String(value ?? "");
+  if (!text || !loadedStringLooksBroken(text)) return text;
+  let best = text;
+  let bestScore = loadedStringRepairScore(text);
+  for (let pass = 0; pass < 3; pass += 1) {
+    let changed = false;
+    for (const encoding of ["windows-1250", "windows-1252"]) {
+      const candidate = decodeLoadedString(best, encoding);
+      const candidateScore = loadedStringRepairScore(candidate);
+      if (candidate !== best && candidateScore > bestScore) {
+        best = candidate;
+        bestScore = candidateScore;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const pairFixed = replaceBrokenTextPairs(best);
+  if (pairFixed !== best) best = pairFixed;
+  return best;
+}
+
+function replaceBrokenTextPairs(value = "") {
+  let text = String(value ?? "");
+  BROKEN_TEXT_PAIR_REPLACEMENTS.forEach(([broken, fixed]) => {
+    if (text.includes(broken)) text = text.split(broken).join(fixed);
+  });
+  return text;
+}
+
+function loadedStringLooksBroken(text = "") {
+  return /[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/.test(text) || /Â·|Ã—|Ă—/.test(text);
+}
+
+function loadedStringRepairScore(text = "") {
+  const markers = (text.match(/[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/g) || []).length;
+  const accents = (text.match(/[áéíóúýčďěňřšťůžľĺôäÁÉÍÓÚÝČĎĚŇŘŠŤŮŽĽĹÔÄ×·]/g) || []).length;
+  return accents - markers * 4;
+}
+
+function loadedStringByteMap(encoding) {
+  if (loadedTextRepairMaps.has(encoding)) return loadedTextRepairMaps.get(encoding);
+  const decoder = new TextDecoder(encoding);
+  const map = new Map();
+  for (let index = 0; index < 256; index += 1) {
+    const decoded = decoder.decode(Uint8Array.of(index));
+    if (!map.has(decoded)) map.set(decoded, index);
+  }
+  loadedTextRepairMaps.set(encoding, map);
+  return map;
+}
+
+function decodeLoadedStringSegment(segment, encoding) {
+  if (!segment) return "";
+  const map = loadedStringByteMap(encoding);
+  const bytes = [];
+  for (const ch of segment) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x7f) {
+      bytes.push(code);
+      continue;
+    }
+    const mapped = map.get(ch);
+    if (mapped == null) return segment;
+    bytes.push(mapped);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  } catch {
+    return segment;
+  }
+}
+
+function decodeLoadedString(value, encoding) {
+  const text = String(value ?? "");
+  if (!text) return "";
+  const map = loadedStringByteMap(encoding);
+  let result = "";
+  let buffer = "";
+  const flush = () => {
+    if (!buffer) return;
+    result += decodeLoadedStringSegment(buffer, encoding);
+    buffer = "";
+  };
+  for (const ch of text) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x7f || map.has(ch)) {
+      buffer += ch;
+    } else {
+      flush();
+      result += ch;
+    }
+  }
+  flush();
   return result;
 }
 
@@ -6866,12 +7001,32 @@ function normalizeOrder(order = {}) {
   return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "ÄŤekĂˇ", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["novĂˇ", "pĹ™ipraveno", "odeslĂˇno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "novĂˇ", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
 }
 
+function cleanGeneratedCrossNote(note = "") {
+  const lines = clean(note).split(/\n+/).map((line) => clean(line)).filter(Boolean);
+  if (!lines.length) return "";
+  const seedlingPrefix = normalize("Semenáč z křížení ");
+  const lineagePrefix = normalize("Kříženec: ");
+  const genericBodies = new Set([
+    normalize("matka × pyl"),
+    normalize("bez matky × bez pylu"),
+  ]);
+  const hasSeedlingLine = lines.some((line) => normalize(line).startsWith(seedlingPrefix));
+  const filtered = lines.filter((line) => {
+    const normalizedLine = normalize(line);
+    if (!normalizedLine.startsWith(lineagePrefix)) return true;
+    const body = normalizedLine.slice(lineagePrefix.length).trim();
+    if (genericBodies.has(body)) return false;
+    return !hasSeedlingLine;
+  });
+  return unique(filtered).join("\n");
+}
+
 function normalizeVariety(variety = {}) {
-  return { ...variety, id: clean(variety.id) || uid(), name: clean(variety.name), salePrice: normalizeAmount(variety.salePrice), saleCurrency: "CZK", photoUrl: clean(variety.photoUrl), gallery: normalizeGallery(variety.gallery), active: variety.active !== false, note: clean(variety.note) };
+  return { ...variety, id: clean(variety.id) || uid(), name: clean(variety.name), salePrice: normalizeAmount(variety.salePrice), saleCurrency: "CZK", photoUrl: clean(variety.photoUrl), gallery: normalizeGallery(variety.gallery), active: variety.active !== false, note: cleanGeneratedCrossNote(variety.note) };
 }
 
 function normalizeCross(cross = {}) {
-  return { ...cross, id: clean(cross.id) || uid(), motherVarietyId: clean(cross.motherVarietyId), pollenVarietyId: clean(cross.pollenVarietyId), pollinatedAt: clean(cross.pollinatedAt || cross.date) || todayInput(), stage: ["opyleno", "vyseto", "roste", "hotovo"].includes(clean(cross.stage)) ? clean(cross.stage) : "opyleno", seedlingName: clean(cross.seedlingName || cross.name), seedlingPhotoUrl: clean(cross.seedlingPhotoUrl || cross.photoUrl), seedlingGallery: normalizeGallery(cross.seedlingGallery || cross.gallery), resultRating: ["krasna", "hnusna", "nejista"].includes(clean(cross.resultRating || cross.rating)) ? clean(cross.resultRating || cross.rating) : "", linkedVarietyId: clean(cross.linkedVarietyId || cross.varietyId), note: clean(cross.note) };
+  return { ...cross, id: clean(cross.id) || uid(), motherVarietyId: clean(cross.motherVarietyId), pollenVarietyId: clean(cross.pollenVarietyId), pollinatedAt: clean(cross.pollinatedAt || cross.date) || todayInput(), stage: ["opyleno", "vyseto", "roste", "hotovo"].includes(clean(cross.stage)) ? clean(cross.stage) : "opyleno", seedlingName: clean(cross.seedlingName || cross.name), seedlingPhotoUrl: clean(cross.seedlingPhotoUrl || cross.photoUrl), seedlingGallery: normalizeGallery(cross.seedlingGallery || cross.gallery), resultRating: ["krasna", "hnusna", "nejista"].includes(clean(cross.resultRating || cross.rating)) ? clean(cross.resultRating || cross.rating) : "", linkedVarietyId: clean(cross.linkedVarietyId || cross.varietyId), note: cleanGeneratedCrossNote(cross.note) };
 }
 
 function normalizeOffer(offer = {}) {
@@ -8094,6 +8249,9 @@ function normalizeSyncConfig(parsed = {}) {
     autoSync: Boolean(parsed.autoSync),
     lastPulledAt: clean(parsed.lastPulledAt),
     lastPushedAt: clean(parsed.lastPushedAt),
+    lastSyncedAt: clean(parsed.lastSyncedAt),
+    lastKnownCloudAt: clean(parsed.lastKnownCloudAt),
+    lastKnownCloudSummary: normalizeSyncSummary(parsed.lastKnownCloudSummary),
   };
 }
 
@@ -8108,7 +8266,10 @@ function migrateSyncConfig() {
       || clean(parsed.email) !== normalized.email
       || Boolean(parsed.autoSync) !== normalized.autoSync
       || clean(parsed.lastPulledAt) !== normalized.lastPulledAt
-      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt;
+      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt
+      || clean(parsed.lastSyncedAt) !== normalized.lastSyncedAt
+      || clean(parsed.lastKnownCloudAt) !== normalized.lastKnownCloudAt
+      || JSON.stringify(normalizeSyncSummary(parsed.lastKnownCloudSummary)) !== JSON.stringify(normalized.lastKnownCloudSummary);
     if (!changed) return;
     localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
     if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
@@ -8209,6 +8370,7 @@ async function pushSync(options = {}) {
   state.syncRunning = true;
   const startedRevision = state.syncRevision;
   const startedDirtyAt = currentSyncDirtyAt();
+  const syncedAt = new Date().toISOString();
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
@@ -8221,13 +8383,36 @@ async function pushSync(options = {}) {
       }
       state.syncVerifiedPassword = state.syncPassword;
     }
+    const configBeforePush = loadSyncConfig();
+    let cloudState = { updatedAt: "", data: null, summary: normalizeSyncSummary() };
+    if (!options.force) {
+      cloudState = await readCloudState(session, state.syncPassword);
+      if (cloudState.data) rememberSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-before-push", cloudState.data, cloudState.updatedAt);
+    }
+    const localSummary = summarizeSyncData(state.data);
+    const blockMessage = options.force ? "" : getSyncPushBlockMessage(
+      localSummary,
+      cloudState.summary,
+      configBeforePush.lastKnownCloudSummary,
+      configBeforePush.lastKnownCloudAt,
+      cloudState.updatedAt,
+      { allowConfirm: !options.auto && !options.silent },
+    );
+    if (blockMessage) {
+      updateSyncIndicator("error");
+      if (!options.silent) toast(blockMessage);
+      return false;
+    }
+    rememberSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-push", state.data);
     const data = await buildSyncData(session.user?.id || "user");
+    const pushedSummary = summarizeSyncData(data);
     const encrypted = await encryptPayload(data, state.syncPassword);
     const updatedAt = new Date().toISOString();
     await supabaseRequest("/rest/v1/app_sync?on_conflict=user_id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates" }, body: { user_id: session.user?.id, encrypted_data: encrypted, updated_at: updatedAt } });
     state.syncVerifiedPassword = state.syncPassword;
     cleanupStorage(session.user?.id || "user", collectPhotoPaths(data)).catch((error) => console.warn("Storage cleanup skipped", error));
-    saveSyncConfig({ lastPushedAt: updatedAt });
+    saveSyncConfig({ lastPushedAt: updatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: updatedAt, lastKnownCloudSummary: pushedSummary });
+    rememberSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-push", data, updatedAt);
     clearSyncDirtyIfUnchanged(startedDirtyAt, startedRevision);
     updateSyncIndicator();
     if (!options.silent) toast("OdeslĂˇno do cloudu.");
@@ -8255,10 +8440,12 @@ async function pullSync(options = {}) {
   try {
     updateSyncIndicator("working");
     const session = await ensureSession();
+    const syncedAt = new Date().toISOString();
     const metadataOnly = Boolean(options.auto && !options.verify);
     let rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=${metadataOnly ? "updated_at" : "encrypted_data,updated_at"}`, { method: "GET" });
     let cloudUpdatedAt = clean(rows?.[0]?.updated_at);
     if (metadataOnly && state.syncVerifiedPassword === state.syncPassword && cloudUpdatedAt && cloudUpdatedAt === loadSyncConfig().lastPulledAt) {
+      saveSyncConfig({ lastSyncedAt: syncedAt });
       updateSyncIndicator();
       return true;
     }
@@ -8267,15 +8454,19 @@ async function pullSync(options = {}) {
       cloudUpdatedAt = clean(rows?.[0]?.updated_at);
     }
     if (!rows?.[0]?.encrypted_data) {
+      saveSyncConfig({ lastSyncedAt: syncedAt });
       if (!options.silent) toast("V cloudu zatĂ­m nejsou data.");
       updateSyncIndicator();
       return true;
     }
+    if (hasLocalData()) rememberSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
     state.data = normalizeLoadedData(await decryptPayload(rows[0].encrypted_data, state.syncPassword));
     syncFinishedCrossVarieties();
     state.syncVerifiedPassword = state.syncPassword;
     saveData({ skipAutoSync: true });
-    saveSyncConfig({ lastPulledAt: cloudUpdatedAt });
+    const pulledSummary = summarizeSyncData(state.data);
+    saveSyncConfig({ lastPulledAt: cloudUpdatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: cloudUpdatedAt, lastKnownCloudSummary: pulledSummary });
+    rememberSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-pull", state.data, cloudUpdatedAt);
     render();
     updateSyncIndicator();
     if (!options.silent) toast("StaĹľeno z cloudu.");
@@ -8325,9 +8516,9 @@ function updateSyncIndicator(status = "") {
   if (!els.syncIndicator) return;
   const config = loadSyncConfig();
   const session = loadSyncSession();
-  const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
-  const time = last ? formatTime(last) : formatTime(new Date());
-  let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutĂ˝";
+  const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
+  const lastLabel = formatSyncIndicatorTime(last);
+  let text = session.accessToken && config.autoSync ? (lastLabel ? `Syncnuto ${lastLabel}` : "Sync připravený") : "Sync vypnutý";
   let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
   if (status === "working") {
     text = "Syncuji...";
@@ -8336,7 +8527,7 @@ function updateSyncIndicator(status = "") {
     text = "Sync chyba";
     stateClass = "error";
   } else if (hasPendingSync()) {
-    text = "ÄŚekĂˇ na sync";
+    text = "Čeká na sync";
     stateClass = "working";
   }
   els.syncIndicator.textContent = text;
@@ -8348,6 +8539,107 @@ function latestSyncTimestamp(...values) {
     .map(clean)
     .filter(Boolean)
     .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
+}
+
+function normalizeSyncSummary(parsed = {}) {
+  return {
+    customers: Math.max(0, Number(parsed?.customers) || 0),
+    orders: Math.max(0, Number(parsed?.orders) || 0),
+    varieties: Math.max(0, Number(parsed?.varieties) || 0),
+    crosses: Math.max(0, Number(parsed?.crosses) || 0),
+    offers: Math.max(0, Number(parsed?.offers) || 0),
+  };
+}
+
+function summarizeSyncData(data) {
+  return normalizeSyncSummary({
+    customers: Array.isArray(data?.customers) ? data.customers.length : 0,
+    orders: Array.isArray(data?.orders) ? data.orders.length : 0,
+    varieties: Array.isArray(data?.varieties) ? data.varieties.length : 0,
+    crosses: Array.isArray(data?.crosses) ? data.crosses.length : 0,
+    offers: Array.isArray(data?.offers) ? data.offers.length : 0,
+  });
+}
+
+function syncSummaryHasData(summary) {
+  const normalized = normalizeSyncSummary(summary);
+  return Boolean(normalized.customers || normalized.orders || normalized.varieties || normalized.crosses || normalized.offers);
+}
+
+function isSyncSummarySmaller(localSummary, cloudSummary) {
+  const local = normalizeSyncSummary(localSummary);
+  const cloud = normalizeSyncSummary(cloudSummary);
+  return local.varieties + 2 < cloud.varieties
+    || local.crosses + 1 < cloud.crosses
+    || local.orders + 1 < cloud.orders
+    || local.offers < cloud.offers
+    || local.customers + 3 < cloud.customers;
+}
+
+function formatSyncSummary(summary) {
+  const normalized = normalizeSyncSummary(summary);
+  return `${normalized.varieties} odrůd, ${normalized.crosses} křížení, ${normalized.orders} objednávek, ${normalized.offers} nabídek`;
+}
+
+function rememberSyncSnapshot(storageKey, kind, data, updatedAt = "") {
+  try {
+    const normalized = normalizeLoadedData(JSON.parse(JSON.stringify(data || { customers: [], orders: [], varieties: [], crosses: [], offers: [], exchangeRates: [], settings: {} })));
+    localStorage.setItem(storageKey, JSON.stringify({
+      kind,
+      savedAt: new Date().toISOString(),
+      updatedAt: clean(updatedAt),
+      summary: summarizeSyncData(normalized),
+      data: normalized,
+    }));
+  } catch {
+    // Když se snapshot nevejde, samotný sync musí běžet dál.
+  }
+}
+
+async function readCloudState(session, encryptionPassword) {
+  const rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, { method: "GET" });
+  const updatedAt = clean(rows?.[0]?.updated_at);
+  const encrypted = rows?.[0]?.encrypted_data;
+  if (!encrypted) return { updatedAt, data: null, summary: normalizeSyncSummary() };
+  const decrypted = normalizeLoadedData(await decryptPayload(encrypted, encryptionPassword));
+  return {
+    updatedAt,
+    data: decrypted,
+    summary: summarizeSyncData(decrypted),
+  };
+}
+
+function getSyncPushBlockMessage(localSummary, cloudSummary, knownCloudSummary, knownCloudAt = "", liveCloudAt = "", options = {}) {
+  const local = normalizeSyncSummary(localSummary);
+  const liveCloud = normalizeSyncSummary(cloudSummary);
+  const knownCloud = normalizeSyncSummary(knownCloudSummary);
+  const smallerThanLiveCloud = syncSummaryHasData(liveCloud) && isSyncSummarySmaller(local, liveCloud);
+  const smallerThanKnownCloud = syncSummaryHasData(knownCloud) && isSyncSummarySmaller(local, knownCloud);
+  const sameKnownCloud = Boolean(clean(knownCloudAt) && clean(liveCloudAt) && clean(knownCloudAt) === clean(liveCloudAt));
+  if (smallerThanLiveCloud && (!clean(knownCloudAt) || !sameKnownCloud)) {
+    return `Cloud má víc dat než tenhle mobil (${formatSyncSummary(liveCloud)} vs ${formatSyncSummary(local)}). Odeslání jsem radši zastavila, aby se nic nesmazalo.`;
+  }
+  if (sameKnownCloud && smallerThanKnownCloud) {
+    const question = `Tenhle mobil má teď míň dat než poslední dobrý cloud (${formatSyncSummary(knownCloud)} vs ${formatSyncSummary(local)}). Opravdu tím chceš přepsat cloud?`;
+    if (options.allowConfirm && window.confirm(question)) return "";
+    return `Tenhle mobil má teď míň dat než poslední dobrý cloud (${formatSyncSummary(knownCloud)} vs ${formatSyncSummary(local)}). Odeslání jsem radši zastavila.`;
+  }
+  return "";
+}
+
+function formatSyncIndicatorTime(value = "") {
+  const raw = clean(value);
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((today.getTime() - target.getTime()) / 86400000);
+  const time = formatTime(date);
+  if (diffDays === 0) return `dnes v ${time}`;
+  if (diffDays === 1) return `včera v ${time}`;
+  return `${formatDate(toDateInput(date))} v ${time}`;
 }
 
 function currentSyncDirtyAt() {
@@ -10110,6 +10402,14 @@ function openOfferDetailSheet(id, options = {}) {
       }
       if (!changed) break;
     }
+    const pairFixed = replaceBrokenTextPairs(best);
+    if (pairFixed !== best) {
+      const pairScore = ak93RepairScore(pairFixed);
+      if (pairScore >= bestScore) {
+        best = pairFixed;
+        bestScore = pairScore;
+      }
+    }
     return best;
   }
 
@@ -10994,9 +11294,9 @@ function openOfferDetailSheet(id, options = {}) {
     if (!els.syncIndicator) return;
     const config = loadSyncConfig();
     const session = loadSyncSession();
-    const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
-    const time = last ? formatTime(last) : formatTime(new Date());
-    let text = session.accessToken && config.autoSync ? `Syncnuto ${time}` : "Sync vypnutý";
+    const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
+    const lastLabel = formatSyncIndicatorTime(last);
+    let text = session.accessToken && config.autoSync ? (lastLabel ? `Syncnuto ${lastLabel}` : "Sync připravený") : "Sync vypnutý";
     let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
     if (status === "working") {
       text = "Syncuji...";

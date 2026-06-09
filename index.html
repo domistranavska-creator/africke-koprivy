@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260601-100" />
+    <link rel="stylesheet" href="styles.css?v=20260609-107" />
   </head>
   <body>
     <div class="app-shell">
@@ -254,21 +254,9 @@
 
           <div class="scene-grid" id="varietiesScene"></div>
 
-          <section class="table-panel">
+          <section class="table-panel varieties-catalog-panel">
             <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Odrůda</th>
-                    <th>Prodejní cena</th>
-                    <th>Poznámka</th>
-                    <th>V objednávkách</th>
-                    <th>Stav</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="varietiesTable"></tbody>
-              </table>
+              <div class="varieties-catalog-grid" id="varietiesTable" aria-live="polite"></div>
             </div>
           </section>
         </section>
@@ -306,18 +294,7 @@
           <div class="split-layout">
             <section class="table-panel">
               <div class="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Křížení</th>
-                      <th>Fáze</th>
-                      <th>Výsledek</th>
-                      <th>Nová odrůda</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="crossesTable"></tbody>
-                </table>
+                <div class="crosses-catalog-grid" id="crossesTable" aria-live="polite"></div>
               </div>
             </section>
             <aside class="details-panel" id="crossDetail"></aside>
@@ -1097,14 +1074,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <link rel="stylesheet" href="styles.css?v=20260601-100" />
-    <script src="vendor/lzma1-browser-setup.js?v=20260601-100" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260601-100" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260601-100" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260601-100" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260601-100" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260601-100" charset="utf-8"></script>
-    <script src="app.js?v=20260601-100" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260609-107" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260609-107" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260609-107" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260609-107" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260609-107" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260609-107" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260609-107" charset="utf-8"></script>
+    <script src="app.js?v=20260609-107" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

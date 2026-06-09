@@ -27,6 +27,8 @@ const SUPABASE_SYNC_CONFIG_KEY = `${STORE_KEY}:supabase-sync-config`;
 const SUPABASE_SYNC_SESSION_KEY = `${STORE_KEY}:supabase-sync-session`;
 const SUPABASE_SYNC_PASSWORD_KEY = `${STORE_KEY}:supabase-sync-password`;
 const SUPABASE_SYNC_DIRTY_KEY = `${STORE_KEY}:supabase-sync-dirty-at`;
+const SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY = `${STORE_KEY}:supabase-sync-last-local-snapshot`;
+const SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY = `${STORE_KEY}:supabase-sync-last-cloud-snapshot`;
 const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
 const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
@@ -779,10 +781,11 @@ function scheduleRender(key, renderFn) {
 }
 
 function loadData() {
+  const storedKey = [STORE_KEY, ...LEGACY_STORE_KEYS].find((key) => localStorage.getItem(key));
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED) {
     const storedSeedSignature = localStorage.getItem(SEED_SIGNATURE_KEY);
     if (storedSeedSignature !== SEED_SIGNATURE) {
-      if (localStorage.getItem(STORE_KEY) && currentSupabaseSyncDirtyAt()) {
+      if (storedKey) {
         localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       } else {
         const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
@@ -793,7 +796,6 @@ function loadData() {
     }
   }
 
-  const storedKey = [STORE_KEY, ...LEGACY_STORE_KEYS].find((key) => localStorage.getItem(key));
   if (storedKey) {
     try {
       const parsed = JSON.parse(localStorage.getItem(storedKey));
@@ -813,14 +815,15 @@ function loadData() {
 }
 
 function normalizeLoadedData(parsed) {
+  const source = repairLoadedDataStrings(parsed || {});
   const data = {
-    customers: Array.isArray(parsed.customers) ? parsed.customers : [],
-    orders: Array.isArray(parsed.orders) ? parsed.orders : [],
-    varieties: Array.isArray(parsed.varieties) ? parsed.varieties : [],
-    crosses: Array.isArray(parsed.crosses) ? parsed.crosses : [],
-    offers: Array.isArray(parsed.offers) ? parsed.offers : [],
-    exchangeRates: Array.isArray(parsed.exchangeRates) ? parsed.exchangeRates : [],
-    settings: normalizeFeeSettings(parsed.settings),
+    customers: Array.isArray(source.customers) ? source.customers : [],
+    orders: Array.isArray(source.orders) ? source.orders : [],
+    varieties: Array.isArray(source.varieties) ? source.varieties : [],
+    crosses: Array.isArray(source.crosses) ? source.crosses : [],
+    offers: Array.isArray(source.offers) ? source.offers : [],
+    exchangeRates: Array.isArray(source.exchangeRates) ? source.exchangeRates : [],
+    settings: normalizeFeeSettings(source.settings),
   };
 
   data.customers = data.customers.map(sanitizeCustomer);
@@ -838,6 +841,138 @@ function normalizeLoadedData(parsed) {
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
 
   return data;
+}
+
+const loadedTextRepairMaps = new Map();
+const BROKEN_TEXT_PAIR_REPLACEMENTS = [
+  ["\u0102\u02c7", "\u00e1"],
+  ["\u0102\u00a9", "\u00e9"],
+  ["\u0102\u00ad", "\u00ed"],
+  ["\u0102\u00b3", "\u00f3"],
+  ["\u0102\u00ba", "\u00fa"],
+  ["\u0102\u02dd", "\u00fd"],
+  ["\u00c4\u0164", "\u010d"],
+  ["\u00c4\u0179", "\u010f"],
+  ["\u00c4\u203a", "\u011b"],
+  ["\u00c4\u013e", "\u013e"],
+  ["\u0139\u02c6", "\u0148"],
+  ["\u0139\u2122", "\u0159"],
+  ["\u0139\u02c7", "\u0161"],
+  ["\u0139\u00a4", "\u0165"],
+  ["\u0139\u017b", "\u016f"],
+  ["\u0139\u013e", "\u017e"],
+  ["\u0102\u2014", "\u00d7"],
+  ["\u00c3\u2014", "\u00d7"],
+  ["\u00c2\u00b7", "\u00b7"],
+];
+
+function repairLoadedDataStrings(value) {
+  if (typeof value === "string") return repairLoadedString(value);
+  if (Array.isArray(value)) return value.map((item) => repairLoadedDataStrings(item));
+  if (!value || typeof value !== "object") return value;
+  const next = {};
+  Object.keys(value).forEach((key) => {
+    next[key] = repairLoadedDataStrings(value[key]);
+  });
+  return next;
+}
+
+function repairLoadedString(value = "") {
+  const text = String(value ?? "");
+  if (!text || !loadedStringLooksBroken(text)) return text;
+  let best = text;
+  let bestScore = loadedStringRepairScore(text);
+  for (let pass = 0; pass < 3; pass += 1) {
+    let changed = false;
+    for (const encoding of ["windows-1250", "windows-1252"]) {
+      const candidate = decodeLoadedString(best, encoding);
+      const candidateScore = loadedStringRepairScore(candidate);
+      if (candidate !== best && candidateScore > bestScore) {
+        best = candidate;
+        bestScore = candidateScore;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const pairFixed = replaceBrokenTextPairs(best);
+  if (pairFixed !== best) best = pairFixed;
+  return best;
+}
+
+function replaceBrokenTextPairs(value = "") {
+  let text = String(value ?? "");
+  BROKEN_TEXT_PAIR_REPLACEMENTS.forEach(([broken, fixed]) => {
+    if (text.includes(broken)) text = text.split(broken).join(fixed);
+  });
+  return text;
+}
+
+function loadedStringLooksBroken(text = "") {
+  return /[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/.test(text) || /Â·|Ã—|Ă—/.test(text);
+}
+
+function loadedStringRepairScore(text = "") {
+  const markers = (text.match(/[\u00c3\u00c2\u00c4\u0139\u0102\u00e2\uFFFD]/g) || []).length;
+  const accents = (text.match(/[áéíóúýčďěňřšťůžľĺôäÁÉÍÓÚÝČĎĚŇŘŠŤŮŽĽĹÔÄ×·]/g) || []).length;
+  return accents - markers * 4;
+}
+
+function loadedStringByteMap(encoding) {
+  if (loadedTextRepairMaps.has(encoding)) return loadedTextRepairMaps.get(encoding);
+  const decoder = new TextDecoder(encoding);
+  const map = new Map();
+  for (let index = 0; index < 256; index += 1) {
+    const decoded = decoder.decode(Uint8Array.of(index));
+    if (!map.has(decoded)) map.set(decoded, index);
+  }
+  loadedTextRepairMaps.set(encoding, map);
+  return map;
+}
+
+function decodeLoadedStringSegment(segment, encoding) {
+  if (!segment) return "";
+  const map = loadedStringByteMap(encoding);
+  const bytes = [];
+  for (const ch of segment) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x7f) {
+      bytes.push(code);
+      continue;
+    }
+    const mapped = map.get(ch);
+    if (mapped == null) return segment;
+    bytes.push(mapped);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  } catch {
+    return segment;
+  }
+}
+
+function decodeLoadedString(value, encoding) {
+  const text = String(value ?? "");
+  if (!text) return "";
+  const map = loadedStringByteMap(encoding);
+  let result = "";
+  let buffer = "";
+  const flush = () => {
+    if (!buffer) return;
+    result += decodeLoadedStringSegment(buffer, encoding);
+    buffer = "";
+  };
+  for (const ch of text) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x7f || map.has(ch)) {
+      buffer += ch;
+    } else {
+      flush();
+      result += ch;
+    }
+  }
+  flush();
+  return result;
 }
 
 function syncFinishedCrossVarieties(data = state.data) {
@@ -2286,47 +2421,8 @@ function renderVarieties() {
   els.varietyUsageFilter.value = state.varietyUsageFilter;
   els.varietySort.value = state.varietySort;
   els.varietiesTable.innerHTML = varieties.length
-    ? varieties
-        .map((variety) => {
-          const used = varietyUsageCount(variety.name);
-          const images = varietyImages(variety);
-          return `<tr class="variety-row-openable" data-open-variety="${escapeHtml(variety.id)}" tabindex="0" title="Otevřít odrůdu">
-            <td>
-              <div class="variety-cell">
-                <span class="variety-thumb-button variety-thumb-static" title="Detail odrůdy">
-                  ${varietyThumb(variety)}
-                </span>
-                <div>
-                  <button class="text-button variety-name-button" type="button" data-open-variety-detail="${variety.id}">
-                    ${escapeHtml(variety.name)}
-                  </button>
-                  <span class="cell-sub">${images.length ? `${images.length} fotek` : "Bez fotky"}</span>
-                </div>
-              </div>
-            </td>
-            <td>
-              <span class="cell-main">${escapeHtml(varietyPriceText(variety))}</span>
-              <span class="cell-sub">${escapeHtml(priceHistoryText(variety))}</span>
-            </td>
-            <td>
-              <span class="cell-main">${escapeHtml(variety.note || "—")}</span>
-            </td>
-            <td>
-              <button class="usage-button" type="button" title="Kdo koupil" data-open-variety-detail="${variety.id}">${used}</button>
-            </td>
-            <td>
-              ${variety.active === false ? '<span class="pill done">Neaktivní</span>' : '<span class="pill paid">Aktivní</span>'}
-            </td>
-            <td>
-              <span class="row-actions">
-                <button class="mini-button" type="button" title="Upravit" data-edit-variety="${variety.id}">✎</button>
-                <button class="mini-button" type="button" title="Smazat" data-delete-variety="${variety.id}">×</button>
-              </span>
-            </td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="6">${emptyState("Žádná odrůda.")}</td></tr>`;
+    ? varieties.map((variety) => varietyCatalogCardMarkup(variety)).join("")
+    : emptyState("Žádná odrůda.");
 
   els.varietiesTable.querySelectorAll("[data-edit-variety]").forEach((button) => {
     button.addEventListener("click", () => openVarietyDialog(button.dataset.editVariety));
@@ -2351,6 +2447,50 @@ function renderVarieties() {
     });
   });
   hydrateLocalPhotoImages(els.varietiesTable);
+}
+
+function varietyCatalogCardMarkup(variety) {
+  const safeId = escapeHtml(variety.id);
+  const used = varietyUsageCount(variety.name);
+  const images = varietyImages(variety);
+  const note = cleanBusinessNote(variety?.note || "");
+  const mainImage = images[0];
+  const visual = mainImage
+    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", 'loading="lazy"')
+    : `<div class="variety-catalog-card-placeholder">
+        <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
+      </div>`;
+  const stateChip = variety.active === false
+    ? '<span class="variety-catalog-card-chip variety-catalog-card-chip-state">Neaktivní</span>'
+    : "";
+
+  return `<article class="variety-catalog-card${variety.active === false ? " is-inactive" : ""}" data-open-variety="${safeId}" tabindex="0" title="Otevřít odrůdu">
+    <div class="variety-catalog-card-visual">
+      <span class="variety-catalog-card-badge">Odrůda</span>
+      ${visual}
+    </div>
+    <div class="variety-catalog-card-copy">
+      <div class="variety-catalog-card-heading">
+        <button class="text-button variety-name-button variety-catalog-card-name" type="button" data-open-variety-detail="${safeId}">
+          ${escapeHtml(variety.name)}
+        </button>
+      </div>
+      ${note ? `<p class="variety-catalog-card-note">${escapeHtml(note)}</p>` : ""}
+      <div class="variety-catalog-card-tags">
+        <span class="variety-catalog-card-chip">${escapeHtml(varietyPhotoCountText(images.length))}</span>
+        <span class="variety-catalog-card-chip">${escapeHtml(priceHistoryText(variety))}</span>
+        <span class="variety-catalog-card-chip">${escapeHtml(varietyUsageText(used))}</span>
+        ${stateChip}
+      </div>
+      <div class="variety-catalog-card-footer">
+        <span class="variety-catalog-card-price">${escapeHtml(varietyPriceText(variety))}</span>
+        <span class="variety-catalog-card-actions">
+          <button class="mini-button" type="button" title="Upravit" data-edit-variety="${safeId}">✎</button>
+          <button class="mini-button" type="button" title="Smazat" data-delete-variety="${safeId}">×</button>
+        </span>
+      </div>
+    </div>
+  </article>`;
 }
 
 function filteredCrosses() {
@@ -2477,41 +2617,26 @@ function renderCrosses() {
   if (els.crossResultFilter) els.crossResultFilter.value = state.crossResultFilter;
 
   els.crossesTable.innerHTML = crosses.length
-    ? crosses
-        .map((cross) => {
-          const createdVariety = crossSeedlingVariety(cross);
-          return `<tr class="${cross.id === state.selectedCrossId ? "selected" : ""} ${crossRowToneClass(cross)}" data-cross-row="${escapeHtml(cross.id)}">
-            <td>
-              <div class="cross-lineage-cell">
-                <span class="variety-thumb cross-table-thumb">${crossSeedlingMainPhoto(cross) ? photoImageMarkup(crossSeedlingMainPhoto(cross), clean(cross.seedlingName) || crossLineageLabel(cross), "", 'loading="lazy"') : escapeHtml(varietyInitials(clean(cross.seedlingName) || crossLineageLabel(cross)))}</span>
-                <div>
-                  <span class="cell-main">${escapeHtml(crossLineageLabel(cross))}</span>
-                </div>
-              </div>
-            </td>
-            <td>${crossStagePill(cross.stage)}</td>
-            <td>${crossResultPill(cross.resultRating)}</td>
-            <td><span class="cell-main">${escapeHtml(createdVariety?.name || "—")}</span></td>
-            <td>
-              <span class="row-actions">
-                <button class="mini-button" type="button" title="Stáhnout obrázek" data-download-cross-card="${escapeHtml(cross.id)}">▣</button>
-                <button class="mini-button" type="button" title="Upravit" data-edit-cross="${escapeHtml(cross.id)}">✎</button>
-                <button class="mini-button" type="button" title="Smazat" data-delete-cross="${escapeHtml(cross.id)}">×</button>
-              </span>
-            </td>
-          </tr>`;
-        })
-        .join("")
-    : `<tr><td colspan="5">${emptyState("Zatím žádné křížení.")}</td></tr>`;
+    ? crosses.map((cross) => crossCatalogCardMarkup(cross)).join("")
+    : emptyState("Zatím žádné křížení.");
 
   els.crossesTable.querySelectorAll("[data-cross-row]").forEach((row) => {
-    row.addEventListener("click", (event) => {
-      if (event.target.closest("button")) return;
+    const openCross = () => {
       state.selectedCrossId = row.dataset.crossRow;
       els.crossesTable.querySelectorAll("[data-cross-row]").forEach((item) => {
-        item.classList.toggle("selected", item === row);
+        item.classList.toggle("is-selected", item === row);
       });
       renderCrossDetail();
+    };
+    row.addEventListener("click", (event) => {
+      if (shouldIgnoreRowOpen(event.target)) return;
+      openCross();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (shouldIgnoreRowOpen(event.target)) return;
+      event.preventDefault();
+      openCross();
     });
   });
   els.crossesTable.querySelectorAll("[data-edit-cross]").forEach((button) => {
@@ -2528,6 +2653,48 @@ function renderCrosses() {
   });
   renderCrossDetail();
   hydrateLocalPhotoImages(els.crossesTable);
+}
+
+function crossCatalogCardMarkup(cross) {
+  const safeId = escapeHtml(cross.id);
+  const createdVariety = crossSeedlingVariety(cross);
+  const lineage = crossLineageLabel(cross);
+  const seedlingName = clean(cross.seedlingName);
+  const title = seedlingName || lineage;
+  const seedlingPhoto = crossSeedlingMainPhoto(cross);
+  const note = clean(cross.note);
+  const visual = seedlingPhoto
+    ? photoImageMarkup(seedlingPhoto, title, "cross-catalog-card-photo", 'loading="lazy"')
+    : `<div class="cross-catalog-card-placeholder">
+        <span class="cross-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(title))}</span>
+      </div>`;
+
+  return `<article class="cross-catalog-card ${crossRowToneClass(cross)}${cross.id === state.selectedCrossId ? " is-selected" : ""}" data-cross-row="${safeId}" tabindex="0" title="Otevřít křížení">
+    <div class="cross-catalog-card-visual">
+      <span class="cross-catalog-card-badge">Křížení</span>
+      ${visual}
+    </div>
+    <div class="cross-catalog-card-copy">
+      <div class="cross-catalog-card-heading">
+        <h3 class="cross-catalog-card-name">${escapeHtml(title)}</h3>
+      </div>
+      ${seedlingName ? `<p class="cross-catalog-card-lineage">${escapeHtml(lineage)}</p>` : ""}
+      ${note ? `<p class="cross-catalog-card-note">${escapeHtml(note)}</p>` : ""}
+      <div class="cross-catalog-card-tags">
+        ${crossStagePill(cross.stage)}
+        ${crossResultPill(cross.resultRating)}
+        <span class="cross-catalog-card-chip">${escapeHtml(formatDate(cross.pollinatedAt))}</span>
+        ${createdVariety ? `<span class="cross-catalog-card-chip">${escapeHtml(createdVariety.name)}</span>` : ""}
+      </div>
+      <div class="cross-catalog-card-footer">
+        <span class="cross-catalog-card-actions">
+          <button class="mini-button" type="button" title="Stáhnout obrázek" data-download-cross-card="${safeId}">▣</button>
+          <button class="mini-button" type="button" title="Upravit" data-edit-cross="${safeId}">✎</button>
+          <button class="mini-button" type="button" title="Smazat" data-delete-cross="${safeId}">×</button>
+        </span>
+      </div>
+    </div>
+  </article>`;
 }
 
 function renderCrossDetail() {
@@ -6665,7 +6832,7 @@ async function saveVarietyFromForm() {
   const explicitPhotoUrl = removedPhotos.has(clean(form.get("photoUrl"))) ? "" : clean(form.get("photoUrl"));
   const chosenMainPhoto = clean(form.get("mainPhoto"));
   const allImages = unique([...existingImages, ...normalizeGallery(form.get("gallery")), ...uploadedImages]).filter((image) => !removedPhotos.has(image));
-  const photoUrl = explicitPhotoUrl || (allImages.includes(chosenMainPhoto) ? chosenMainPhoto : "") || uploadedImages[0] || existing?.photoUrl || allImages[0] || "";
+  const photoUrl = explicitPhotoUrl || (allImages.includes(chosenMainPhoto) ? chosenMainPhoto : "") || uploadedImages[0] || allImages[0] || "";
   const gallery = unique(allImages.filter((image) => image !== photoUrl));
   const salePrice = normalizeAmount(form.get("salePrice"));
   const saleCurrency = "CZK";
@@ -6948,7 +7115,7 @@ function ensureVarietyFromCross(cross) {
   const mother = findVariety(cross.motherVarietyId);
   const pollen = findVariety(cross.pollenVarietyId);
   const now = new Date().toISOString();
-  const lineage = `Kříženec: ${mother?.name || "matka"} × ${pollen?.name || "pyl"}`;
+  const seedlingNote = `Semenáč z křížení ${mother?.name || "matka"} × ${pollen?.name || "pyl"}`;
   const seedlingImages = crossSeedlingImages(cross);
   const mainPhoto = crossSeedlingMainPhoto(cross);
   const existing = findVariety(clean(cross.linkedVarietyId)) || findVarietyByName(name);
@@ -6958,7 +7125,9 @@ function ensureVarietyFromCross(cross) {
       existing.photoUrl = mainPhoto;
       existing.gallery = unique(seedlingImages.filter((image) => image && image !== mainPhoto));
     }
-    if (!clean(existing.note).includes(lineage)) existing.note = [existing.note, lineage].filter(Boolean).join("\n");
+    if (!noteAlreadyContainsCrossLineage(existing.note, mother?.name || "matka", pollen?.name || "pyl")) {
+      existing.note = cleanBusinessNote([existing.note, seedlingNote].filter(Boolean).join("\n"));
+    }
     existing.saleCurrency = "CZK";
     existing.active = existing.active !== false;
     existing.updatedAt = now;
@@ -6976,7 +7145,7 @@ function ensureVarietyFromCross(cross) {
     priceHistory: [],
     stockAvailable: "",
     stockReserved: "",
-    note: lineage,
+    note: seedlingNote,
     active: true,
     createdAt: now,
     updatedAt: now,
@@ -8544,6 +8713,9 @@ function normalizeSupabaseSyncConfig(parsed = {}) {
     autoSync: Boolean(parsed.autoSync),
     lastPulledAt: clean(parsed.lastPulledAt),
     lastPushedAt: clean(parsed.lastPushedAt),
+    lastSyncedAt: clean(parsed.lastSyncedAt),
+    lastKnownCloudAt: clean(parsed.lastKnownCloudAt),
+    lastKnownCloudSummary: normalizeSupabaseSyncSummary(parsed.lastKnownCloudSummary),
   };
 }
 
@@ -8558,7 +8730,10 @@ function migrateSupabaseSyncClientConfig() {
       || clean(parsed.email) !== normalized.email
       || Boolean(parsed.autoSync) !== normalized.autoSync
       || clean(parsed.lastPulledAt) !== normalized.lastPulledAt
-      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt;
+      || clean(parsed.lastPushedAt) !== normalized.lastPushedAt
+      || clean(parsed.lastSyncedAt) !== normalized.lastSyncedAt
+      || clean(parsed.lastKnownCloudAt) !== normalized.lastKnownCloudAt
+      || JSON.stringify(normalizeSupabaseSyncSummary(parsed.lastKnownCloudSummary)) !== JSON.stringify(normalized.lastKnownCloudSummary);
     if (!changed) return;
     localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
     if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
@@ -8630,6 +8805,9 @@ function saveSupabaseSyncConfigFromPanel(options = {}) {
     autoSync: true,
     lastPulledAt: previous.lastPulledAt || "",
     lastPushedAt: previous.lastPushedAt || "",
+    lastSyncedAt: previous.lastSyncedAt || "",
+    lastKnownCloudAt: previous.lastKnownCloudAt || "",
+    lastKnownCloudSummary: previous.lastKnownCloudSummary || normalizeSupabaseSyncSummary(),
   });
   localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = true;
@@ -8679,7 +8857,7 @@ function updateSupabaseSyncFloat(text = "") {
   els.syncFloat.hidden = !visible;
   if (!visible) return;
   const normalizedSource = normalize(text);
-  const last = latestSyncTimestamp(config.lastPulledAt, config.lastPushedAt);
+  const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
   let shortText = last ? `Syncnuto ${formatTime(last)}` : `Syncnuto ${formatTime(new Date())}`;
   if (/selhalo|nepoda|chybi|chyba/.test(normalizedSource)) shortText = "Sync chyba";
   else if (/odesil|nahrav|stah|kontrol|sifruj|desifruj|prihlasuj|vytvarim/.test(normalizedSource)) shortText = "Syncuji...";
@@ -8697,6 +8875,97 @@ function latestSyncTimestamp(...values) {
     .map(clean)
     .filter(Boolean)
     .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
+}
+
+function normalizeSupabaseSyncSummary(parsed = {}) {
+  return {
+    customers: Math.max(0, Number(parsed?.customers) || 0),
+    orders: Math.max(0, Number(parsed?.orders) || 0),
+    varieties: Math.max(0, Number(parsed?.varieties) || 0),
+    crosses: Math.max(0, Number(parsed?.crosses) || 0),
+    offers: Math.max(0, Number(parsed?.offers) || 0),
+  };
+}
+
+function summarizeSupabaseSyncData(data) {
+  return normalizeSupabaseSyncSummary({
+    customers: Array.isArray(data?.customers) ? data.customers.length : 0,
+    orders: Array.isArray(data?.orders) ? data.orders.length : 0,
+    varieties: Array.isArray(data?.varieties) ? data.varieties.length : 0,
+    crosses: Array.isArray(data?.crosses) ? data.crosses.length : 0,
+    offers: Array.isArray(data?.offers) ? data.offers.length : 0,
+  });
+}
+
+function supabaseSyncSummaryHasData(summary) {
+  const normalized = normalizeSupabaseSyncSummary(summary);
+  return Boolean(normalized.customers || normalized.orders || normalized.varieties || normalized.crosses || normalized.offers);
+}
+
+function isSupabaseSyncSummarySmaller(localSummary, cloudSummary) {
+  const local = normalizeSupabaseSyncSummary(localSummary);
+  const cloud = normalizeSupabaseSyncSummary(cloudSummary);
+  return local.varieties + 2 < cloud.varieties
+    || local.crosses + 1 < cloud.crosses
+    || local.orders + 1 < cloud.orders
+    || local.offers < cloud.offers
+    || local.customers + 3 < cloud.customers;
+}
+
+function formatSupabaseSyncSummary(summary) {
+  const normalized = normalizeSupabaseSyncSummary(summary);
+  return `${normalized.varieties} odrud, ${normalized.crosses} krizeni, ${normalized.orders} objednavek, ${normalized.offers} nabidek`;
+}
+
+function rememberSupabaseSyncSnapshot(storageKey, kind, data, updatedAt = "") {
+  try {
+    const normalized = normalizeLoadedData(JSON.parse(JSON.stringify(data || fallbackData())));
+    localStorage.setItem(storageKey, JSON.stringify({
+      kind,
+      savedAt: new Date().toISOString(),
+      updatedAt: clean(updatedAt),
+      summary: summarizeSupabaseSyncData(normalized),
+      data: normalized,
+    }));
+  } catch {
+    // Snapshot is only a safety extra. Sync must keep working even without storage room.
+  }
+}
+
+async function readSupabaseCloudState(session, encryptionPassword) {
+  const rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=encrypted_data,updated_at`, {
+    method: "GET",
+  });
+  const updatedAt = clean(rows?.[0]?.updated_at);
+  const encrypted = rows?.[0]?.encrypted_data;
+  if (!encrypted) {
+    return { updatedAt, data: null, summary: normalizeSupabaseSyncSummary() };
+  }
+  const decrypted = normalizeLoadedData(await decryptSyncPayload(encrypted, encryptionPassword));
+  return {
+    updatedAt,
+    data: decrypted,
+    summary: summarizeSupabaseSyncData(decrypted),
+  };
+}
+
+function getSupabaseSyncPushBlockMessage(localSummary, cloudSummary, knownCloudSummary, knownCloudAt = "", liveCloudAt = "", options = {}) {
+  const local = normalizeSupabaseSyncSummary(localSummary);
+  const liveCloud = normalizeSupabaseSyncSummary(cloudSummary);
+  const knownCloud = normalizeSupabaseSyncSummary(knownCloudSummary);
+  const smallerThanLiveCloud = supabaseSyncSummaryHasData(liveCloud) && isSupabaseSyncSummarySmaller(local, liveCloud);
+  const smallerThanKnownCloud = supabaseSyncSummaryHasData(knownCloud) && isSupabaseSyncSummarySmaller(local, knownCloud);
+  const sameKnownCloud = Boolean(clean(knownCloudAt) && clean(liveCloudAt) && clean(knownCloudAt) === clean(liveCloudAt));
+  if (smallerThanLiveCloud && (!clean(knownCloudAt) || !sameKnownCloud)) {
+    return `Cloud ma vic dat nez toto zarizeni (${formatSupabaseSyncSummary(liveCloud)} vs ${formatSupabaseSyncSummary(local)}). Odeslani jsem radsi zastavila, aby se nic nesmazalo. Nejdriv stahni cloud nebo udelej zalohu.`;
+  }
+  if (sameKnownCloud && smallerThanKnownCloud) {
+    const confirmAllowed = Boolean(options.allowConfirm);
+    const question = `Tohle zarizeni ma ted min dat nez posledni znamy dobry cloud (${formatSupabaseSyncSummary(knownCloud)} vs ${formatSupabaseSyncSummary(local)}). Pokud jsi vedome mazala vic veci, muzes pokracovat. Opravdu prepsat cloud timto zarizenim?`;
+    if (confirmAllowed && window.confirm(question)) return "";
+    return `Tohle zarizeni ma ted min dat nez posledni znamy dobry cloud (${formatSupabaseSyncSummary(knownCloud)} vs ${formatSupabaseSyncSummary(local)}). Odeslani jsem radsi zastavila, aby se nic nesmazalo.`;
+  }
+  return "";
 }
 
 function currentSupabaseSyncDirtyAt() {
@@ -8885,6 +9154,7 @@ async function pushSupabaseSync(options = {}) {
       if (!options.silent) toast("Doplň šifrovací heslo.");
       return false;
     }
+    const syncedAt = new Date().toISOString();
     state.supabaseSyncRunning = true;
     const session = await ensureSupabaseSession();
     if (!options.force && state.syncEncryptionVerifiedPassword !== encryptionPassword) {
@@ -8896,8 +9166,30 @@ async function pushSupabaseSync(options = {}) {
       }
       state.syncEncryptionVerifiedPassword = encryptionPassword;
     }
+    const configBeforePush = loadSupabaseSyncConfig();
+    let cloudState = { updatedAt: "", data: null, summary: normalizeSupabaseSyncSummary() };
+    if (!options.force) {
+      cloudState = await readSupabaseCloudState(session, encryptionPassword);
+      if (cloudState.data) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-before-push", cloudState.data, cloudState.updatedAt);
+    }
+    const localSummary = summarizeSupabaseSyncData(state.data);
+    const blockMessage = options.force ? "" : getSupabaseSyncPushBlockMessage(
+      localSummary,
+      cloudState.summary,
+      configBeforePush.lastKnownCloudSummary,
+      configBeforePush.lastKnownCloudAt,
+      cloudState.updatedAt,
+      { allowConfirm: !options.auto && !options.silent },
+    );
+    if (blockMessage) {
+      updateSupabaseSyncStatus(blockMessage);
+      if (!options.silent) toast(blockMessage);
+      return false;
+    }
+    rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-push", state.data);
     updateSupabaseSyncStatus(options.auto ? "Automaticky odesílám změny do cloudu..." : "Nahrávám fotky a šifruji data...");
     const syncData = await buildSupabaseSyncData(session.user?.id || "user");
+    const pushedSummary = summarizeSupabaseSyncData(syncData);
     const encrypted = await encryptSyncPayload(syncData, encryptionPassword);
     const updatedAt = new Date().toISOString();
     await supabaseRequest("/rest/v1/app_sync?on_conflict=user_id", {
@@ -8911,7 +9203,8 @@ async function pushSupabaseSync(options = {}) {
     });
     state.syncEncryptionVerifiedPassword = encryptionPassword;
     cleanupSupabaseStorage(session.user?.id || "user", collectSupabasePhotoPaths(syncData)).catch((error) => console.warn("Supabase storage cleanup skipped", error));
-    updateSupabaseSyncConfig({ lastPushedAt: updatedAt });
+    updateSupabaseSyncConfig({ lastPushedAt: updatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: updatedAt, lastKnownCloudSummary: pushedSummary });
+    rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-push", syncData, updatedAt);
     const cleanAfterPush = clearSupabaseSyncDirtyIfUnchanged(startedDirtyAt);
     updateSupabaseSyncStatus(options.auto ? `Automatický sync hotový: ${formatTime(new Date())}.` : "Hotovo. Celá appka je v cloudu.");
     if (!options.silent) toast("Sync odeslán do cloudu.");
@@ -8944,6 +9237,7 @@ async function pullSupabaseSync(options = {}) {
     }
     state.supabasePullRunning = true;
     const session = await ensureSupabaseSession();
+    const syncedAt = new Date().toISOString();
     updateSupabaseSyncStatus(options.auto ? "Kontroluji cloud..." : "Stahuji a dešifruji data...");
     const metadataOnly = Boolean(options.auto && !options.verify);
     let rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(session.user?.id)}&select=${metadataOnly ? "updated_at" : "encrypted_data,updated_at"}`, {
@@ -8952,6 +9246,7 @@ async function pullSupabaseSync(options = {}) {
     let cloudUpdatedAt = clean(rows?.[0]?.updated_at);
     const passwordAlreadyVerified = state.syncEncryptionVerifiedPassword === encryptionPassword;
     if (metadataOnly && passwordAlreadyVerified && cloudUpdatedAt && cloudUpdatedAt === loadSupabaseSyncConfig().lastPulledAt) {
+      updateSupabaseSyncConfig({ lastSyncedAt: syncedAt });
       updateSupabaseSyncStatus();
       return true;
     }
@@ -8963,18 +9258,22 @@ async function pullSupabaseSync(options = {}) {
     }
     const encrypted = rows?.[0]?.encrypted_data;
     if (!encrypted) {
+      updateSupabaseSyncConfig({ lastSyncedAt: syncedAt });
       if (!options.silent) toast("V cloudu zatím nejsou žádná data.");
       updateSupabaseSyncStatus("V cloudu zatím nejsou žádná data.");
       state.syncEncryptionVerifiedPassword = encryptionPassword;
       return true;
     }
     const decrypted = await decryptSyncPayload(encrypted, encryptionPassword);
+    if (hasLocalSyncData()) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
     state.syncEncryptionVerifiedPassword = encryptionPassword;
     state.data = normalizeLoadedData(decrypted);
     syncFinishedCrossVarieties();
     saveData({ skipAutoSync: true });
+    const pulledSummary = summarizeSupabaseSyncData(state.data);
+    rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-pull", state.data, cloudUpdatedAt);
     renderAll();
-    updateSupabaseSyncConfig({ lastPulledAt: cloudUpdatedAt });
+    updateSupabaseSyncConfig({ lastPulledAt: cloudUpdatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: cloudUpdatedAt, lastKnownCloudSummary: pulledSummary });
     updateSupabaseSyncStatus(options.auto ? `Cloud stažen: ${formatTime(new Date())}.` : `Staženo z cloudu: ${formatCloudDateTime(cloudUpdatedAt)}.`);
     if (!options.silent) toast("Sync stažen z cloudu.");
     return true;
@@ -10194,6 +10493,26 @@ function priceHistoryText(variety) {
   return "Bez historie";
 }
 
+function varietyPhotoCountText(count) {
+  if (!count) return "Bez fotky";
+  if (count === 1) return "1 fotka";
+  if (count < 5) return `${count} fotky`;
+  return `${count} fotek`;
+}
+
+function varietyUsageText(count) {
+  if (!count) return "Zatím neprodaná";
+  if (count === 1) return "1× v objednávce";
+  return `${count}× v objednávkách`;
+}
+
+function varietyNotePreview(variety, images) {
+  const note = cleanBusinessNote(variety?.note || "");
+  if (note) return "";
+  if (images?.length) return "Otevři detail pro galerii a historii ceny.";
+  return "Zatím bez fotky a bez poznámky.";
+}
+
 function normalizeWholeNumber(value) {
   const amount = parseDecimal(value);
   if (!Number.isFinite(amount) || amount < 0) return "";
@@ -10865,13 +11184,68 @@ function mergeCustomerInto(target, source) {
   target.updatedAt = [target.updatedAt, source.updatedAt].filter(Boolean).sort().slice(-1)[0] || target.updatedAt || source.updatedAt;
 }
 
-function cleanBusinessNote(note) {
+function normalizeCrossLineageComparable(text = "") {
+  return normalize(clean(text))
+    .replace(/\s*[×x]\s*/g, " x ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseCrossLineageNoteLine(line = "") {
+  const text = clean(line);
+  if (!text) return null;
+  const seedlingPrefix = "Semenáč z křížení ";
+  const lineagePrefix = "Kříženec: ";
+  if (text.startsWith(seedlingPrefix)) {
+    return { kind: "seedling", body: normalizeCrossLineageComparable(text.slice(seedlingPrefix.length)) };
+  }
+  if (text.startsWith(lineagePrefix)) {
+    return { kind: "lineage", body: normalizeCrossLineageComparable(text.slice(lineagePrefix.length)) };
+  }
+  return null;
+}
+
+function dedupeGeneratedCrossLineageNote(note = "") {
+  const lines = clean(note).split(/\n+/).map((line) => clean(line)).filter(Boolean);
+  if (!lines.length) return "";
+  const genericBodies = new Set([
+    normalizeCrossLineageComparable("matka Ă— pyl"),
+    normalizeCrossLineageComparable("bez matky Ă— bez pylu"),
+  ]);
+  const hasSeedlingLine = lines.some((line) => parseCrossLineageNoteLine(line)?.kind === "seedling");
+  const filtered = [];
+  lines.forEach((line) => {
+    const parsed = parseCrossLineageNoteLine(line);
+    if (parsed?.kind === "seedling") {
+      filtered.push(line);
+      return;
+    }
+    if (parsed?.kind === "lineage") {
+      if (genericBodies.has(parsed.body)) return;
+      if (hasSeedlingLine) return;
+    }
+    filtered.push(line);
+  });
+  return unique(filtered).join("\n");
+}
+
+function noteAlreadyContainsCrossLineage(note = "", motherName = "", pollenName = "") {
+  const expectedBody = normalizeCrossLineageComparable(`${motherName || "matka"} × ${pollenName || "pyl"}`);
+  if (!expectedBody) return false;
   return clean(note)
+    .split(/\n+/)
+    .map((line) => parseCrossLineageNoteLine(line))
+    .filter(Boolean)
+    .some((line) => line.body === expectedBody);
+}
+
+function cleanBusinessNote(note) {
+  return dedupeGeneratedCrossLineageNote(clean(note)
     .split(/\n+/)
     .map((line) => clean(line))
     .filter(Boolean)
     .filter((line) => !normalize(line).match(/^(import z excelu|puvodni bunky|slouceno z|datum objednavky v excelu|importovane z objednavek)/))
-    .join("\n");
+    .join("\n"));
 }
 
 function extractEmailFromText(text) {
@@ -11106,7 +11480,7 @@ function normalizeCross(cross = {}) {
     seedlingGallery: unique(normalizeGallery(cross.seedlingGallery || cross.gallery).filter(Boolean)),
     resultRating: normalizeCrossResult(cross.resultRating || cross.rating),
     linkedVarietyId: clean(cross.linkedVarietyId || cross.varietyId),
-    note: clean(cross.note),
+    note: cleanBusinessNote(cross.note),
     createdAt: cross.createdAt || now,
     updatedAt: cross.updatedAt || now,
   };
