@@ -517,6 +517,292 @@
     padding: 10px !important;
   }
 }
+.offer-items-catalog-list {
+  gap: 18px;
+}
+
+.offer-item.offer-item-catalog {
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(225, 196, 161, 0.9);
+  border-radius: 34px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 224, 202, 0.62), transparent 34%),
+    radial-gradient(circle at 0% 100%, rgba(202, 232, 205, 0.34), transparent 38%),
+    linear-gradient(180deg, rgba(255, 250, 244, 0.98), rgba(251, 244, 235, 0.98));
+  box-shadow:
+    0 20px 40px rgba(66, 43, 24, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.offer-item.offer-item-catalog.sold-out {
+  border-color: rgba(210, 143, 136, 0.9);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 233, 231, 0.72), transparent 34%),
+    linear-gradient(180deg, rgba(255, 245, 243, 0.98), rgba(255, 237, 234, 0.98));
+}
+
+.offer-item.offer-item-catalog.is-order-done {
+  border-color: rgba(93, 160, 111, 0.64);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(185, 244, 200, 0.54), transparent 34%),
+    linear-gradient(180deg, rgba(248, 255, 247, 0.98), rgba(233, 248, 233, 0.98));
+}
+
+.offer-item.offer-item-catalog.is-order-partial {
+  border-color: rgba(208, 175, 91, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 236, 173, 0.54), transparent 34%),
+    linear-gradient(180deg, rgba(255, 252, 243, 0.98), rgba(249, 240, 214, 0.98));
+}
+
+.offer-item.offer-item-catalog .offer-item-main.offer-item-main-catalog {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.offer-item.offer-item-catalog .offer-thumb-wrap {
+  position: relative;
+  width: 208px;
+  min-height: 190px;
+}
+
+.offer-item.offer-item-catalog .offer-thumb {
+  width: 208px;
+  height: 190px;
+  border-radius: 34px;
+  overflow: hidden;
+  box-shadow: 0 16px 28px rgba(81, 55, 28, 0.16);
+}
+
+.offer-item.offer-item-catalog .offer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.offer-item.offer-item-catalog .offer-item-copy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  align-content: start;
+}
+
+.offer-item-copy-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+}
+
+.offer-item-heading {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.offer-item.offer-item-catalog strong {
+  display: block;
+  font-size: 1.34rem;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.offer-item.offer-item-catalog small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.offer-item-note {
+  margin: 0;
+  color: #57655c;
+  font-size: 0.96rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.offer-stock.offer-stock-catalog {
+  gap: 8px;
+}
+
+.offer-item-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.offer-item-price-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.offer-qty-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid rgba(197, 213, 193, 0.92);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(240, 247, 238, 0.96), rgba(224, 238, 220, 0.96));
+  color: #48624c;
+  font-size: 0.94rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+}
+
+.offer-price-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 9px 14px;
+  border: 1px solid rgba(229, 201, 198, 0.92);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(250, 232, 229, 0.96), rgba(245, 218, 214, 0.96));
+  color: #8e435b;
+  font-size: 1rem;
+  font-weight: 950;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 20px rgba(143, 67, 91, 0.08);
+}
+
+.offer-item.offer-item-catalog .offer-item-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.offer-item.offer-item-catalog .offer-order-flag-inline {
+  position: static;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 3px rgba(255, 0, 184, 0.12),
+    0 8px 18px rgba(255, 0, 118, 0.24);
+  transform: none;
+  white-space: nowrap;
+}
+
+.offer-item.offer-item-catalog .offer-item-tools .mini-button {
+  min-width: 38px;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+}
+
+.offer-item.offer-item-catalog .offer-item-cta-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.offer-item.offer-item-catalog .offer-item-cta-row .button {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 16px;
+  font-weight: 900;
+}
+
+.offer-item.offer-item-catalog .reservation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.offer-item.offer-item-catalog .reservation-list > small {
+  display: block;
+  padding: 12px 14px;
+  border: 1px dashed rgba(148, 134, 108, 0.45);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+@media (max-width: 1280px) {
+  .offer-item.offer-item-catalog .offer-item-main.offer-item-main-catalog {
+    grid-template-columns: 176px minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .offer-item.offer-item-catalog .offer-thumb-wrap {
+    width: 176px;
+    min-height: 160px;
+  }
+
+  .offer-item.offer-item-catalog .offer-thumb {
+    width: 176px;
+    height: 160px;
+    border-radius: 30px;
+  }
+}
+
+.trash-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.trash-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid rgba(214, 193, 138, 0.42);
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(255, 252, 244, 0.96), rgba(241, 248, 238, 0.92));
+}
+
+.trash-entry-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.trash-entry-copy strong,
+.trash-entry-copy small {
+  overflow-wrap: anywhere;
+}
+
+.trash-entry-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trash-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.trash-empty {
+  padding: 18px;
+  border: 1px dashed rgba(214, 193, 138, 0.48);
+  border-radius: 22px;
+  background: rgba(255, 250, 240, 0.76);
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (max-width: 760px) {
+  .trash-entry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .trash-entry-actions {
+    justify-content: flex-start;
+  }
+}
 
 /* Final desktop catalog look for Odrůdy. This only changes the PC list layout and keeps the same data/actions. */
 #varietiesView .varieties-catalog-panel {
@@ -9239,30 +9525,115 @@ fieldset > legend {
   box-shadow: 0 0 0 2px rgba(112, 149, 126, 0.16) !important;
 }
 
-#customersTable tr.customer-row-storno td {
-  background: linear-gradient(180deg, rgba(255, 245, 245, 0.99), rgba(255, 226, 226, 0.97)) !important;
-  border-top-color: rgba(180, 35, 24, 0.22) !important;
-  border-bottom-color: rgba(180, 35, 24, 0.22) !important;
+#customersTable tr[data-customer-row] {
+  --customer-card-bg: linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(248, 245, 238, 0.97));
+  --customer-card-border: rgba(218, 205, 178, 0.56);
+  background: var(--customer-card-bg) !important;
 }
 
-#customersTable tr.customer-row-unpaid td {
-  background: linear-gradient(180deg, rgba(255, 247, 247, 0.99), rgba(255, 234, 234, 0.975)) !important;
-  border-top-color: rgba(180, 35, 24, 0.18) !important;
-  border-bottom-color: rgba(180, 35, 24, 0.18) !important;
+#customersTable tr[data-customer-row] td,
+#customersTable tr[data-customer-row]:hover td,
+#customersTable tr[data-customer-row]:focus-visible td,
+#customersTable tr.selected[data-customer-row] td {
+  background: transparent !important;
+  background-image: none !important;
+  border-top-color: var(--customer-card-border) !important;
+  border-bottom-color: var(--customer-card-border) !important;
+  border-left-color: transparent !important;
+  border-right-color: transparent !important;
+  box-shadow: none !important;
 }
 
-#customersTable tr.customer-row-storno:hover td,
-#customersTable tr.customer-row-storno:focus-visible td,
-#customersTable tr.selected.customer-row-storno td {
-  background: linear-gradient(180deg, rgba(255, 239, 239, 1), rgba(255, 214, 214, 0.98)) !important;
-  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.12) !important;
+#customersTable tr[data-customer-row] td:first-child {
+  border-left-color: var(--customer-card-border) !important;
 }
 
-#customersTable tr.customer-row-unpaid:hover td,
-#customersTable tr.customer-row-unpaid:focus-visible td,
-#customersTable tr.selected.customer-row-unpaid td {
-  background: linear-gradient(180deg, rgba(255, 241, 241, 1), rgba(255, 223, 223, 0.985)) !important;
-  box-shadow: 0 0 0 2px rgba(180, 35, 24, 0.1) !important;
+#customersTable tr[data-customer-row] td:last-child {
+  border-right-color: var(--customer-card-border) !important;
+}
+
+#customersTable tr[data-customer-row].customer-tone-neutral {
+  --customer-card-bg: linear-gradient(180deg, rgba(255, 252, 247, 0.99), rgba(248, 245, 238, 0.98));
+  --customer-card-border: rgba(218, 205, 178, 0.58);
+}
+
+#customersTable tr[data-customer-row].customer-tone-positive {
+  --customer-card-bg: linear-gradient(180deg, rgba(245, 255, 246, 0.99), rgba(230, 247, 232, 0.98));
+  --customer-card-border: rgba(133, 185, 144, 0.5);
+}
+
+#customersTable tr[data-customer-row].customer-tone-happy {
+  --customer-card-bg: linear-gradient(180deg, rgba(255, 252, 232, 0.99), rgba(240, 249, 226, 0.98));
+  --customer-card-border: rgba(206, 178, 90, 0.56);
+}
+
+#customersTable tr[data-customer-row].customer-tone-angry,
+#customersTable tr[data-customer-row].customer-row-unpaid,
+#customersTable tr[data-customer-row].customer-row-storno {
+  --customer-card-bg: linear-gradient(180deg, rgba(255, 244, 244, 0.995), rgba(255, 228, 228, 0.985));
+  --customer-card-border: rgba(196, 78, 63, 0.38);
+}
+
+#customersTable tr[data-customer-row]:hover,
+#customersTable tr[data-customer-row]:focus-visible {
+  filter: saturate(1.02) brightness(1.01);
+}
+
+#customersTable tr.selected[data-customer-row] td:first-child {
+  box-shadow: inset 5px 0 0 rgba(78, 142, 110, 0.56) !important;
+}
+
+.customer-main-with-avatar {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.customer-main-with-avatar .cell-main {
+  min-width: 0;
+}
+
+.customer-avatar {
+  --avatar-size: 118px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  flex: 0 0 var(--avatar-size);
+  overflow: hidden;
+  border: 2px solid rgba(212, 196, 162, 0.9);
+  border-radius: 20px;
+  box-shadow: 0 10px 18px rgba(74, 49, 29, 0.08);
+  background: linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(247, 241, 231, 0.98));
+}
+
+.customer-avatar-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.customer-avatar-neutral {
+  background: linear-gradient(180deg, rgba(244, 244, 244, 0.98), rgba(227, 227, 227, 0.98));
+}
+
+.customer-avatar-positive {
+  background: linear-gradient(180deg, rgba(239, 250, 235, 0.98), rgba(214, 238, 205, 0.98));
+}
+
+.customer-avatar-happy {
+  background: linear-gradient(180deg, rgba(255, 248, 220, 0.98), rgba(255, 230, 164, 0.98));
+}
+
+.customer-avatar-angry {
+  background: linear-gradient(180deg, rgba(255, 234, 234, 0.99), rgba(255, 198, 198, 0.98));
 }
 
 .customer-unpaid-warning {
@@ -9283,6 +9654,14 @@ fieldset > legend {
   display: block;
   margin-top: 6px;
   color: rgba(127, 29, 29, 0.86);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.customer-contact-note {
+  display: block;
+  margin-top: 6px;
+  color: rgba(79, 72, 58, 0.86);
   font-size: 0.84rem;
   line-height: 1.4;
 }

@@ -822,6 +822,7 @@ function normalizeLoadedData(parsed) {
     varieties: Array.isArray(source.varieties) ? source.varieties : [],
     crosses: Array.isArray(source.crosses) ? source.crosses : [],
     offers: Array.isArray(source.offers) ? source.offers : [],
+    trash: Array.isArray(source.trash) ? source.trash : [],
     exchangeRates: Array.isArray(source.exchangeRates) ? source.exchangeRates : [],
     settings: normalizeFeeSettings(source.settings),
   };
@@ -837,6 +838,7 @@ function normalizeLoadedData(parsed) {
 
   data.crosses = data.crosses.map(normalizeCross);
   data.offers = data.offers.map(normalizeOffer);
+  data.trash = data.trash.map(normalizeTrashEntry);
   reconcileOfferItemVarietyLinks(data);
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
 
@@ -1130,6 +1132,228 @@ function invalidateDerivedCache() {
   });
 }
 
+function ensureTrashData() {
+  if (!Array.isArray(state.data.trash)) state.data.trash = [];
+  return state.data.trash;
+}
+
+function cloneTrashPayload(payload) {
+  try {
+    return JSON.parse(JSON.stringify(payload ?? null));
+  } catch {
+    if (payload && typeof payload === "object") return { ...payload };
+    return payload;
+  }
+}
+
+function normalizeTrashEntry(entry = {}) {
+  return {
+    id: clean(entry.id) || uid(),
+    type: clean(entry.type),
+    label: clean(entry.label) || "Smazaný záznam",
+    deletedAt: clean(entry.deletedAt) || new Date().toISOString(),
+    payload: entry?.payload && typeof entry.payload === "object" ? cloneTrashPayload(entry.payload) : {},
+  };
+}
+
+function trashEntriesSorted() {
+  return ensureTrashData()
+    .slice()
+    .sort((a, b) => String(b.deletedAt || "").localeCompare(String(a.deletedAt || "")));
+}
+
+function pushTrashEntry(type, label, payload = {}) {
+  ensureTrashData().unshift(normalizeTrashEntry({
+    type,
+    label,
+    deletedAt: new Date().toISOString(),
+    payload,
+  }));
+}
+
+function removeTrashEntry(entryId) {
+  state.data.trash = ensureTrashData().filter((entry) => clean(entry.id) !== clean(entryId));
+}
+
+function findTrashEntry(entryId) {
+  return ensureTrashData().find((entry) => clean(entry.id) === clean(entryId)) || null;
+}
+
+function trashTypeLabel(entry = {}) {
+  const type = clean(entry.type);
+  if (type === "customer-bundle") return "Zákazník";
+  if (type === "order") return "Objednávka";
+  if (type === "variety") return "Odrůda";
+  if (type === "cross") return "Křížení";
+  if (type === "offer") return normalizeOfferType(entry?.payload?.offer?.type) === "rests" ? "Resty" : "Nabídka";
+  if (type === "offer-item") return "Položka nabídky";
+  if (type === "reservation") return "Rezervace";
+  return "Záznam";
+}
+
+function trashEntryMeta(entry = {}) {
+  const deletedLabel = clean(entry.deletedAt) ? formatCloudDateTime(entry.deletedAt) : "";
+  const type = clean(entry.type);
+  if (type === "customer-bundle") {
+    const orderCount = Array.isArray(entry?.payload?.orders) ? entry.payload.orders.length : 0;
+    return [deletedLabel, orderCount ? `${orderCount} objednávek` : ""].filter(Boolean).join(" · ");
+  }
+  if (type === "offer-item") {
+    return [deletedLabel, clean(entry?.payload?.offerTitle)].filter(Boolean).join(" · ");
+  }
+  if (type === "reservation") {
+    return [deletedLabel, clean(entry?.payload?.offerTitle), clean(entry?.payload?.itemName)].filter(Boolean).join(" · ");
+  }
+  return deletedLabel;
+}
+
+function trashCountLabel() {
+  const count = ensureTrashData().length;
+  if (!count) return "Koš je prázdný.";
+  if (count === 1) return "V koši čeká 1 záznam.";
+  if (count < 5) return `V koši čekají ${count} záznamy.`;
+  return `V koši čeká ${count} záznamů.`;
+}
+
+function upsertRestoredRecord(collection, record) {
+  const items = Array.isArray(state.data[collection]) ? state.data[collection] : [];
+  const index = items.findIndex((item) => clean(item.id) === clean(record.id));
+  if (index >= 0) items[index] = record;
+  else items.push(record);
+  state.data[collection] = items;
+  return record;
+}
+
+function normalizeVarietySnapshot(variety = {}) {
+  const now = new Date().toISOString();
+  return {
+    id: clean(variety.id) || uid(),
+    name: clean(variety.name),
+    photoUrl: clean(variety.photoUrl),
+    gallery: normalizeGallery(variety.gallery),
+    salePrice: normalizeAmount(variety.salePrice),
+    saleCurrency: normalizeCurrency(variety.saleCurrency),
+    priceHistory: normalizePriceHistory(variety.priceHistory || initialPriceHistoryForVariety(variety, now)),
+    stockAvailable: normalizeWholeNumber(variety.stockAvailable),
+    stockReserved: normalizeWholeNumber(variety.stockReserved),
+    note: cleanBusinessNote(variety.note),
+    active: variety.active !== false,
+    createdAt: variety.createdAt || now,
+    updatedAt: variety.updatedAt || now,
+  };
+}
+
+function restoreTrashEntry(entryId) {
+  const entry = findTrashEntry(entryId);
+  if (!entry) return;
+
+  if (entry.type === "customer-bundle") {
+    const customer = sanitizeCustomer(cloneTrashPayload(entry?.payload?.customer || {}));
+    if (!clean(customer.id)) {
+      toast("Zákazníka se nepodařilo obnovit.");
+      return;
+    }
+    upsertRestoredRecord("customers", customer);
+    (entry?.payload?.orders || []).forEach((order) => {
+      const restoredOrder = normalizeOrder(cloneTrashPayload(order));
+      upsertRestoredRecord("orders", restoredOrder);
+      state.selectedOrderIds.delete(restoredOrder.id);
+    });
+    state.data.customers = mergeDuplicateCustomers(state.data.customers, state.data.orders);
+    state.selectedCustomerId = findCustomer(customer.id)?.id || state.data.customers[0]?.id || null;
+  } else if (entry.type === "order") {
+    const order = normalizeOrder(cloneTrashPayload(entry?.payload?.order || {}));
+    upsertRestoredRecord("orders", order);
+    state.selectedOrderIds.delete(order.id);
+  } else if (entry.type === "variety") {
+    const variety = normalizeVarietySnapshot(cloneTrashPayload(entry?.payload?.variety || {}));
+    upsertRestoredRecord("varieties", variety);
+  } else if (entry.type === "cross") {
+    const cross = normalizeCross(cloneTrashPayload(entry?.payload?.cross || {}));
+    upsertRestoredRecord("crosses", cross);
+    state.selectedCrossId = cross.id;
+  } else if (entry.type === "offer") {
+    const offer = normalizeOffer(cloneTrashPayload(entry?.payload?.offer || {}));
+    upsertRestoredRecord("offers", offer);
+    state.selectedOfferId = offer.id;
+  } else if (entry.type === "offer-item") {
+    const offer = findOffer(entry?.payload?.offerId);
+    if (!offer) {
+      toast("Nejdřív obnov nabídku, do které položka patří.");
+      return;
+    }
+    const item = normalizeOfferItem(cloneTrashPayload(entry?.payload?.item || {}));
+    offer.items = (offer.items || []).filter((current) => clean(current.id) !== clean(item.id));
+    offer.items.push(item);
+    sortOfferItemsInPlace(offer);
+    offer.updatedAt = new Date().toISOString();
+    state.selectedOfferId = offer.id;
+  } else if (entry.type === "reservation") {
+    const offer = findOffer(entry?.payload?.offerId);
+    const item = offer?.items?.find((current) => clean(current.id) === clean(entry?.payload?.itemId));
+    if (!offer || !item) {
+      toast("Nejdřív obnov nabídku a položku, ke které rezervace patří.");
+      return;
+    }
+    const reservation = normalizeReservation(cloneTrashPayload(entry?.payload?.reservation || {}));
+    item.reservations = (item.reservations || []).filter((current) => clean(current.id) !== clean(reservation.id));
+    item.reservations.push(reservation);
+    offer.updatedAt = new Date().toISOString();
+    state.selectedOfferId = offer.id;
+  } else {
+    toast("Tento záznam se zatím nedá obnovit.");
+    return;
+  }
+
+  removeTrashEntry(entryId);
+  saveData();
+  renderAll();
+  toast("Záznam vrácen z koše.");
+}
+
+function permanentlyDeleteTrashEntry(entryId) {
+  const entry = findTrashEntry(entryId);
+  if (!entry) return;
+  if (!confirm(`Smazat ${trashTypeLabel(entry).toLowerCase()} z koše navždy?`)) return;
+  removeTrashEntry(entryId);
+  saveData();
+  renderAll();
+  toast("Záznam smazán z koše navždy.");
+}
+
+function trashEntryMarkup(entry = {}) {
+  return `<article class="trash-entry">
+    <div class="trash-entry-copy">
+      <div class="trash-entry-top">
+        <span class="pill">${escapeHtml(trashTypeLabel(entry))}</span>
+      </div>
+      <strong>${escapeHtml(clean(entry.label) || "Smazaný záznam")}</strong>
+      <small>${escapeHtml(trashEntryMeta(entry) || "Bez detailu")}</small>
+    </div>
+    <div class="trash-entry-actions">
+      <button class="button ghost" type="button" data-trash-restore="${escapeHtml(entry.id)}">Obnovit</button>
+      <button class="button danger" type="button" data-trash-delete="${escapeHtml(entry.id)}">Smazat navždy</button>
+    </div>
+  </article>`;
+}
+
+function renderTrashPanel() {
+  const summaryEl = document.querySelector("#trashSummary");
+  const listEl = document.querySelector("#trashList");
+  if (!summaryEl || !listEl) return;
+  const entries = trashEntriesSorted();
+  summaryEl.textContent = trashCountLabel();
+  listEl.innerHTML = entries.length
+    ? entries.map((entry) => trashEntryMarkup(entry)).join("")
+    : `<div class="trash-empty">Koš je zatím prázdný.</div>`;
+  listEl.querySelectorAll("[data-trash-restore]").forEach((button) => {
+    button.addEventListener("click", () => restoreTrashEntry(button.dataset.trashRestore));
+  });
+  listEl.querySelectorAll("[data-trash-delete]").forEach((button) => {
+    button.addEventListener("click", () => permanentlyDeleteTrashEntry(button.dataset.trashDelete));
+  });
+}
+
 function mapById(items) {
   return new Map((items || []).map((item) => [item.id, item]));
 }
@@ -1201,6 +1425,7 @@ function renderShared() {
   updatePhotoFolderStatus();
   renderStudioShell();
   renderSettingsScene();
+  renderTrashPanel();
 }
 
 function renderTabCounts() {
@@ -1697,6 +1922,27 @@ function handleGlobalHotkeys(event) {
   }
 }
 
+function customerOrders(customerId = "") {
+  const id = clean(customerId);
+  if (!id) return [];
+  return (state.data.orders || []).filter((order) => clean(order.customerId) === id);
+}
+
+function customerAvatarMeta(customer = {}, stornoMeta = customerStornoMeta(customer.id), nonPaymentMeta = customerNonPaymentMeta(customer.id)) {
+  const orders = customerOrders(customer.id);
+  const allPaid = orders.length > 0 && orders.every((order) => parsePaymentStatus(order.paymentStatus) === "zaplaceno" && !orderHasStorno(order));
+  if (nonPaymentMeta.count || stornoMeta.count) {
+    return { image: "assets/Snímka obrazovky 2026-06-11 123125.png", label: "Pozor, problémový zákazník", className: "customer-avatar-angry" };
+  }
+  if (orders.length > 1 && allPaid) {
+    return { image: "assets/Snímka obrazovky 2026-06-11 123119.png", label: "Stálý spokojený zákazník", className: "customer-avatar-happy" };
+  }
+  if (orders.length > 0) {
+    return { image: "assets/Snímka obrazovky 2026-06-11 123112.png", label: "Už nakoupil", className: "customer-avatar-positive" };
+  }
+  return { image: "assets/Snímka obrazovky 2026-06-11 123130.png", label: "Zatím bez nákupu", className: "customer-avatar-neutral" };
+}
+
 function renderCustomers() {
   const customers = filteredCustomers();
   renderCustomersScene();
@@ -1710,22 +1956,29 @@ function renderCustomers() {
           const lastOrder = latestOrderForCustomer(customer.id);
           const stornoMeta = customerStornoMeta(customer.id);
           const nonPaymentMeta = customerNonPaymentMeta(customer.id);
+          const avatar = customerAvatarMeta(customer, stornoMeta, nonPaymentMeta);
+          const toneClass = avatar.className.replace("customer-avatar", "customer-tone");
           return `<tr class="${[
             customer.id === state.selectedCustomerId ? "selected" : "",
+            toneClass,
             nonPaymentMeta.count ? "customer-row-unpaid" : "",
             stornoMeta.count ? "customer-row-storno" : "",
           ].filter(Boolean).join(" ")}" data-customer-row="${customer.id}">
             <td>
-              <span class="cell-main">${escapeHtml(customerName(customer))}</span>
-              <span class="cell-sub">${escapeHtml([customer.fbName ? `FB: ${customer.fbName}` : "", customerRatingLabel(customer)].filter(Boolean).join(" · ") || customer.note || "")}</span>
-              ${nonPaymentMeta.count ? `<span class="customer-unpaid-warning">Neplatí${nonPaymentMeta.count > 1 ? ` (${nonPaymentMeta.count})` : ""}</span>` : ""}
-              ${stornoMeta.count ? `<span class="customer-storno-warning">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>` : ""}
-              ${nonPaymentMeta.note ? `<span class="customer-unpaid-note">${escapeHtml(shortRestText(nonPaymentMeta.note, 92))}</span>` : ""}
-              ${stornoMeta.note ? `<span class="customer-storno-note">${escapeHtml(shortRestText(stornoMeta.note, 92))}</span>` : ""}
+              <span class="customer-main-with-avatar">
+                <span class="customer-avatar ${avatar.className}" title="${escapeHtml(avatar.label)}" aria-label="${escapeHtml(avatar.label)}"><img class="customer-avatar-image" src="${escapeHtml(avatar.image)}" alt="" aria-hidden="true" decoding="async" loading="lazy"></span>
+                <span class="cell-main">${escapeHtml(customerName(customer))}</span>
+              </span>
+              <span class="cell-sub">${escapeHtml([customer.fbName ? `FB: ${customer.fbName}` : "", customerRatingLabel(customer)].filter(Boolean).join(" · "))}</span>
             </td>
             <td>
               <span class="cell-main">${escapeHtml(customer.email || customer.phone || "")}</span>
               <span class="cell-sub">${escapeHtml(customer.phone && customer.email ? customer.phone : "")}</span>
+              ${customer.note ? `<span class="customer-contact-note">${escapeHtml(shortRestText(customer.note, 92))}</span>` : ""}
+              ${nonPaymentMeta.count ? `<span class="customer-unpaid-warning">Neplatí${nonPaymentMeta.count > 1 ? ` (${nonPaymentMeta.count})` : ""}</span>` : ""}
+              ${stornoMeta.count ? `<span class="customer-storno-warning">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>` : ""}
+              ${nonPaymentMeta.note ? `<span class="customer-unpaid-note">${escapeHtml(shortRestText(nonPaymentMeta.note, 92))}</span>` : ""}
+              ${stornoMeta.note ? `<span class="customer-storno-note">${escapeHtml(shortRestText(stornoMeta.note, 92))}</span>` : ""}
             </td>
             <td>${escapeHtml(customer.country || "")}</td>
             <td>
@@ -3896,36 +4149,52 @@ function renderOfferDetail() {
 function renderOfferItem(offer, item) {
   const confirmed = offerItemConfirmedCount(item);
   const alternate = offerItemAlternateCount(item);
-  const available = Math.max(0, Number(item.quantity || 0) - confirmed);
-  const soldOut = Number(item.quantity || 0) > 0 && available === 0;
+  const total = Number(item.quantity || 0) || 0;
+  const available = Math.max(0, total - confirmed);
+  const soldOut = total > 0 && available === 0;
   const reservations = sortedReservationsForItem(item);
   const image = offerItemImage(item);
   const displayName = offerItemNameSafe(item);
+  const note = clean(item.note);
   const orderProgress = offerItemOrderProgress(offer, item);
   const orderFlag = orderProgress.label
-    ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">→ OBJ</span>`
+    ? `<span class="offer-order-flag offer-order-flag-inline offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgress.label)}">→ OBJ</span>`
     : "";
-  return `<article class="offer-item ${soldOut ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
-    <div class="offer-item-main">
+  const priceText = formatMoney(item.price, item.currency);
+  const priceBadge = priceText === "Bez ceny" ? priceText : `${priceText} / ks`;
+  return `<article class="offer-item offer-item-catalog ${soldOut ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
+    <div class="offer-item-main offer-item-main-catalog">
       <div class="offer-thumb-wrap">
         <div class="offer-thumb">${image ? photoImageMarkup(image, displayName, "", 'loading="lazy"') : varietyInitials(displayName)}</div>
-        ${orderFlag}
       </div>
-      <div>
-        <strong>${escapeHtml(displayName)}</strong>
-        <small>${escapeHtml([`${item.quantity} ks`, `${formatMoney(item.price, item.currency)}/ks`, item.note].filter(Boolean).join(" · "))}</small>
-        <div class="pills offer-stock">
+      <div class="offer-item-copy">
+        <div class="offer-item-copy-top">
+          <div class="offer-item-heading">
+            <strong>${escapeHtml(displayName)}</strong>
+          </div>
+          <span class="row-actions offer-item-tools">
+            ${orderFlag}
+            <button class="mini-button" type="button" title="Upravit" data-edit-offer-item="${item.id}">✎</button>
+            <button class="mini-button" type="button" title="Smazat" data-delete-offer-item="${item.id}">×</button>
+          </span>
+        </div>
+        ${note ? `<p class="offer-item-note">${escapeHtml(note)}</p>` : ""}
+        <div class="pills offer-stock offer-stock-catalog">
           <span class="pill ${soldOut ? "warning" : "paid"}">Volné ${available}</span>
           <span class="pill ${soldOut || confirmed > Number(item.quantity || 0) ? "warning" : ""}">Potvrzeno ${confirmed}</span>
           ${alternate ? `<span class="pill ready">Náhradníci ${alternate}</span>` : ""}
         </div>
+        <div class="offer-item-footer">
+          <span class="offer-item-price-row">
+            <span class="offer-qty-tag">${escapeHtml(`${total} ks`)}</span>
+            <span class="offer-price-tag">${escapeHtml(priceBadge)}</span>
+          </span>
+        </div>
       </div>
-      <span class="row-actions">
-        <button class="mini-button" type="button" title="Rezervovat" data-add-reservation="${item.id}">+</button>
-        <button class="mini-button" type="button" title="Přidat náhradníka" data-add-reservation="${item.id}" data-add-reservation-status="alternate">N</button>
-        <button class="mini-button" type="button" title="Upravit" data-edit-offer-item="${item.id}">✎</button>
-        <button class="mini-button" type="button" title="Smazat" data-delete-offer-item="${item.id}">×</button>
-      </span>
+    </div>
+    <div class="offer-item-cta-row">
+      <button class="button primary" type="button" data-add-reservation="${item.id}" ${available <= 0 ? "disabled" : ""}>Rezervovat</button>
+      <button class="button" type="button" title="Přidat náhradníka" data-add-reservation="${item.id}" data-add-reservation-status="alternate">Náhradník</button>
     </div>
     <div class="reservation-list">
       ${reservations.length ? reservations.map((reservation) => renderReservationLine(offer, item, reservation)).join("") : `<small class="cell-sub">Zatím bez rezervací.</small>`}
@@ -6665,21 +6934,33 @@ function deleteCustomer(id) {
   const customer = findCustomer(id);
   if (!customer) return;
   if (!confirm(`Smazat zákazníka ${customerName(customer)} včetně objednávek?`)) return;
+  const customerOrders = state.data.orders.filter((item) => item.customerId === id);
+  pushTrashEntry("customer-bundle", customerName(customer), {
+    customer,
+    orders: customerOrders,
+  });
   state.data.customers = state.data.customers.filter((item) => item.id !== id);
   state.data.orders = state.data.orders.filter((item) => item.customerId !== id);
+  customerOrders.forEach((order) => state.selectedOrderIds.delete(order.id));
   state.selectedCustomerId = state.data.customers[0]?.id || null;
   saveData();
   renderAll();
-  toast("Zákazník smazán.");
+  toast("Zákazník přesunut do koše.");
 }
 
 function deleteOrder(id) {
+  const order = findOrder(id);
+  if (!order) return;
   if (!confirm("Smazat objednávku?")) return;
+  const customer = findCustomer(order.customerId);
+  pushTrashEntry("order", [customerName(customer), clean(order.orderDate)].filter(Boolean).join(" · ") || "Objednávka", {
+    order,
+  });
   state.data.orders = state.data.orders.filter((item) => item.id !== id);
   state.selectedOrderIds.delete(id);
   saveData();
   renderAll();
-  toast("Objednávka smazána.");
+  toast("Objednávka přesunuta do koše.");
 }
 
 function syncOrderPaymentTextSentButton(order = null) {
@@ -7168,21 +7449,25 @@ function deleteCross(id) {
   const cross = findCross(id);
   if (!cross) return;
   if (!confirm("Smazat záznam křížení? Vzniklá odrůda v katalogu zůstane.")) return;
+  pushTrashEntry("cross", clean(cross.seedlingName) || "Křížení", { cross });
   state.data.crosses = state.data.crosses.filter((item) => item.id !== id);
   if (state.selectedCrossId === id) state.selectedCrossId = state.data.crosses[0]?.id || null;
   saveData();
   renderAll();
-  toast("Křížení smazáno.");
+  toast("Křížení přesunuto do koše.");
 }
 
 function deleteVariety(id) {
   const variety = findVariety(id);
   if (!variety) return;
   if (!confirm(`Smazat odrůdu ${variety.name}? Objednávky zůstanou beze změny.`)) return;
+  pushTrashEntry("variety", variety.name, {
+    variety: normalizeVarietySnapshot(variety),
+  });
   state.data.varieties = state.data.varieties.filter((item) => item.id !== id);
   saveData();
   renderAll();
-  toast("Odrůda smazána.");
+  toast("Odrůda přesunuta do koše.");
 }
 
 const offerStatusSteps = ["připravená", "zveřejněná", "uzavřená"];
@@ -7269,11 +7554,12 @@ function deleteOffer(id) {
   const offer = findOffer(id);
   if (!offer) return;
   if (!confirm(`Smazat nabídku ${offer.title}?`)) return;
+  pushTrashEntry("offer", offer.title, { offer });
   state.data.offers = state.data.offers.filter((item) => item.id !== id);
   state.selectedOfferId = state.data.offers[0]?.id || null;
   saveData();
   renderAll();
-  toast("Nabídka smazána.");
+  toast("Nabídka přesunuta do koše.");
 }
 
 function openOfferItemDialog(offerId, itemId = null) {
@@ -7518,11 +7804,16 @@ function deleteOfferItem(offerId, itemId) {
   if (!offer) return;
   const item = offer.items.find((entry) => entry.id === itemId);
   if (!item || !confirm(`Smazat položku ${offerItemNameSafe(item)}?`)) return;
+  pushTrashEntry("offer-item", offerItemNameSafe(item), {
+    offerId: offer.id,
+    offerTitle: offer.title,
+    item,
+  });
   offer.items = offer.items.filter((entry) => entry.id !== itemId);
   offer.updatedAt = new Date().toISOString();
   saveData();
   renderAll();
-  toast("Položka smazána.");
+  toast("Položka přesunuta do koše.");
 }
 
 function openFacebookOfferDialog(id) {
@@ -8004,7 +8295,7 @@ function openReservationDialog(offerId, itemId, reservationId = null, defaults =
   els.reservationForm.elements.offerId.value = offerId;
   els.reservationForm.elements.itemId.value = itemId;
   els.reservationForm.elements.reservationId.value = reservation?.id || "";
-  els.reservationForm.elements.customerId.value = reservation?.customerId || state.selectedCustomerId || state.data.customers[0]?.id || "";
+  els.reservationForm.elements.customerId.value = reservation?.customerId || "";
   els.reservationForm.elements.quantity.value = reservation?.quantity || "1";
   els.reservationForm.elements.status.value = reservationStatusValue(preferredStatus);
   els.reservationForm.elements.note.value = reservation?.note || "";
@@ -8027,9 +8318,11 @@ function renderReservationCustomerOptions() {
     select.innerHTML = `<option value="">Zatím žádný zákazník</option>`;
     return;
   }
-  select.innerHTML = state.data.customers
-    .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
-    .map((customer) => `<option value="${customer.id}">${escapeHtml(customerName(customer))}</option>`)
+  select.innerHTML = ['<option value="">Vyber zákazníka</option>']
+    .concat(state.data.customers
+      .slice()
+      .sort((a, b) => customerName(a).localeCompare(customerName(b), "cs"))
+      .map((customer) => `<option value="${customer.id}">${escapeHtml(customerName(customer))}</option>`))
     .join("");
 }
 
@@ -8131,12 +8424,21 @@ function saveReservationFromForm() {
 function deleteReservation(offerId, itemId, reservationId) {
   const offer = findOffer(offerId);
   const item = offer?.items.find((entry) => entry.id === itemId);
-  if (!offer || !item) return;
+  const reservation = item?.reservations?.find((entry) => entry.id === reservationId);
+  if (!offer || !item || !reservation) return;
+  if (!confirm("Smazat rezervaci?")) return;
+  pushTrashEntry("reservation", customerName(findCustomer(reservation.customerId)) || "Rezervace", {
+    offerId: offer.id,
+    offerTitle: offer.title,
+    itemId: item.id,
+    itemName: offerItemNameSafe(item),
+    reservation,
+  });
   item.reservations = item.reservations.filter((entry) => entry.id !== reservationId);
   offer.updatedAt = new Date().toISOString();
   saveData();
   renderAll();
-  toast("Rezervace smazána.");
+  toast("Rezervace přesunuta do koše.");
 }
 
 function parseImportInput() {
@@ -15696,7 +15998,7 @@ function renderOfferDetail() {
       </div>
     </section>
     <section class="detail-section">
-      <div class="stack-list">
+      <div class="stack-list offer-items-catalog-list">
         ${items.length ? items.map((item) => renderOfferItem(offer, item)).join("") : emptyState("Zatím bez odřezků.")}
       </div>
     </section>

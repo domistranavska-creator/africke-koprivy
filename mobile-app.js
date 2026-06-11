@@ -5388,24 +5388,37 @@ function deleteOfferItem(offerId, itemId) {
   if (!offer) return;
   const item = offer.items.find((entry) => entry.id === itemId);
   if (!item || !confirm(`Smazat odĹ™ezek ${offerItemName(item)}?`)) return;
+  pushTrashEntry("offer-item", offerItemName(item), {
+    offerId: offer.id,
+    offerTitle: offer.title,
+    item,
+  });
   offer.items = offer.items.filter((entry) => entry.id !== itemId);
   offer.updatedAt = new Date().toISOString();
   saveData();
   render();
   openOfferDetailSheet(offer.id, { replace: true });
-  toast("OdĹ™ezek smazĂˇn.");
+  toast("Odřezek přesunut do koše.");
 }
 
 function deleteReservation(offerId, itemId, reservationId) {
   const offer = findById("offers", offerId);
   const item = offer?.items.find((entry) => entry.id === itemId);
-  if (!offer || !item || !confirm("Smazat rezervaci?")) return;
+  const reservation = item?.reservations?.find((entry) => entry.id === reservationId);
+  if (!offer || !item || !reservation || !confirm("Smazat rezervaci?")) return;
+  pushTrashEntry("reservation", customerName(findCustomer(reservation.customerId)) || "Rezervace", {
+    offerId: offer.id,
+    offerTitle: offer.title,
+    itemId: item.id,
+    itemName: offerItemName(item),
+    reservation,
+  });
   item.reservations = (item.reservations || []).filter((entry) => entry.id !== reservationId);
   offer.updatedAt = new Date().toISOString();
   saveData();
   render();
   openOfferDetailSheet(offer.id, { replace: true });
-  toast("Rezervace smazĂˇna.");
+  toast("Rezervace přesunuta do koše.");
 }
 
 function createOrdersFromOffer(id) {
@@ -6647,12 +6660,210 @@ function upsert(collection, item) {
   else items.push(item);
 }
 
+function ensureTrashData() {
+  if (!Array.isArray(state.data.trash)) state.data.trash = [];
+  return state.data.trash;
+}
+
+function cloneTrashPayload(payload) {
+  try {
+    return JSON.parse(JSON.stringify(payload ?? null));
+  } catch {
+    if (payload && typeof payload === "object") return { ...payload };
+    return payload;
+  }
+}
+
+function normalizeTrashEntry(entry = {}) {
+  return {
+    id: clean(entry.id) || uid(),
+    type: clean(entry.type),
+    label: clean(entry.label) || "Smazaný záznam",
+    deletedAt: clean(entry.deletedAt) || new Date().toISOString(),
+    payload: entry?.payload && typeof entry.payload === "object" ? cloneTrashPayload(entry.payload) : {},
+  };
+}
+
+function trashEntriesSorted() {
+  return ensureTrashData()
+    .slice()
+    .sort((a, b) => String(b.deletedAt || "").localeCompare(String(a.deletedAt || "")));
+}
+
+function pushTrashEntry(type, label, payload = {}) {
+  ensureTrashData().unshift(normalizeTrashEntry({
+    type,
+    label,
+    deletedAt: new Date().toISOString(),
+    payload,
+  }));
+}
+
+function removeTrashEntry(entryId) {
+  state.data.trash = ensureTrashData().filter((entry) => clean(entry.id) !== clean(entryId));
+}
+
+function findTrashEntry(entryId) {
+  return ensureTrashData().find((entry) => clean(entry.id) === clean(entryId)) || null;
+}
+
+function trashTypeLabel(entry = {}) {
+  const type = clean(entry.type);
+  if (type === "customer-bundle") return "Zákazník";
+  if (type === "order") return "Objednávka";
+  if (type === "variety") return "Odrůda";
+  if (type === "cross") return "Křížení";
+  if (type === "offer") return normalizeOfferType(entry?.payload?.offer?.type) === "rests" ? "Resty" : "Nabídka";
+  if (type === "offer-item") return "Položka nabídky";
+  if (type === "reservation") return "Rezervace";
+  return "Záznam";
+}
+
+function trashEntryMeta(entry = {}) {
+  const deletedLabel = clean(entry.deletedAt) ? formatDate(entry.deletedAt) : "";
+  const type = clean(entry.type);
+  if (type === "customer-bundle") {
+    const orderCount = Array.isArray(entry?.payload?.orders) ? entry.payload.orders.length : 0;
+    return [deletedLabel, orderCount ? `${orderCount} objednávek` : ""].filter(Boolean).join(" · ");
+  }
+  if (type === "offer-item") {
+    return [deletedLabel, clean(entry?.payload?.offerTitle)].filter(Boolean).join(" · ");
+  }
+  if (type === "reservation") {
+    return [deletedLabel, clean(entry?.payload?.offerTitle), clean(entry?.payload?.itemName)].filter(Boolean).join(" · ");
+  }
+  return deletedLabel;
+}
+
+function trashCountLabel() {
+  const count = ensureTrashData().length;
+  if (!count) return "Koš je prázdný.";
+  if (count === 1) return "V koši čeká 1 záznam.";
+  if (count < 5) return `V koši čekají ${count} záznamy.`;
+  return `V koši čeká ${count} záznamů.`;
+}
+
+function restoreTrashEntry(entryId) {
+  const entry = findTrashEntry(entryId);
+  if (!entry) return;
+
+  if (entry.type === "customer-bundle") {
+    const customer = normalizeCustomer(cloneTrashPayload(entry?.payload?.customer || {}));
+    if (!clean(customer.id)) {
+      toast("Zákazníka se nepodařilo obnovit.");
+      return;
+    }
+    upsert("customers", customer);
+    (entry?.payload?.orders || []).forEach((order) => {
+      upsert("orders", normalizeOrder(cloneTrashPayload(order)));
+    });
+  } else if (entry.type === "order") {
+    upsert("orders", normalizeOrder(cloneTrashPayload(entry?.payload?.order || {})));
+  } else if (entry.type === "variety") {
+    upsert("varieties", normalizeVariety(cloneTrashPayload(entry?.payload?.variety || {})));
+  } else if (entry.type === "cross") {
+    upsert("crosses", normalizeCross(cloneTrashPayload(entry?.payload?.cross || {})));
+  } else if (entry.type === "offer") {
+    const offer = normalizeOffer(cloneTrashPayload(entry?.payload?.offer || {}));
+    upsert("offers", offer);
+    state.activeOfferId = offer.id;
+  } else if (entry.type === "offer-item") {
+    const offer = findById("offers", entry?.payload?.offerId);
+    if (!offer) {
+      toast("Nejdřív obnov nabídku, do které položka patří.");
+      return;
+    }
+    const item = normalizeOfferItem(cloneTrashPayload(entry?.payload?.item || {}));
+    offer.items = (offer.items || []).filter((current) => clean(current.id) !== clean(item.id));
+    offer.items.push(item);
+    sortOfferItemsInPlace(offer);
+    offer.updatedAt = new Date().toISOString();
+    state.activeOfferId = offer.id;
+  } else if (entry.type === "reservation") {
+    const offer = findById("offers", entry?.payload?.offerId);
+    const item = offer?.items?.find((current) => clean(current.id) === clean(entry?.payload?.itemId));
+    if (!offer || !item) {
+      toast("Nejdřív obnov nabídku a položku, ke které rezervace patří.");
+      return;
+    }
+    const reservation = normalizeReservation(cloneTrashPayload(entry?.payload?.reservation || {}));
+    item.reservations = (item.reservations || []).filter((current) => clean(current.id) !== clean(reservation.id));
+    item.reservations.push(reservation);
+    offer.updatedAt = new Date().toISOString();
+    state.activeOfferId = offer.id;
+  } else {
+    toast("Tento záznam zatím nejde obnovit.");
+    return;
+  }
+
+  removeTrashEntry(entryId);
+  saveData();
+  render();
+  toast("Záznam vrácen z koše.");
+}
+
+function permanentlyDeleteTrashEntry(entryId) {
+  const entry = findTrashEntry(entryId);
+  if (!entry) return;
+  if (!confirm(`Smazat ${trashTypeLabel(entry).toLowerCase()} z koše navždy?`)) return;
+  removeTrashEntry(entryId);
+  saveData();
+  render();
+  toast("Záznam smazán z koše navždy.");
+}
+
+function trashCardMarkup(entry = {}) {
+  return `<article class="trash-mobile-entry">
+    <div class="trash-mobile-copy">
+      <span class="pill">${escapeHtml(trashTypeLabel(entry))}</span>
+      <strong>${escapeHtml(clean(entry.label) || "Smazaný záznam")}</strong>
+      <small>${escapeHtml(trashEntryMeta(entry) || "Bez detailu")}</small>
+    </div>
+    <div class="trash-mobile-actions">
+      <button class="button ghost" type="button" data-trash-restore="${escapeHtml(entry.id)}">Obnovit</button>
+      <button class="button danger" type="button" data-trash-delete="${escapeHtml(entry.id)}">Smazat navždy</button>
+    </div>
+  </article>`;
+}
+
+function renderTrashCards() {
+  const entries = trashEntriesSorted();
+  return `<section class="sync-card">
+    <strong class="title">Koš</strong>
+    <p class="sub">${escapeHtml(trashCountLabel())}</p>
+    ${entries.length ? `<div class="trash-mobile-list">${entries.map((entry) => trashCardMarkup(entry)).join("")}</div>` : `<div class="empty light trash-mobile-empty">Koš je zatím prázdný.</div>`}
+  </section>`;
+}
+
 function deleteItem(collection, id, label) {
   const fixedLabel = typeof ak93DisplayText === "function" ? ak93DisplayText(label, label) : label;
+  const item = findById(collection, id);
+  if (!item) return;
   if (!confirm(`${fixedLabel} smazat?`)) return;
+  if (collection === "customers") {
+    const orders = state.data.orders.filter((entry) => clean(entry.customerId) === clean(id));
+    pushTrashEntry("customer-bundle", customerName(item), {
+      customer: item,
+      orders,
+    });
+    state.data.orders = state.data.orders.filter((entry) => clean(entry.customerId) !== clean(id));
+  } else if (collection === "orders") {
+    const customer = findCustomer(item.customerId);
+    pushTrashEntry("order", [customerName(customer), clean(item.orderDate)].filter(Boolean).join(" · ") || "Objednávka", {
+      order: item,
+    });
+  } else if (collection === "varieties") {
+    pushTrashEntry("variety", clean(item.name) || fixedLabel, { variety: item });
+  } else if (collection === "crosses") {
+    pushTrashEntry("cross", clean(item.seedlingName) || "Křížení", { cross: item });
+  } else if (collection === "offers") {
+    pushTrashEntry("offer", clean(item.title) || fixedLabel, { offer: item });
+    if (state.activeOfferId === id) state.activeOfferId = "";
+  }
   state.data[collection] = state.data[collection].filter((item) => item.id !== id);
   saveData();
   render();
+  toast("Záznam přesunut do koše.");
 }
 
 async function copyOrderText(id) {
@@ -6800,7 +7011,7 @@ function loadData() {
       localStorage.removeItem(key);
     }
   }
-  const data = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || { customers: [], orders: [], varieties: [], crosses: [], offers: [], exchangeRates: [], settings: {} });
+  const data = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || { customers: [], orders: [], varieties: [], crosses: [], offers: [], trash: [], exchangeRates: [], settings: {} });
   localStorage.setItem(STORE_KEY, JSON.stringify(data));
   if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
   return data;
@@ -6823,6 +7034,7 @@ function normalizeLoadedData(data = {}) {
     varieties: Array.isArray(source.varieties) ? source.varieties.map(normalizeVariety) : [],
     crosses: Array.isArray(source.crosses) ? source.crosses.map(normalizeCross) : [],
     offers: Array.isArray(source.offers) ? source.offers.map(normalizeOffer) : [],
+    trash: Array.isArray(source.trash) ? source.trash.map(normalizeTrashEntry) : [],
     exchangeRates: Array.isArray(source.exchangeRates) ? source.exchangeRates : [],
     settings: source.settings || {},
   };
@@ -10941,22 +11153,32 @@ function openOfferDetailSheet(id, options = {}) {
       ? `<span class="offer-order-flag offer-order-flag-${escapeHtml(orderProgress.state)}" title="${escapeHtml(orderProgressLabel)}">OBJ</span>`
       : "";
     const itemName = ak93OfferItemName(item);
+    const note = ak93DisplayText(item.note);
+    const priceText = formatMoney(item.price, item.currency || "CZK");
+    const priceBadge = priceText === "Bez ceny" ? priceText : `${priceText} / ks`;
     const emptyReservationsText = "Zatím bez rezervací.";
-    return `<article class="offer-item ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
-      <div class="offer-item-head">
+    return `<article class="offer-item offer-item-catalog ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
+      <div class="offer-item-head offer-item-head-catalog">
         <span class="thumb offer-thumb-wrap">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(itemName || "O"))}${orderFlag}</span>
-        <div>
+        <div class="offer-item-copy">
           <strong>${escapeHtml(itemName)}</strong>
-          <small>${total || 0} ks · ${formatMoney(item.price, item.currency || "CZK")} / ks</small>
+          ${note ? `<p class="offer-item-note">${escapeHtml(note)}</p>` : ""}
         </div>
       </div>
-      <div class="pill-row">
+      <div class="offer-item-footer">
+        <div class="pill-row offer-stock offer-stock-catalog">
         <span class="pill">Volné ${available}</span>
         <span class="pill">Potvrzeno ${confirmed}</span>
         ${alternate ? `<span class="pill">Náhradník ${alternate}</span>` : ""}
         ${reserved > confirmed ? `<span class="pill">Rezervace ${reserved}</span>` : ""}
+          ${orderProgressLabel ? `<span class="pill ${orderProgress.state === "done" ? "paid" : orderProgress.state === "partial" ? "ready" : ""}">${escapeHtml(orderProgressLabel)}</span>` : ""}
+        </div>
+        <span class="offer-item-price-row">
+          <span class="offer-qty-tag">${escapeHtml(`${total || 0} ks`)}</span>
+          <span class="offer-price-tag">${escapeHtml(priceBadge)}</span>
+        </span>
       </div>
-      <div class="offer-item-actions">
+      <div class="offer-item-actions offer-item-actions-catalog">
         <button class="button primary" type="button" data-offer-id="${offerId}" data-reserve-offer-item="${itemId}" ${available <= 0 ? "disabled" : ""}>Rezervovat</button>
         <button class="button" type="button" data-offer-id="${offerId}" data-alternate-offer-item="${itemId}">Náhradník</button>
         <button class="button" type="button" data-offer-id="${offerId}" data-edit-offer-item="${itemId}">Upravit</button>
@@ -11008,7 +11230,7 @@ function openOfferDetailSheet(id, options = {}) {
       ${note ? `<p class="sub">${escapeHtml(note)}</p>` : ""}
       <button class="button" type="button" data-move-offer-leftovers="${escapeHtml(id)}">Přesunout neprodané do nové nabídky</button>
       <button class="button primary" type="button" data-prepare-facebook-offer="${escapeHtml(id)}" onclick="window.__akPrepareFacebookOffer?.(this.dataset.prepareFacebookOffer); return false;">Připravit Facebook příspěvek</button>
-      <div class="offer-items">
+      <div class="offer-items offer-items-catalog">
         ${items.length ? items.map((item) => ak93OfferItemDetailMarkup(offer, item)).join("") : `<div class="empty light">Zatím bez odřezků.</div>`}
       </div>
     </section>`;
@@ -11402,7 +11624,8 @@ function openOfferDetailSheet(id, options = {}) {
     <label class="field"><span>IBAN</span><input id="settingPaymentIban" value="${escapeHtml(settings.paymentIban)}"></label>
     <label class="field"><span>SWIFT / BIC</span><input id="settingPaymentSwift" value="${escapeHtml(settings.paymentSwift)}"></label>
     <button class="button primary" type="button" id="saveAppSettings">Uložit nastavení</button>
-  </section>`;
+  </section>
+  ${loggedIn ? renderTrashCards() : ""}`;
   }
 
   function ak91UpdateSyncIndicator(status = "") {
@@ -11485,6 +11708,7 @@ function openOfferDetailSheet(id, options = {}) {
     return customers.map((customer) => {
       const stornoMeta = ak91CustomerStornoMeta(customer.id);
       const nonPaymentMeta = ak91CustomerNonPaymentMeta(customer.id);
+      const avatar = ak91CustomerAvatarMeta(customer, stornoMeta, nonPaymentMeta);
       return card({
         id: customer.id,
         type: "customer",
@@ -11496,9 +11720,20 @@ function openOfferDetailSheet(id, options = {}) {
           ...(nonPaymentMeta.count ? [{ label: `Neplatí${nonPaymentMeta.count > 1 ? ` (${nonPaymentMeta.count})` : ""}`, className: "danger" }] : []),
           ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : []),
         ],
+        thumbText: avatar.icon,
         actions: [["order-customer", ak93Icons.add], ["edit-customer", ak93Icons.edit], ["delete-customer", ak93Icons.delete]],
       });
     }).join("");
+  }
+
+  function ak91CustomerAvatarMeta(customer = {}, stornoMeta = ak91CustomerStornoMeta(customer.id), nonPaymentMeta = ak91CustomerNonPaymentMeta(customer.id)) {
+    const customerId = clean(customer?.id);
+    const orders = customerId ? (state.data.orders || []).filter((order) => clean(order.customerId) === customerId) : [];
+    const allPaid = orders.length > 0 && orders.every((order) => ak91StatusKey(order.paymentStatus) === "paid" && !orderHasStorno(order));
+    if (nonPaymentMeta.count || stornoMeta.count) return { icon: "😠", label: "Pozor" };
+    if (orders.length > 1 && allPaid) return { icon: "😄", label: "Top" };
+    if (orders.length > 0) return { icon: "🙂", label: "Nakoupil" };
+    return { icon: "😐", label: "Nový" };
   }
 
   function ak91OpenOfferDetail(id, options = {}) {
@@ -11613,6 +11848,37 @@ function openOfferDetailSheet(id, options = {}) {
     });
     const settingsButton = document.querySelector("#saveAppSettings");
     if (settingsButton) settingsButton.onclick = saveAppSettingsFromInputs;
+    document.querySelectorAll("[data-trash-restore]").forEach((button) => {
+      button.onclick = () => restoreTrashEntry(button.dataset.trashRestore || "");
+    });
+    document.querySelectorAll("[data-trash-delete]").forEach((button) => {
+      button.onclick = () => permanentlyDeleteTrashEntry(button.dataset.trashDelete || "");
+    });
+  }
+
+  if (!globalThis.__akTrashButtonsBridge91) {
+    globalThis.__akTrashButtonsBridge91 = true;
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const restoreButton = target.closest("[data-trash-restore]");
+      if (restoreButton && els.list?.contains(restoreButton)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        restoreTrashEntry(restoreButton.dataset.trashRestore || "");
+        return;
+      }
+
+      const deleteButton = target.closest("[data-trash-delete]");
+      if (deleteButton && els.list?.contains(deleteButton)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        event.stopPropagation();
+        permanentlyDeleteTrashEntry(deleteButton.dataset.trashDelete || "");
+      }
+    }, true);
   }
 
   renderOffers = ak91RenderOffers;

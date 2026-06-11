@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260611-114" />
+    <link rel="stylesheet" href="styles.css?v=20260611-127" />
   </head>
   <body>
     <div class="app-shell">
@@ -389,6 +389,15 @@
                 <button type="button" id="choosePhotoFolderBtn">Vybrat složku</button>
                 <span id="photoFolderStatus"></span>
               </div>
+            </section>
+
+            <section class="panel trash-panel">
+              <div class="panel-heading">
+                <h2>Koš</h2>
+                <span class="pill" id="trashSummary">Koš je zatím prázdný.</span>
+              </div>
+              <p class="panel-note">Smazané věci se schovají sem. Odtud je můžeš vrátit zpět nebo smazat navždy.</p>
+              <div class="trash-list" id="trashList"></div>
             </section>
 
             <section class="panel">
@@ -1076,14 +1085,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <link rel="stylesheet" href="styles.css?v=20260611-114" />
-    <script src="vendor/lzma1-browser-setup.js?v=20260611-114" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260611-114" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260611-114" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260611-114" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260611-114" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260611-114" charset="utf-8"></script>
-    <script src="app.js?v=20260611-114" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260611-127" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260611-127" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260611-127" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260611-127" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260611-127" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260611-127" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260611-127" charset="utf-8"></script>
+    <script src="app.js?v=20260611-127" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;
