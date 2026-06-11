@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260609-108" />
+    <link rel="stylesheet" href="styles.css?v=20260611-114" />
   </head>
   <body>
     <div class="app-shell">
@@ -592,10 +592,12 @@
             <span>Platba</span>
             <div class="order-payment-toggle" role="group" aria-label="Platba">
               <button type="button" class="order-payment-toggle-btn" data-order-payment-option="čeká">Čeká</button>
+              <button type="button" class="order-payment-toggle-btn" data-order-payment-option="nezaplaceno">Neplatí</button>
               <button type="button" class="order-payment-toggle-btn" data-order-payment-option="zaplaceno">Zaplaceno</button>
             </div>
             <select name="paymentStatus" hidden aria-hidden="true" tabindex="-1">
               <option value="čeká">Čeká</option>
+              <option value="nezaplaceno">Neplatí</option>
               <option value="zaplaceno">Zaplaceno</option>
             </select>
           </label>
@@ -1074,14 +1076,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <link rel="stylesheet" href="styles.css?v=20260609-108" />
-    <script src="vendor/lzma1-browser-setup.js?v=20260609-108" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260609-108" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260609-108" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260609-108" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260609-108" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260609-108" charset="utf-8"></script>
-    <script src="app.js?v=20260609-108" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260611-114" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260611-114" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260611-114" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260611-114" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260611-114" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260611-114" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260611-114" charset="utf-8"></script>
+    <script src="app.js?v=20260611-114" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

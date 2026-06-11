@@ -76,6 +76,7 @@ const els = {
   sheet: document.querySelector("#sheetHost"),
   syncIndicator: document.querySelector("#syncIndicator"),
   installAppBtn: document.querySelector("#installAppBtn"),
+  scrollTopBtn: document.querySelector("#scrollTopBtn"),
   toast: document.querySelector("#toast"),
 };
 
@@ -94,9 +95,11 @@ function init() {
     render();
   });
   window.addEventListener("focus", () => maybeAutoPull({ force: true }));
+  window.addEventListener("scroll", syncScrollTopButton, { passive: true });
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
   els.installAppBtn?.addEventListener("click", installPwaApp);
+  els.scrollTopBtn?.addEventListener("click", scrollToTop);
   window.setInterval(() => maybeAutoPull(), AUTO_PULL_INTERVAL_MS);
   if (!isSyncLoggedIn()) state.view = "sync";
   render();
@@ -106,6 +109,21 @@ function init() {
   } else {
     maybeAutoPull({ force: true });
   }
+}
+
+function syncMobileListChrome() {
+  if (els.list) els.list.dataset.view = state.view;
+  document.body.dataset.mobileView = state.view;
+  syncScrollTopButton();
+}
+
+function syncScrollTopButton() {
+  if (!els.scrollTopBtn) return;
+  els.scrollTopBtn.hidden = !(window.scrollY > 520 && state.view !== "sync");
+}
+
+function scrollToTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function handleGlobalClick(event) {
@@ -218,6 +236,7 @@ function render() {
     sync: renderSync,
   };
   els.list.innerHTML = viewRenderers[state.view]?.() || "";
+  syncMobileListChrome();
   bindListActions();
   resolvePhotos(els.list);
   updateSyncIndicator();
@@ -1901,7 +1920,7 @@ function openOfferDetailSheet(id, options = {}) {
         .join("")}</select></label>
       <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
       <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
-      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("paymentStatus", [["čeká", "Čeká"], ["nezaplaceno", "Neplatí"], ["zaplaceno", "Zaplaceno"]], normalizeOrderPaymentStatus(order.paymentStatus || "čeká"))}
       ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
       ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
       <div class="toggle-grid">
@@ -1974,7 +1993,7 @@ function openOfferDetailSheet(id, options = {}) {
         .map((customer) => `<option value="${escapeHtml(customer.id)}" ${selectedCustomerId === customer.id ? "selected" : ""}>${escapeHtml(customerName(customer))}</option>`)
         .join("")}</select></label>
       <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
-      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("paymentStatus", [["čeká", "Čeká"], ["nezaplaceno", "Neplatí"], ["zaplaceno", "Zaplaceno"]], normalizeOrderPaymentStatus(order.paymentStatus || "čeká"))}
       ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
       ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
       <div class="toggle-grid">
@@ -4655,7 +4674,7 @@ function openOfferDetailSheet(id, options = {}) {
         .join("")}</select></label>
       <section class="sheet-rest-warning" data-sheet-rest-warning hidden></section>
       <label class="field"><span>Datum</span><input name="orderDate" type="date" required value="${escapeHtml(order.orderDate || todayInput())}"></label>
-      ${toggle("paymentStatus", [["ÄŤekĂˇ", "ÄŚekĂˇ"], ["zaplaceno", "Zaplaceno"]], order.paymentStatus || "ÄŤekĂˇ")}
+      ${toggle("paymentStatus", [["čeká", "Čeká"], ["nezaplaceno", "Neplatí"], ["zaplaceno", "Zaplaceno"]], normalizeOrderPaymentStatus(order.paymentStatus || "čeká"))}
       ${toggle("shippingStatus", [["novĂˇ", "NovĂˇ"], ["pĹ™ipraveno", "PĹ™ipravenĂˇ"], ["odeslĂˇno", "OdeslanĂˇ"], ["zaplaceno", "VyĹ™Ă­zenĂˇ"]], order.shippingStatus || "novĂˇ")}
       ${toggle("deliveryMethod", [["ship", "Odeslat"], ["personal_pickup", "OsobnĂ­ odbÄ›r"]], order.deliveryMethod || "ship")}
       <div class="toggle-grid">
@@ -6379,12 +6398,12 @@ function renderCrossPreviewInSheet() {
 function crossPreviewMarkup(cross) {
   const mother = findById("varieties", cross.motherVarietyId);
   const pollen = findById("varieties", cross.pollenVarietyId);
-  const seedlingName = clean(cross.seedlingName) || "SemenĂˇÄŤ";
+  const seedlingName = clean(cross.seedlingName) || "Semenáč";
   return `${crossFlowCard("Matka", mother?.name || "Matka", varietyImages(mother)[0], "parent")}
-    <div class="cross-symbol">Ă—</div>
+    <div class="cross-symbol">x</div>
     ${crossFlowCard("Pyl", pollen?.name || "Pyl", varietyImages(pollen)[0], "parent")}
     <div class="cross-symbol">=</div>
-    ${crossFlowCard("SemenĂˇÄŤ", seedlingName, cross.seedlingPhotoUrl, "seedling")}`;
+    ${crossFlowCard("Semenáč", seedlingName, cross.seedlingPhotoUrl, "seedling")}`;
 }
 
 function crossFlowCard(label, title, image, role = "parent") {
@@ -6454,11 +6473,11 @@ async function downloadVarietyPhoto(id) {
 async function renderCrossCardCanvas(cross) {
   const mother = findById("varieties", cross.motherVarietyId);
   const pollen = findById("varieties", cross.pollenVarietyId);
-  const seedlingName = clean(cross.seedlingName) || "SemenĂˇÄŤ";
+  const seedlingName = clean(cross.seedlingName) || "Semenáč";
   const cards = [
     { role: "MATKA", name: mother?.name || "Matka", image: varietyImages(mother)[0] },
     { role: "PYL", name: pollen?.name || "Pyl", image: varietyImages(pollen)[0] },
-    { role: "SEMENĂÄŚ", name: seedlingName, image: crossSeedlingImages(cross)[0], accent: true },
+    { role: "SEMENÁČ", name: seedlingName, image: crossSeedlingImages(cross)[0], accent: true },
   ];
   const loadedCards = await Promise.all(cards.map(async (card) => ({ ...card, imageNode: await loadCanvasPhoto(card.image) })));
   const logo = await loadCanvasImage(BRAND_LOGO_IMAGE_DATA_URI);
@@ -6483,7 +6502,7 @@ async function renderCrossCardCanvas(cross) {
   context.fillStyle = "#15563d";
   context.font = "800 58px 'Segoe UI', Arial, sans-serif";
   context.textAlign = "center";
-  context.fillText("Ă—", 540, 275);
+  context.fillText("x", 540, 275);
   context.fillText("=", 540, 505);
   context.textAlign = "left";
   return canvas;
@@ -6997,8 +7016,15 @@ function normalizeCustomer(customer = {}) {
   return { ...customer, id: clean(customer.id) || uid(), fullName: "", firstName: firstName || "Bez jmĂ©na", lastName: lastNameAlreadyInFirstName ? "" : lastName, phone: clean(customer.phone), email: clean(customer.email), fbName: clean(customer.fbName), street: clean(customer.street), postalCode: clean(customer.postalCode), city: clean(customer.city), country: clean(customer.country), note: clean(customer.note), tags: Array.isArray(customer.tags) ? customer.tags : [] };
 }
 
+function normalizeOrderPaymentStatus(value = "") {
+  const normalized = normalize(clean(value));
+  if (normalized.includes("nezap") || normalized.includes("neplat") || normalized.includes("pozor")) return "nezaplaceno";
+  if (normalized.includes("zapl")) return "zaplaceno";
+  return "čeká";
+}
+
 function normalizeOrder(order = {}) {
-  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: clean(order.paymentStatus) === "zaplaceno" ? "zaplaceno" : "ÄŤekĂˇ", paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["novĂˇ", "pĹ™ipraveno", "odeslĂˇno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "novĂˇ", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
+  return { ...order, id: clean(order.id) || uid(), offerId: clean(order.offerId), customerId: clean(order.customerId), orderDate: clean(order.orderDate) || todayInput(), varietiesText: clean(order.varietiesText), price: normalizeAmount(order.price), paymentStatus: normalizeOrderPaymentStatus(order.paymentStatus), paymentTextSentAt: clean(order.paymentTextSentAt), shippingStatus: ["novĂˇ", "pĹ™ipraveno", "odeslĂˇno", "zaplaceno"].includes(clean(order.shippingStatus)) ? clean(order.shippingStatus) : "novĂˇ", deliveryMethod: clean(order.deliveryMethod) === "personal_pickup" ? "personal_pickup" : "ship", shippingFee: normalizeAmount(order.shippingFee), shippingFeeLabel: clean(order.shippingFeeLabel || order.shippingLabel), packingFee: normalizeAmount(order.packingFee), codFee: normalizeAmount(order.codFee), currency: "CZK", note: clean(order.note) };
 }
 
 function cleanGeneratedCrossNote(note = "") {
@@ -7007,8 +7033,8 @@ function cleanGeneratedCrossNote(note = "") {
   const seedlingPrefix = normalize("Semenáč z křížení ");
   const lineagePrefix = normalize("Kříženec: ");
   const genericBodies = new Set([
-    normalize("matka × pyl"),
-    normalize("bez matky × bez pylu"),
+    normalize("matka x pyl"),
+    normalize("bez matky x bez pylu"),
   ]);
   const hasSeedlingLine = lines.some((line) => normalize(line).startsWith(seedlingPrefix));
   const filtered = lines.filter((line) => {
@@ -7338,7 +7364,7 @@ function ensureVarietyFromCross(cross) {
     existing.gallery = unique([...(existing.gallery || []), ...images.slice(existing.photoUrl ? 0 : 1)]);
     return existing.id;
   }
-  const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `SemenĂˇÄŤ z kĹ™Ă­ĹľenĂ­ ${crossLineage(cross)}` });
+  const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `Semenáč z křížení ${crossLineage(cross)}` });
   state.data.varieties.push(variety);
   return variety.id;
 }
@@ -7857,7 +7883,10 @@ function orderLineUnitPrice(line = "") {
 }
 
 function paymentPill(order) {
-  return order.paymentStatus === "zaplaceno" ? "âś… Zaplaceno" : "âŹł ÄŚekĂˇ";
+  const paymentStatus = normalizeOrderPaymentStatus(order?.paymentStatus);
+  if (paymentStatus === "nezaplaceno") return { label: "Neplatí", className: "danger" };
+  if (paymentStatus === "zaplaceno") return { label: "Zaplaceno", className: "ok" };
+  return { label: "Čeká", className: "warn" };
 }
 
 function statusPill(order) {
@@ -7869,7 +7898,7 @@ function orderPaymentTextPill(order = {}) {
 }
 
 function crossLineage(cross) {
-  return `${findById("varieties", cross.motherVarietyId)?.name || "Matka"} Ă— ${findById("varieties", cross.pollenVarietyId)?.name || "Pyl"}`;
+  return `${findById("varieties", cross.motherVarietyId)?.name || "Matka"} x ${findById("varieties", cross.pollenVarietyId)?.name || "Pyl"}`;
 }
 
 function varietyImages(variety = {}) {
@@ -10816,9 +10845,7 @@ function openOfferDetailSheet(id, options = {}) {
         <strong class="catalog-mobile-name">${escapeHtml(name)}</strong>
         ${note ? `<p class="catalog-mobile-note">${escapeHtml(note)}</p>` : ""}
         <div class="catalog-mobile-tags">
-          ${renderCardPill(ak93PhotoCountLabel(images.length))}
           ${renderCardPill(`${usage}× v objednávce${usage === 1 ? "" : "ch"}`)}
-          ${renderCardPill(variety.active === false ? "Neaktivní" : "Aktivní")}
         </div>
         <div class="catalog-mobile-footer">
           <span class="catalog-mobile-price">${escapeHtml(priceLabel)}</span>
@@ -10835,34 +10862,40 @@ function openOfferDetailSheet(id, options = {}) {
     return "attention";
   }
 
+  function ak93CrossPreviewNote(cross) {
+    const lineage = normalize(crossLineage(cross)).replace(/\s*[×x]\s*/g, " x ").replace(/\s+/g, " ").trim();
+    const lines = ak93DisplayText(cross?.note)
+      .split(/\n+/)
+      .map((line) => ak93DisplayText(line))
+      .filter(Boolean);
+    if (!lines.length) return "";
+    return unique(lines.filter((line) => {
+      const comparable = normalize(line).replace(/\s*[×x]\s*/g, " x ").replace(/\s+/g, " ").trim();
+      const isGeneratedSeedlingLine = /^semenac z krizen/i.test(comparable);
+      const isGeneratedCrossLine = /^krizenec:?/i.test(comparable);
+      const hasLineage = Boolean(lineage) && comparable.includes(lineage);
+      return !(hasLineage && (isGeneratedSeedlingLine || isGeneratedCrossLine));
+    })).join("\n");
+  }
+
   function ak93CrossCatalogCard(cross) {
     const lineage = ak93DisplayText(crossLineage(cross), "Křížení");
     const seedlingName = ak93DisplayText(cross.seedlingName);
-    const note = ak93DisplayText(cross.note);
+    const note = ak93CrossPreviewNote(cross);
     const title = seedlingName || lineage;
-    const linkedVariety = findById("varieties", clean(cross.linkedVarietyId)) || (seedlingName ? findVarietyByName(seedlingName) : null);
-    const pills = [
-      ak93CrossStageLabel(cross.stage),
-      ak93CrossRatingLabel(cross.resultRating) || "Bez hodnocení",
-      formatDate(cross.pollinatedAt),
-      linkedVariety?.name || "",
-    ].filter(Boolean);
+    const rating = ak93CrossRatingLabel(cross.resultRating);
 
     return `<article class="card catalog-mobile-card catalog-mobile-cross ${ak93CrossToneClass(cross)}" data-card="cross" data-id="${escapeHtml(cross.id)}">
       <div class="catalog-mobile-visual">
-        <span class="catalog-mobile-badge">Křížení</span>
         ${ak93CatalogThumbMarkup(crossSeedlingImages(cross)[0], title, title)}
       </div>
       <div class="catalog-mobile-copy">
         <strong class="catalog-mobile-name">${escapeHtml(title)}</strong>
         ${seedlingName ? `<p class="catalog-mobile-lineage">${escapeHtml(lineage)}</p>` : ""}
         ${note ? `<p class="catalog-mobile-note">${escapeHtml(note)}</p>` : ""}
-        <div class="catalog-mobile-tags">
-          ${pills.map((pill) => renderCardPill(pill)).join("")}
-        </div>
-        <div class="catalog-mobile-footer">
-          <span class="catalog-mobile-price">${escapeHtml(ak93CrossStageLabel(cross.stage))}</span>
-          ${ak93CatalogActionButtons(cross.id, [["download-cross", ak93Icons.download], ["edit-cross", ak93Icons.edit], ["delete-cross", ak93Icons.delete]])}
+        ${rating ? `<div class="catalog-mobile-tags">${renderCardPill(rating)}</div>` : ""}
+        <div class="catalog-mobile-footer actions-only">
+          ${ak93CatalogActionButtons(cross.id, [["edit-cross", ak93Icons.edit], ["delete-cross", ak93Icons.delete]])}
         </div>
       </div>
     </article>`;
@@ -11039,6 +11072,21 @@ function openOfferDetailSheet(id, options = {}) {
     };
   }
 
+  function ak91CustomerNonPaymentMeta(customerId = "") {
+    const id = clean(customerId);
+    if (!id) return { count: 0, note: "", latest: null };
+    const orders = (state.data.orders || [])
+      .filter((order) => clean(order.customerId) === id && ak91StatusKey(order.paymentStatus) === "overdue")
+      .slice()
+      .sort((a, b) => String(b.updatedAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.orderDate || "")));
+    const latest = orders[0] || null;
+    return {
+      count: orders.length,
+      note: clean(latest?.note),
+      latest,
+    };
+  }
+
   function ak91OrderStornoMeta(order = {}) {
     const customerMeta = ak91CustomerStornoMeta(order?.customerId);
     if (customerMeta.count) return customerMeta;
@@ -11047,6 +11095,14 @@ function openOfferDetailSheet(id, options = {}) {
       note: ak91LatestStornoNote(order),
       latest: orderHasStorno(order) ? order : null,
     };
+  }
+
+  function ak91NonPaymentMarkup(meta = {}) {
+    if (!meta.count) return "";
+    return [
+      `<span class="customer-storno-mobile">Neplatí${meta.count > 1 ? ` (${meta.count})` : ""}</span>`,
+      meta.note ? `<span class="customer-storno-mobile-note">${escapeHtml(ak93DisplayText(meta.note))}</span>` : "",
+    ].filter(Boolean).join("");
   }
 
   function ak91StornoMarkup(meta = {}) {
@@ -11182,6 +11238,8 @@ function openOfferDetailSheet(id, options = {}) {
       "odeslĂˇno": "shipped",
       "odeslanĂˇ": "shipped",
       "ÄŤekĂˇ": "waiting",
+      nezaplaceno: "overdue",
+      "Neplatí": "overdue",
       "zveĹ™ejnÄ›nĂˇ": "published",
       "uzavĹ™enĂˇ": "closed",
       zaplaceno: "paid",
@@ -11192,6 +11250,7 @@ function openOfferDetailSheet(id, options = {}) {
     if (normalized.startsWith("nova")) return "new";
     if (normalized.startsWith("pripraven")) return "prepared";
     if (normalized.startsWith("odeslan")) return "shipped";
+    if (normalized.startsWith("nezaplacen") || normalized.startsWith("neplati")) return "overdue";
     if (normalized.startsWith("zaplacen")) return "paid";
     if (normalized.startsWith("cek")) return "waiting";
     if (normalized.startsWith("zverejnen")) return "published";
@@ -11217,7 +11276,10 @@ function openOfferDetailSheet(id, options = {}) {
   }
 
   function ak91PaymentStatusLabel(value) {
-    return ak91StatusKey(value) === "paid" ? "Zaplaceno" : "Čeká";
+    const key = ak91StatusKey(value);
+    if (key === "paid") return "Zaplaceno";
+    if (key === "overdue") return "Neplatí";
+    return "Čeká";
   }
 
   function ak91SummaryMeta() {
@@ -11275,7 +11337,10 @@ function openOfferDetailSheet(id, options = {}) {
   }
 
   function ak91PaymentPill(order = {}) {
-    return ak91PaymentStatusLabel(order.paymentStatus);
+    const paymentKey = ak91StatusKey(order?.paymentStatus);
+    if (paymentKey === "overdue") return { label: "Neplatí", className: "danger" };
+    if (paymentKey === "paid") return { label: "Zaplaceno", className: "ok" };
+    return { label: "Čeká", className: "warn" };
   }
 
   function ak91StatusPill(order = {}) {
@@ -11366,6 +11431,7 @@ function openOfferDetailSheet(id, options = {}) {
     const paymentKey = ak91StatusKey(order.paymentStatus);
     const shippingKey = ak91StatusKey(order.shippingStatus);
     if (ak91OrderStornoMeta(order).count || orderHasStorno(order)) return "reject";
+    if (paymentKey === "overdue") return "reject";
     if (paymentKey === "paid" && ["shipped", "paid"].includes(shippingKey)) return "done";
     if (paymentKey === "paid") return "progress";
     return "attention";
@@ -11418,13 +11484,18 @@ function openOfferDetailSheet(id, options = {}) {
     if (!customers.length) return empty("Žádní zákazníci.");
     return customers.map((customer) => {
       const stornoMeta = ak91CustomerStornoMeta(customer.id);
+      const nonPaymentMeta = ak91CustomerNonPaymentMeta(customer.id);
       return card({
         id: customer.id,
         type: "customer",
-        tone: stornoMeta.count ? "customer-storno-card" : "",
+        tone: stornoMeta.count || nonPaymentMeta.count ? "customer-storno-card" : "",
         title: escapeHtml(ak93DisplayText(customerName(customer), "Bez zákazníka")),
-        sub: [customer.email, customer.phone, ak93DisplayText(customer.country)].filter(Boolean).join("<br>") + ak91StornoMarkup(stornoMeta),
-        pills: [...(customer.tags || []).map((tag) => ak93DisplayText(tag)), ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : [])],
+        sub: [customer.email, customer.phone, ak93DisplayText(customer.country)].filter(Boolean).join("<br>") + ak91NonPaymentMarkup(nonPaymentMeta) + ak91StornoMarkup(stornoMeta),
+        pills: [
+          ...(customer.tags || []).map((tag) => ak93DisplayText(tag)),
+          ...(nonPaymentMeta.count ? [{ label: `Neplatí${nonPaymentMeta.count > 1 ? ` (${nonPaymentMeta.count})` : ""}`, className: "danger" }] : []),
+          ...(stornoMeta.count ? [`Stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}`] : []),
+        ],
         actions: [["order-customer", ak93Icons.add], ["edit-customer", ak93Icons.edit], ["delete-customer", ak93Icons.delete]],
       });
     }).join("");
@@ -11599,6 +11670,12 @@ function openOfferDetailSheet(id, options = {}) {
     } catch (error) {
       console.error("AK91 section render failed", error);
       els.list.innerHTML = empty("Tahle sekce se nepodařila otevřít.");
+    }
+
+    try {
+      syncMobileListChrome();
+    } catch (error) {
+      console.error("AK91 syncMobileListChrome failed", error);
     }
 
     try {

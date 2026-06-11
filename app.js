@@ -63,7 +63,7 @@ const photoRuntime = {
 const paymentLabels = {
   čeká: "Čeká",
   zaplaceno: "Zaplaceno",
-  nezaplaceno: "Nezaplaceno",
+  nezaplaceno: "Neplatí",
 };
 
 const shippingLabels = {
@@ -1709,11 +1709,18 @@ function renderCustomers() {
         .map((customer) => {
           const lastOrder = latestOrderForCustomer(customer.id);
           const stornoMeta = customerStornoMeta(customer.id);
-          return `<tr class="${[customer.id === state.selectedCustomerId ? "selected" : "", stornoMeta.count ? "customer-row-storno" : ""].filter(Boolean).join(" ")}" data-customer-row="${customer.id}">
+          const nonPaymentMeta = customerNonPaymentMeta(customer.id);
+          return `<tr class="${[
+            customer.id === state.selectedCustomerId ? "selected" : "",
+            nonPaymentMeta.count ? "customer-row-unpaid" : "",
+            stornoMeta.count ? "customer-row-storno" : "",
+          ].filter(Boolean).join(" ")}" data-customer-row="${customer.id}">
             <td>
               <span class="cell-main">${escapeHtml(customerName(customer))}</span>
               <span class="cell-sub">${escapeHtml([customer.fbName ? `FB: ${customer.fbName}` : "", customerRatingLabel(customer)].filter(Boolean).join(" · ") || customer.note || "")}</span>
+              ${nonPaymentMeta.count ? `<span class="customer-unpaid-warning">Neplatí${nonPaymentMeta.count > 1 ? ` (${nonPaymentMeta.count})` : ""}</span>` : ""}
               ${stornoMeta.count ? `<span class="customer-storno-warning">Pozor, stornuje${stornoMeta.count > 1 ? ` (${stornoMeta.count})` : ""}</span>` : ""}
+              ${nonPaymentMeta.note ? `<span class="customer-unpaid-note">${escapeHtml(shortRestText(nonPaymentMeta.note, 92))}</span>` : ""}
               ${stornoMeta.note ? `<span class="customer-storno-note">${escapeHtml(shortRestText(stornoMeta.note, 92))}</span>` : ""}
             </td>
             <td>
@@ -2244,6 +2251,7 @@ function orderRowToneClass(order) {
   if (orderHasStorno(order) || customerStornoOrders(order?.customerId).length) return "order-tone-storno";
   const paymentStatus = parsePaymentStatus(order?.paymentStatus);
   const shippingStatus = normalizeShippingStatus(order?.shippingStatus);
+  if (paymentStatus === "nezaplaceno") return "order-tone-overdue";
   if (paymentStatus === "zaplaceno" && ["odesláno", "zaplaceno"].includes(shippingStatus)) return "order-tone-complete";
   if (paymentStatus === "zaplaceno") return "order-tone-progress";
   return "order-tone-attention";
@@ -2517,11 +2525,17 @@ function filteredCrosses() {
 function crossLineageLabel(cross) {
   const mother = findVariety(cross.motherVarietyId);
   const pollen = findVariety(cross.pollenVarietyId);
-  return `${mother?.name || "Bez matky"} × ${pollen?.name || "Bez pylu"}`;
+  return `${mother?.name || "Bez matky"} x ${pollen?.name || "Bez pylu"}`;
 }
 
 function crossSeedlingVariety(cross) {
   return findVariety(clean(cross.linkedVarietyId)) || (clean(cross.seedlingName) ? findVarietyByName(cross.seedlingName) : null);
+}
+
+function crossCatalogPreviewNote(cross) {
+  const lines = clean(cross.note).split(/\n+/).map((line) => clean(line)).filter(Boolean);
+  if (!lines.length) return "";
+  return unique(lines.filter((line) => !parseCrossLineageNoteLine(line))).join("\n");
 }
 
 function crossStagePill(stage) {
@@ -2572,7 +2586,7 @@ function buildCrossPreviewMarkup(cross, options = {}) {
         <small>Matka</small>
         <strong>${escapeHtml(mother?.name || "Vyber odrůdu")}</strong>
       </article>
-      <span class="cross-preview-symbol">×</span>
+      <span class="cross-preview-symbol">x</span>
       <article class="cross-actor">
         ${crossActorThumb(varietyImages(pollen)[0], pollen?.name || "Pyl")}
         <small>Pyl</small>
@@ -2657,12 +2671,11 @@ function renderCrosses() {
 
 function crossCatalogCardMarkup(cross) {
   const safeId = escapeHtml(cross.id);
-  const createdVariety = crossSeedlingVariety(cross);
   const lineage = crossLineageLabel(cross);
   const seedlingName = clean(cross.seedlingName);
   const title = seedlingName || lineage;
   const seedlingPhoto = crossSeedlingMainPhoto(cross);
-  const note = clean(cross.note);
+  const note = crossCatalogPreviewNote(cross);
   const visual = seedlingPhoto
     ? photoImageMarkup(seedlingPhoto, title, "cross-catalog-card-photo", 'loading="lazy"')
     : `<div class="cross-catalog-card-placeholder">
@@ -2671,7 +2684,6 @@ function crossCatalogCardMarkup(cross) {
 
   return `<article class="cross-catalog-card ${crossRowToneClass(cross)}${cross.id === state.selectedCrossId ? " is-selected" : ""}" data-cross-row="${safeId}" tabindex="0" title="Otevřít křížení">
     <div class="cross-catalog-card-visual">
-      <span class="cross-catalog-card-badge">Křížení</span>
       ${visual}
     </div>
     <div class="cross-catalog-card-copy">
@@ -2681,14 +2693,10 @@ function crossCatalogCardMarkup(cross) {
       ${seedlingName ? `<p class="cross-catalog-card-lineage">${escapeHtml(lineage)}</p>` : ""}
       ${note ? `<p class="cross-catalog-card-note">${escapeHtml(note)}</p>` : ""}
       <div class="cross-catalog-card-tags">
-        ${crossStagePill(cross.stage)}
-        ${crossResultPill(cross.resultRating)}
-        <span class="cross-catalog-card-chip">${escapeHtml(formatDate(cross.pollinatedAt))}</span>
-        ${createdVariety ? `<span class="cross-catalog-card-chip">${escapeHtml(createdVariety.name)}</span>` : ""}
+        ${clean(cross.resultRating) ? crossResultPill(cross.resultRating) : ""}
       </div>
       <div class="cross-catalog-card-footer">
         <span class="cross-catalog-card-actions">
-          <button class="mini-button" type="button" title="Stáhnout obrázek" data-download-cross-card="${safeId}">▣</button>
           <button class="mini-button" type="button" title="Upravit" data-edit-cross="${safeId}">✎</button>
           <button class="mini-button" type="button" title="Smazat" data-delete-cross="${safeId}">×</button>
         </span>
@@ -4330,7 +4338,8 @@ function syncOrderPaymentFieldTone() {
   const paymentField = paymentSelect?.closest(".order-payment-field");
   if (!paymentSelect || !paymentField) return;
   const paymentStatus = parsePaymentStatus(paymentSelect.value);
-  paymentField.classList.toggle("is-waiting", paymentStatus === "čeká" || paymentStatus === "nezaplaceno");
+  paymentField.classList.toggle("is-waiting", paymentStatus === "čeká");
+  paymentField.classList.toggle("is-overdue", paymentStatus === "nezaplaceno");
   paymentField.classList.toggle("is-paid", paymentStatus === "zaplaceno");
   paymentField.classList.remove("is-cod");
 }
@@ -4339,7 +4348,7 @@ function syncOrderPaymentToggle() {
   const paymentStatus = parsePaymentStatus(els.orderForm?.elements?.paymentStatus?.value || "čeká");
   els.orderPaymentToggle?.querySelectorAll("[data-order-payment-option]").forEach((button) => {
     const buttonValue = parsePaymentStatus(button.dataset.orderPaymentOption || "čeká");
-    const isActive = buttonValue === paymentStatus || (paymentStatus === "nezaplaceno" && buttonValue === "čeká");
+    const isActive = buttonValue === paymentStatus;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-pressed", isActive ? "true" : "false");
   });
@@ -6371,7 +6380,7 @@ async function renderCrossCardCanvas(cross) {
   context.fillStyle = "#15563d";
   context.font = "800 58px 'Segoe UI', Arial, sans-serif";
   context.textAlign = "center";
-  context.fillText("×", 540, 275);
+  context.fillText("x", 540, 275);
   context.fillText("=", 540, 505);
   context.textAlign = "left";
   return canvas;
@@ -7115,7 +7124,7 @@ function ensureVarietyFromCross(cross) {
   const mother = findVariety(cross.motherVarietyId);
   const pollen = findVariety(cross.pollenVarietyId);
   const now = new Date().toISOString();
-  const seedlingNote = `Semenáč z křížení ${mother?.name || "matka"} × ${pollen?.name || "pyl"}`;
+  const seedlingNote = `Semenáč z křížení ${mother?.name || "matka"} x ${pollen?.name || "pyl"}`;
   const seedlingImages = crossSeedlingImages(cross);
   const mainPhoto = crossSeedlingMainPhoto(cross);
   const existing = findVariety(clean(cross.linkedVarietyId)) || findVarietyByName(name);
@@ -11031,8 +11040,7 @@ function parsePaymentStatus(text) {
 }
 
 function normalizeOrderPaymentFormValue(text) {
-  const status = parsePaymentStatus(text);
-  return status === "nezaplaceno" ? "čeká" : status;
+  return parsePaymentStatus(text);
 }
 
 function parseShippingStatus(text) {
@@ -11209,8 +11217,8 @@ function dedupeGeneratedCrossLineageNote(note = "") {
   const lines = clean(note).split(/\n+/).map((line) => clean(line)).filter(Boolean);
   if (!lines.length) return "";
   const genericBodies = new Set([
-    normalizeCrossLineageComparable("matka Ă— pyl"),
-    normalizeCrossLineageComparable("bez matky Ă— bez pylu"),
+    normalizeCrossLineageComparable("matka x pyl"),
+    normalizeCrossLineageComparable("bez matky x bez pylu"),
   ]);
   const hasSeedlingLine = lines.some((line) => parseCrossLineageNoteLine(line)?.kind === "seedling");
   const filtered = [];
@@ -11230,7 +11238,7 @@ function dedupeGeneratedCrossLineageNote(note = "") {
 }
 
 function noteAlreadyContainsCrossLineage(note = "", motherName = "", pollenName = "") {
-  const expectedBody = normalizeCrossLineageComparable(`${motherName || "matka"} × ${pollenName || "pyl"}`);
+  const expectedBody = normalizeCrossLineageComparable(`${motherName || "matka"} x ${pollenName || "pyl"}`);
   if (!expectedBody) return false;
   return clean(note)
     .split(/\n+/)
@@ -15526,9 +15534,26 @@ function saveOfferFromForm() {
   toast(nextType === "rests" ? "Resty uloženy." : "Nabídka uložena.");
 }
 
+function customerNonPaymentOrders(customerId = "") {
+  return (state.data.orders || []).filter((order) => clean(order.customerId) === clean(customerId) && parsePaymentStatus(order.paymentStatus) === "nezaplaceno");
+}
+
+function customerNonPaymentMeta(customerId = "") {
+  const orders = customerNonPaymentOrders(customerId)
+    .slice()
+    .sort((a, b) => String(b.updatedAt || b.orderDate || "").localeCompare(String(a.updatedAt || a.orderDate || "")));
+  const latest = orders[0] || null;
+  return {
+    count: orders.length,
+    latest,
+    note: clean(latest?.note),
+  };
+}
+
 function customerAlerts(customer, orders) {
   const alerts = [];
-  const unpaid = orders.filter((order) => order.paymentStatus === "čeká" || order.paymentStatus === "nezaplaceno").length;
+  const waiting = orders.filter((order) => parsePaymentStatus(order.paymentStatus) === "čeká").length;
+  const overdue = orders.filter((order) => parsePaymentStatus(order.paymentStatus) === "nezaplaceno").length;
   const ready = orders.filter((order) => order.shippingStatus === "připraveno").length;
   const rests = restOffersForCustomer(customer?.id);
   const stornos = orders.filter((order) => orderHasStorno(order)).length;
@@ -15537,7 +15562,8 @@ function customerAlerts(customer, orders) {
   if (!customerHasAddress(customer)) alerts.push({ label: "Chybí adresa", type: "warning" });
   if (hasWarningTag(customer)) alerts.push({ label: "Pozor zákazník", type: "danger" });
   if (customer.customerRating) alerts.push({ label: customerRatingLabel(customer), type: customer.customerRating.includes("neposílat") ? "danger" : "warning" });
-  if (unpaid) alerts.push({ label: `${unpaid} čeká na platbu`, type: "warning" });
+  if (overdue) alerts.push({ label: overdue === 1 ? "Neplatí" : `Neplatí (${overdue})`, type: "danger" });
+  if (waiting) alerts.push({ label: `${waiting} čeká na platbu`, type: "warning" });
   if (ready) alerts.push({ label: `${ready} připraveno`, type: "info" });
   if (rests.length) alerts.push({ label: rests.length === 1 ? "Má resty" : `Má resty (${rests.length})`, type: "danger" });
   if (stornos) alerts.push({ label: stornos === 1 ? "Stornuje" : `Stornuje (${stornos})`, type: "danger" });
