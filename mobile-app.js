@@ -95,13 +95,17 @@ function init() {
     render();
   });
   window.addEventListener("focus", () => maybeAutoPull({ force: true }));
+  window.addEventListener("pageshow", () => maybeAutoPull({ force: true }));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") maybeAutoPull({ force: true });
+  });
   window.addEventListener("scroll", syncScrollTopButton, { passive: true });
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
   els.installAppBtn?.addEventListener("click", installPwaApp);
   els.scrollTopBtn?.addEventListener("click", scrollToTop);
   window.setInterval(() => maybeAutoPull(), AUTO_PULL_INTERVAL_MS);
-  if (!isSyncLoggedIn()) state.view = "sync";
+  if (!isSyncLoggedIn() || needsSyncRecovery()) state.view = "sync";
   render();
   if (hasPendingSync()) {
     state.syncDirty = true;
@@ -172,10 +176,10 @@ function handleGlobalClick(event) {
 }
 
 function openView(view) {
-  if (!isSyncLoggedIn() && view !== "sync") {
+  if ((!isSyncLoggedIn() || needsSyncRecovery()) && view !== "sync") {
     state.view = "sync";
     render();
-    toast("NejdĹ™Ă­v se pĹ™ihlas.");
+    toast(isSyncLoggedIn() ? "Nejdřív stáhni data z cloudu." : "Nejdřív se přihlas.");
     return;
   }
   state.view = view;
@@ -222,8 +226,10 @@ async function installPwaApp() {
 }
 
 function render() {
-  if (!isSyncLoggedIn()) state.view = "sync";
-  document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+  const loggedIn = isSyncLoggedIn();
+  const recoveryMode = needsSyncRecovery();
+  if (!loggedIn || recoveryMode) state.view = "sync";
+  document.body.classList.toggle("private-locked", !loggedIn || recoveryMode);
   document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
   renderFilters();
   renderSummary();
@@ -8700,11 +8706,13 @@ async function pullSync(options = {}) {
       updateSyncIndicator();
       return true;
     }
-    if (hasLocalData()) rememberSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
+    const hadLocalData = hasLocalData();
+    if (hadLocalData) rememberSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
     state.data = normalizeLoadedData(await decryptPayload(rows[0].encrypted_data, state.syncPassword));
     syncFinishedCrossVarieties();
     state.syncVerifiedPassword = state.syncPassword;
     saveData({ skipAutoSync: true });
+    if (!hadLocalData && state.view === "sync" && hasLocalData()) state.view = "offers";
     const pulledSummary = summarizeSyncData(state.data);
     saveSyncConfig({ lastPulledAt: cloudUpdatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: cloudUpdatedAt, lastKnownCloudSummary: pulledSummary });
     rememberSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-pull", state.data, cloudUpdatedAt);
@@ -8723,6 +8731,10 @@ async function pullSync(options = {}) {
 
 function hasLocalData() {
   return Boolean((state.data.customers || []).length || (state.data.orders || []).length || (state.data.varieties || []).length || (state.data.offers || []).length || (state.data.crosses || []).length);
+}
+
+function needsSyncRecovery() {
+  return isSyncLoggedIn() && !hasLocalData();
 }
 
 async function verifySyncPassword(password, session = null) {
@@ -11583,22 +11595,37 @@ function openOfferDetailSheet(id, options = {}) {
     const config = loadSyncConfig();
     const session = loadSyncSession();
     const loggedIn = Boolean(session.accessToken || session.refreshToken);
+    const recoveryMode = needsSyncRecovery();
     const settings = appSettings();
-    const loginFields = loggedIn
+    const accountFields = loggedIn
       ? ""
       : `<label class="field"><span>Email</span><input id="syncEmail" type="email" value="${escapeHtml(config.email)}" autocomplete="email"></label>
-    <label class="field"><span>Heslo k účtu</span><input id="syncLoginPassword" type="password" autocomplete="current-password"></label>
-    <label class="field"><span>Šifrovací heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmí se ztratit"></label>`;
+    <label class="field"><span>Heslo k účtu</span><input id="syncLoginPassword" type="password" autocomplete="current-password"></label>`;
+    const encryptionField = `<label class="field"><span>Šifrovací heslo</span><input id="syncPassword" type="password" value="${escapeHtml(state.syncPassword)}" placeholder="nesmí se ztratit" autocomplete="current-password"></label>`;
+    const leadText = !loggedIn
+      ? "Po přihlášení se ukáže obsah appky. Sync běží úsporně."
+      : recoveryMode
+        ? "Jsi přihlášená, ale v mobilu teď nejsou data. Zadej šifrovací heslo a stáhni cloud."
+        : "Přihlášeno. Sync běží automaticky na pozadí.";
+    const footerText = !loggedIn
+      ? "Obsah se zobrazí až po přihlášení."
+      : recoveryMode
+        ? "Jakmile se cloud stáhne, appka se sama otevře."
+        : "Obsah je odemčený.";
+    const actionButtons = loggedIn
+      ? `<button class="button primary" type="button" id="syncPull">${recoveryMode ? "Stáhnout data" : "Stáhnout z cloudu"}</button><button class="button" type="button" id="syncLogout">Odhlásit</button>`
+      : `<button class="button primary" type="button" id="syncLogin">Přihlásit</button>`;
     return `<section class="sync-card">
     <strong class="title">Soukromá appka</strong>
-    <p class="sub">${loggedIn ? "Přihlášeno. Sync běží automaticky na pozadí." : "Po přihlášení se ukáže obsah appky. Sync běží úsporně."}</p>
+    <p class="sub">${leadText}</p>
     <input id="syncUrl" type="hidden" value="${escapeHtml(config.url)}">
     <input id="syncAnon" type="hidden" value="${escapeHtml(config.anonKey)}">
-    ${loginFields}
+    ${accountFields}
+    ${encryptionField}
     <div class="two">
-      ${loggedIn ? `<button class="button" type="button" id="syncLogout">Odhlásit</button>` : `<button class="button primary" type="button" id="syncLogin">Přihlásit</button>`}
+      ${actionButtons}
     </div>
-    <small class="sub">${loggedIn ? "Obsah je odemčený." : "Obsah se zobrazí až po přihlášení."}</small>
+    <small class="sub">${footerText}</small>
   </section>
   <section class="sync-card">
     <strong class="title">Poplatky</strong>
@@ -11856,6 +11883,50 @@ function openOfferDetailSheet(id, options = {}) {
     });
   }
 
+  function ak91HandleSyncActionBridge(event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target || !els.list?.contains(target)) return false;
+
+    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #saveAppSettings");
+    if (action) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      event.stopPropagation();
+      if (action.id === "syncLogin") loginSync();
+      else if (action.id === "syncLogout") logoutSync();
+      else if (action.id === "syncPull") pullSync();
+      else if (action.id === "syncPush") pushSync();
+      else if (action.id === "saveAppSettings") saveAppSettingsFromInputs();
+      return true;
+    }
+
+    if (state.view !== "sync") return false;
+
+    const focusField = target.closest(".sync-card input, .sync-card select, .sync-card textarea")
+      || target.closest(".sync-card label.field")?.querySelector("input, select, textarea");
+    if (!(focusField instanceof HTMLElement)) return false;
+
+    focusField.focus?.({ preventScroll: true });
+    if (focusField instanceof HTMLInputElement || focusField instanceof HTMLTextAreaElement) {
+      try {
+        const end = focusField.value.length;
+        focusField.setSelectionRange?.(end, end);
+      } catch {
+        // ignore selection support differences
+      }
+    }
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+    return true;
+  }
+
+  if (!globalThis.__akSyncBridge91) {
+    globalThis.__akSyncBridge91 = true;
+    document.addEventListener("click", (event) => {
+      ak91HandleSyncActionBridge(event);
+    }, true);
+  }
+
   if (!globalThis.__akTrashButtonsBridge91) {
     globalThis.__akTrashButtonsBridge91 = true;
     document.addEventListener("click", (event) => {
@@ -11903,8 +11974,10 @@ function openOfferDetailSheet(id, options = {}) {
   };
 
   render = function renderAK91() {
-    if (!isSyncLoggedIn()) state.view = "sync";
-    document.body.classList.toggle("private-locked", !isSyncLoggedIn());
+    const loggedIn = isSyncLoggedIn();
+    const recoveryMode = needsSyncRecovery();
+    if (!loggedIn || recoveryMode) state.view = "sync";
+    document.body.classList.toggle("private-locked", !loggedIn || recoveryMode);
     document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
 
     try {
@@ -11965,10 +12038,10 @@ function openOfferDetailSheet(id, options = {}) {
 
   openView = function openViewAK91(view) {
     const nextView = ["offers", "orders", "customers", "varieties", "crosses", "sync"].includes(view) ? view : "offers";
-    if (!isSyncLoggedIn() && nextView !== "sync") {
+    if ((!isSyncLoggedIn() || needsSyncRecovery()) && nextView !== "sync") {
       state.view = "sync";
       render();
-      toast("Nejdřív se přihlas.");
+      toast(isSyncLoggedIn() ? "Nejdřív stáhni data z cloudu." : "Nejdřív se přihlas.");
       return;
     }
     state.view = nextView;

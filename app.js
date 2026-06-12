@@ -739,6 +739,10 @@ function init() {
   window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
   window.addEventListener("appinstalled", handleAppInstalled);
   window.addEventListener("focus", () => maybeAutoPullSupabaseSync({ force: true }));
+  window.addEventListener("pageshow", () => maybeAutoPullSupabaseSync({ force: true }));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") maybeAutoPullSupabaseSync({ force: true });
+  });
   window.setInterval(() => maybeAutoPullSupabaseSync(), SUPABASE_SYNC_PULL_INTERVAL_MS);
   document.addEventListener("keydown", handleGlobalHotkeys);
   els.varietyUsageFilter.addEventListener("change", (event) => {
@@ -753,7 +757,7 @@ function init() {
 
   clearLegacyOrderDrafts();
   loadSupabaseSyncConfigIntoPanel();
-  if (!isSupabaseSyncLoggedIn()) setView("settings");
+  if (!isSupabaseSyncLoggedIn() || needsSupabaseSyncRecovery()) setView("settings");
   renderAll();
   restorePhotoFolder();
   if (hasPendingSupabaseSync()) {
@@ -1468,10 +1472,10 @@ function setView(view) {
 }
 
 function openMainView(view) {
-  if (!isSupabaseSyncLoggedIn() && view !== "settings") {
+  if ((!isSupabaseSyncLoggedIn() || needsSupabaseSyncRecovery()) && view !== "settings") {
     setView("settings");
     updatePrivateAppMode();
-    toast("Nejdřív se přihlas.");
+    toast(isSupabaseSyncLoggedIn() ? "Nejdřív stáhni data z cloudu." : "Nejdřív se přihlas.");
     return;
   }
   if (view === "customers") {
@@ -9576,11 +9580,13 @@ async function pullSupabaseSync(options = {}) {
       return true;
     }
     const decrypted = await decryptSyncPayload(encrypted, encryptionPassword);
-    if (hasLocalSyncData()) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
+    const hadLocalData = hasLocalSyncData();
+    if (hadLocalData) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
     state.syncEncryptionVerifiedPassword = encryptionPassword;
     state.data = normalizeLoadedData(decrypted);
     syncFinishedCrossVarieties();
     saveData({ skipAutoSync: true });
+    if (!hadLocalData && state.view === "settings" && hasLocalSyncData()) setView("offers");
     const pulledSummary = summarizeSupabaseSyncData(state.data);
     rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-pull", state.data, cloudUpdatedAt);
     renderAll();
@@ -9608,6 +9614,10 @@ function hasLocalSyncData() {
       (state.data?.offers || []).length ||
       (state.data?.crosses || []).length,
   );
+}
+
+function needsSupabaseSyncRecovery() {
+  return isSupabaseSyncLoggedIn() && !hasLocalSyncData();
 }
 
 async function verifySupabaseEncryptionPassword(password, session = null) {

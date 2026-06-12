@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260611-127" />
+    <link rel="stylesheet" href="styles.css?v=20260612-128" />
   </head>
   <body>
     <div class="app-shell">
@@ -1085,14 +1085,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <link rel="stylesheet" href="styles.css?v=20260611-127" />
-    <script src="vendor/lzma1-browser-setup.js?v=20260611-127" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260611-127" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260611-127" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260611-127" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260611-127" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260611-127" charset="utf-8"></script>
-    <script src="app.js?v=20260611-127" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260612-128" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260612-128" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260612-128" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260612-128" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260612-128" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260612-128" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260612-128" charset="utf-8"></script>
+    <script src="app.js?v=20260612-128" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;
@@ -1101,7 +1101,7 @@
           refreshedByNewWorker = true;
           window.location.reload();
         });
-        navigator.serviceWorker.register("./service-worker.js").then((registration) => {
+        navigator.serviceWorker.register("./service-worker.js", { updateViaCache: "none" }).then((registration) => {
           registration.update?.();
         }).catch(() => {});
       }
