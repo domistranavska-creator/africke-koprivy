@@ -205,6 +205,7 @@ const state = {
   supabasePullRunning: false,
   lastSupabaseAutoPullAt: 0,
   supabaseSyncMuted: false,
+  supabaseSyncProblem: "",
   syncEncryptionPassword: clean(localStorage.getItem(SUPABASE_SYNC_PASSWORD_KEY)),
   syncEncryptionVerifiedPassword: "",
   installPromptEvent: null,
@@ -7120,6 +7121,11 @@ async function saveVarietyFromForm() {
   const previousImages = varietyImages(existing);
   const now = new Date().toISOString();
   const name = clean(form.get("name"));
+  const conflict = findVarietyNameConflict(name, id);
+  if (conflict) {
+    toast(`Odruda "${conflict.name}" uz existuje. Zkontroluj nazev.`);
+    return;
+  }
   const uploadedImages = await saveVarietyPhotoFiles(name, els.varietyForm.elements.photoFiles.files);
   const existingImages = existing ? varietyImages(existing) : [];
   const removedPhotos = new Set(normalizeGallery(form.get("removedPhotos")));
@@ -7774,6 +7780,10 @@ async function saveOfferItemFromForm() {
   const id = form.get("itemId") || uid();
   const existing = offer.items.find((item) => item.id === id);
   const varietyName = clean(form.get("varietyName"));
+  const conflict = findOfferItemNameConflict(offer, varietyName, id);
+  if (conflict) {
+    toast(`Pozor: polozka "${offerItemName(conflict)}" uz v teto nabidce je. Pokud jde o jinou velikost nebo cenu, muzes ji ulozit.`);
+  }
   const uploaded = await saveIndexedPhotoFiles(els.offerItemForm.elements.photoFile.files);
   const shouldCreateVariety = Boolean(form.get("createVariety"));
   const exactVariety = findExactVarietyByName(varietyName);
@@ -9137,6 +9147,7 @@ function updateSupabaseSyncStatus(message = "") {
     return;
   }
   if (message) {
+    state.supabaseSyncProblem = supabaseSyncStatusIsProblem(message) ? message : "";
     els.syncStatus.textContent = message;
     updateSupabaseSyncFloat(message);
     return;
@@ -9144,15 +9155,18 @@ function updateSupabaseSyncStatus(message = "") {
   const config = loadSupabaseSyncConfig();
   const session = loadSupabaseSyncSession();
   if (!config.url || !config.anonKey) {
+    state.supabaseSyncProblem = "";
     els.syncStatus.textContent = "Doplň Supabase URL a anon key.";
     return;
   }
   if (!session.accessToken) {
+    state.supabaseSyncProblem = "";
     els.syncStatus.textContent = "Nastavení uložené, ještě se přihlas.";
     return;
   }
   if (hasPendingSupabaseSync()) {
     els.syncStatus.textContent = "Čeká na odeslání lokální změny.";
+    els.syncStatus.textContent = clean(state.supabaseSyncProblem) || els.syncStatus.textContent;
     updateSupabaseSyncFloat(els.syncStatus.textContent);
     updateSupabaseSyncPanelMode();
     return;
@@ -9164,6 +9178,11 @@ function updateSupabaseSyncStatus(message = "") {
   updateSupabaseSyncPanelMode();
 }
 
+function supabaseSyncStatusIsProblem(message = "") {
+  const normalized = normalize(message);
+  return /selhalo|nepoda|chybi|chyba|zastavila|vic dat|min dat|nesedi|neover|neprepsala/.test(normalized);
+}
+
 function updateSupabaseSyncFloat(text = "") {
   if (!els.syncFloat) return;
   const config = loadSupabaseSyncConfig();
@@ -9171,10 +9190,11 @@ function updateSupabaseSyncFloat(text = "") {
   const visible = Boolean(session.accessToken || config.autoSync || text);
   els.syncFloat.hidden = !visible;
   if (!visible) return;
-  const normalizedSource = normalize(text);
+  const sourceText = clean(state.supabaseSyncProblem) && hasPendingSupabaseSync() ? state.supabaseSyncProblem : text;
+  const normalizedSource = normalize(sourceText);
   const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
   let shortText = last ? `Syncnuto ${formatTime(last)}` : `Syncnuto ${formatTime(new Date())}`;
-  if (/selhalo|nepoda|chybi|chyba/.test(normalizedSource)) shortText = "Sync chyba";
+  if (supabaseSyncStatusIsProblem(sourceText)) shortText = "Sync chyba";
   else if (/odesil|nahrav|stah|kontrol|sifruj|desifruj|prihlasuj|vytvarim/.test(normalizedSource)) shortText = "Syncuji...";
   else if (hasPendingSupabaseSync()) shortText = "Čeká na sync";
   else if (!session.accessToken) shortText = "Sync vypnutý";
@@ -9291,7 +9311,51 @@ function currentSupabaseSyncDirtyAt() {
   }
 }
 
+function lastSupabaseCloudSnapshotMatchesLocalData() {
+  try {
+    const raw = clean(localStorage.getItem(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY));
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || fallbackData())));
+    const current = normalizeLoadedData(JSON.parse(JSON.stringify(state.data || fallbackData())));
+    return JSON.stringify(snapshot) === JSON.stringify(current);
+  } catch {
+    return false;
+  }
+}
+
+function tryClearSupabaseStaleDirtyFlag() {
+  const dirtyAt = currentSupabaseSyncDirtyAt();
+  if (!dirtyAt) return false;
+  if (lastSupabaseCloudSnapshotMatchesLocalData()) {
+    state.supabaseSyncDirty = false;
+    try {
+      localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+    } catch {
+      // ignore localStorage availability issues
+    }
+    return true;
+  }
+  const lastSyncedAt = latestSyncTimestamp(
+    loadSupabaseSyncConfig().lastSyncedAt,
+    loadSupabaseSyncConfig().lastPushedAt,
+    loadSupabaseSyncConfig().lastPulledAt,
+  );
+  if (!lastSyncedAt) return false;
+  const dirtyMs = new Date(dirtyAt).getTime();
+  const syncedMs = new Date(lastSyncedAt).getTime();
+  if (!Number.isFinite(dirtyMs) || !Number.isFinite(syncedMs) || syncedMs < dirtyMs) return false;
+  state.supabaseSyncDirty = false;
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+  } catch {
+    // ignore localStorage availability issues
+  }
+  return true;
+}
+
 function hasPendingSupabaseSync() {
+  tryClearSupabaseStaleDirtyFlag();
   return Boolean(state.supabaseSyncDirty || currentSupabaseSyncDirtyAt());
 }
 
@@ -9353,7 +9417,7 @@ function canAutoSupabaseSync() {
 function scheduleAutoSupabaseSync(reason = "") {
   const config = loadSupabaseSyncConfig();
   if (!config.autoSync || state.supabaseSyncMuted) return;
-  markSupabaseSyncDirty();
+  if (reason === "save") markSupabaseSyncDirty();
   window.clearTimeout(state.supabaseSyncTimer);
   if (!canAutoSupabaseSync()) {
     if (reason === "save") updateSupabaseSyncStatus("Změna je uložená lokálně. Pro automatický sync se přihlas a zadej šifrovací heslo.");
@@ -11249,6 +11313,20 @@ function varietyNameMatchKey(name) {
 function findExactVarietyByName(name) {
   const key = varietyNameMatchKey(name);
   return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
+}
+
+function findVarietyNameConflict(name, currentId = "") {
+  const key = varietyNameMatchKey(name);
+  const current = clean(currentId);
+  if (!key) return null;
+  return state.data.varieties.find((variety) => clean(variety.id) !== current && varietyNameMatchKey(variety.name) === key) || null;
+}
+
+function findOfferItemNameConflict(offer, name, currentItemId = "") {
+  const key = varietyNameMatchKey(name);
+  const current = clean(currentItemId);
+  if (!offer || !key) return null;
+  return (offer.items || []).find((item) => clean(item.id) !== current && varietyNameMatchKey(item.varietyName || item.name) === key) || null;
 }
 
 function findVarietyByName(name) {

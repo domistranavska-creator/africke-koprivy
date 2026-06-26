@@ -56,6 +56,7 @@ const state = {
   syncRunning: false,
   syncRevision: 0,
   syncVerifiedPassword: "",
+  syncProblem: "",
   lastAutoPullAt: 0,
   installPromptEvent: null,
   data: loadData(),
@@ -837,6 +838,12 @@ function openVarietySheet(id = "") {
   </form>`, async () => {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
+    const name = clean(data.get("name"));
+    const conflict = findVarietyNameConflict(name, variety.id || "");
+    if (conflict) {
+      toast(`Odruda "${conflict.name}" uz existuje. Zkontroluj nazev.`);
+      return;
+    }
     const files = selectedPhotoFiles(form);
     const uploaded = await saveIndexedPhotos(files);
     const existing = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
@@ -846,7 +853,7 @@ function openVarietySheet(id = "") {
     const item = {
       ...variety,
       id: variety.id || uid(),
-      name: clean(data.get("name")),
+      name,
       salePrice: normalizeAmount(data.get("salePrice")),
       saleCurrency: "CZK",
       photoUrl: [...existing, ...uploaded][0] || "",
@@ -5207,6 +5214,10 @@ function openOfferItemSheet(offerId, itemId = "") {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
     const varietyName = clean(data.get("varietyName"));
+    const conflict = findOfferItemNameConflict(offer, varietyName, item?.id || "");
+    if (conflict) {
+      toast(`Pozor: polozka "${offerItemName(conflict)}" uz v teto nabidce je. Pokud jde o jinou velikost nebo cenu, muzes ji ulozit.`);
+    }
     const exactVariety = findVarietyByName(varietyName);
     const variety = exactVariety || findById("varieties", data.get("varietyId"));
     const files = selectedPhotoFiles(form);
@@ -7339,6 +7350,20 @@ function findVarietyByName(name) {
   return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
 }
 
+function findVarietyNameConflict(name, currentId = "") {
+  const key = varietyNameMatchKey(name);
+  const current = clean(currentId);
+  if (!key) return null;
+  return state.data.varieties.find((variety) => clean(variety.id) !== current && varietyNameMatchKey(variety.name) === key) || null;
+}
+
+function findOfferItemNameConflict(offer, name, currentItemId = "") {
+  const key = varietyNameMatchKey(name);
+  const current = clean(currentItemId);
+  if (!offer || !key) return null;
+  return (offer.items || []).find((item) => clean(item.id) !== current && varietyNameMatchKey(item.varietyName || item.name) === key) || null;
+}
+
 function varietyNameMatchKey(name) {
   return normalize(name).replace(/[^a-z0-9]+/g, "");
 }
@@ -8646,6 +8671,7 @@ async function pushSync(options = {}) {
       { allowConfirm: !options.auto && !options.silent },
     );
     if (blockMessage) {
+      state.syncProblem = blockMessage;
       updateSyncIndicator("error");
       if (!options.silent) toast(blockMessage);
       return false;
@@ -8661,11 +8687,13 @@ async function pushSync(options = {}) {
     saveSyncConfig({ lastPushedAt: updatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: updatedAt, lastKnownCloudSummary: pushedSummary });
     rememberSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-push", data, updatedAt);
     clearSyncDirtyIfUnchanged(startedDirtyAt, startedRevision);
+    state.syncProblem = "";
     updateSyncIndicator();
     if (!options.silent) toast("OdeslĂˇno do cloudu.");
     return true;
   } catch (error) {
     console.error(error);
+    state.syncProblem = friendlySyncError(error);
     updateSyncIndicator("error");
     if (!options.silent) toast(`OdeslĂˇnĂ­ selhalo: ${friendlySyncError(error)}`);
     return false;
@@ -8771,12 +8799,13 @@ function updateSyncIndicator(status = "") {
   const session = loadSyncSession();
   const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
   const lastLabel = formatSyncIndicatorTime(last);
+  const hasProblem = Boolean(clean(state.syncProblem) && hasPendingSync());
   let text = session.accessToken && config.autoSync ? (lastLabel ? `Syncnuto ${lastLabel}` : "Sync připravený") : "Sync vypnutý";
   let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
   if (status === "working") {
     text = "Syncuji...";
     stateClass = "working";
-  } else if (status === "error") {
+  } else if (status === "error" || hasProblem) {
     text = "Sync chyba";
     stateClass = "error";
   } else if (hasPendingSync()) {
@@ -8903,7 +8932,49 @@ function currentSyncDirtyAt() {
   }
 }
 
+function lastCloudSnapshotMatchesLocalData() {
+  try {
+    const raw = clean(localStorage.getItem(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY));
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    const emptyData = { customers: [], orders: [], varieties: [], crosses: [], offers: [], exchangeRates: [], settings: {} };
+    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || emptyData)));
+    const current = normalizeLoadedData(JSON.parse(JSON.stringify(state.data || emptyData)));
+    return JSON.stringify(snapshot) === JSON.stringify(current);
+  } catch {
+    return false;
+  }
+}
+
+function tryClearStaleSyncDirtyFlag() {
+  const dirtyAt = currentSyncDirtyAt();
+  if (!dirtyAt) return false;
+  if (lastCloudSnapshotMatchesLocalData()) {
+    state.syncDirty = false;
+    try {
+      localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+    } catch {
+      // ignore localStorage availability issues
+    }
+    return true;
+  }
+  const config = loadSyncConfig();
+  const lastSyncedAt = latestSyncTimestamp(config.lastSyncedAt, config.lastPushedAt, config.lastPulledAt);
+  if (!lastSyncedAt) return false;
+  const dirtyMs = new Date(dirtyAt).getTime();
+  const syncedMs = new Date(lastSyncedAt).getTime();
+  if (!Number.isFinite(dirtyMs) || !Number.isFinite(syncedMs) || syncedMs < dirtyMs) return false;
+  state.syncDirty = false;
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_DIRTY_KEY);
+  } catch {
+    // ignore localStorage availability issues
+  }
+  return true;
+}
+
 function hasPendingSync() {
+  tryClearStaleSyncDirtyFlag();
   return Boolean(state.syncDirty || currentSyncDirtyAt());
 }
 
@@ -8933,7 +9004,6 @@ function clearSyncDirtyIfUnchanged(startedDirtyAt = "", startedRevision = state.
 
 function scheduleAutoSync() {
   if (!loadSyncConfig().autoSync) return;
-  markSyncDirty();
   clearTimeout(state.syncTimer);
   state.syncTimer = setTimeout(() => {
     state.syncTimer = null;
@@ -8970,6 +9040,13 @@ async function buildSyncData(userId) {
     cross.seedlingPhotoUrl = refs[0] || "";
     cross.seedlingGallery = refs.slice(1);
   }
+  for (const offer of data.offers || []) {
+    for (const item of offer.items || []) {
+      const originalPhoto = clean(item.photoUrl);
+      item.photoUrl = (await uploadPhotoList(userId, offerItemName(item) || "nabidka", originalPhoto ? [originalPhoto] : []))[0] || "";
+      ensureUploadedPhotoRefs(originalPhoto ? [originalPhoto] : [], item.photoUrl ? [item.photoUrl] : [], offerItemName(item) || "nabidka");
+    }
+  }
   return data;
 }
 
@@ -9001,6 +9078,9 @@ function collectPhotoPaths(data) {
   for (const cross of data?.crosses || []) {
     add(cross.seedlingPhotoUrl);
     for (const image of cross.seedlingGallery || []) add(image);
+  }
+  for (const offer of data?.offers || []) {
+    for (const item of offer.items || []) add(item.photoUrl);
   }
   return paths;
 }
@@ -11661,12 +11741,13 @@ function openOfferDetailSheet(id, options = {}) {
     const session = loadSyncSession();
     const last = latestSyncTimestamp(config.lastSyncedAt, config.lastPulledAt, config.lastPushedAt);
     const lastLabel = formatSyncIndicatorTime(last);
+    const hasProblem = Boolean(clean(state.syncProblem) && hasPendingSync());
     let text = session.accessToken && config.autoSync ? (lastLabel ? `Syncnuto ${lastLabel}` : "Sync připravený") : "Sync vypnutý";
     let stateClass = session.accessToken && config.autoSync ? "ok" : "off";
     if (status === "working") {
       text = "Syncuji...";
       stateClass = "working";
-    } else if (status === "error") {
+    } else if (status === "error" || hasProblem) {
       text = "Sync chyba";
       stateClass = "error";
     } else if (hasPendingSync()) {
