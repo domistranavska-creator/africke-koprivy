@@ -5242,6 +5242,7 @@ function openOfferItemSheet(offerId, itemId = "") {
     else offer.items.push(nextItem);
     sortOfferItemsInPlace(offer);
     offer.updatedAt = now;
+    saveData();
     setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
   });
   bindOfferItemVarietyPicker(offer, item);
@@ -5395,6 +5396,7 @@ function openReservationSheet(offerId, itemId, reservationId = "", preferredStat
     if (existing) Object.assign(existing, nextReservation);
     else item.reservations.push(nextReservation);
     offer.updatedAt = now;
+    saveData();
     setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
   });
   bindToggles();
