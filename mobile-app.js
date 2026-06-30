@@ -379,7 +379,12 @@ function renderCustomers() {
 }
 
 function renderVarieties() {
-  const varieties = state.data.varieties.filter(matchVariety).sort((a, b) => naturalCompare(a.name, b.name));
+  const varieties = state.data.varieties
+    .filter(matchVariety)
+    .sort((a, b) => {
+      if (state.filter === "newest") return String(b.createdAt || b.updatedAt || "").localeCompare(String(a.createdAt || a.updatedAt || "")) || naturalCompare(a.name, b.name);
+      return naturalCompare(a.name, b.name);
+    });
   if (!varieties.length) return empty("Ĺ˝ĂˇdnĂ© odrĹŻdy.");
   return varieties.map((variety) => card({
     id: variety.id,
@@ -8320,6 +8325,7 @@ function matchVariety(variety) {
   if (state.filter === "not-wintering" && winterStatus !== "not-wintering") return false;
   if (state.filter === "wintering-empty" && winterStatus) return false;
   if (state.filter === "photo" && !varietyImages(variety).length) return false;
+  if (state.filter === "no-photo" && varietyImages(variety).length) return false;
   return matches([variety.name, variety.note, variety.salePrice]);
 }
 
@@ -11561,7 +11567,12 @@ function openOfferDetailSheet(id, options = {}) {
     const varieties = (state.data.varieties || [])
       .filter(matchVariety)
       .slice()
-      .sort((a, b) => naturalCompare(ak93DisplayText(a?.name, ""), ak93DisplayText(b?.name, "")));
+      .sort((a, b) => {
+        if (state.filter === "newest") {
+          return String(b.createdAt || b.updatedAt || "").localeCompare(String(a.createdAt || a.updatedAt || "")) || naturalCompare(ak93DisplayText(a?.name, ""), ak93DisplayText(b?.name, ""));
+        }
+        return naturalCompare(ak93DisplayText(a?.name, ""), ak93DisplayText(b?.name, ""));
+      });
     if (!varieties.length) return empty("Žádné odrůdy.");
     return varieties.map((variety) => ak93VarietyCatalogCard(variety)).join("");
   }
@@ -11894,7 +11905,7 @@ function openOfferDetailSheet(id, options = {}) {
       offers: [],
       orders: [["all", "Vše"], ["todo", "K řešení"], ["done", "Hotovo"]],
       customers: [["all", "Vše"], ["cz", "Česko"], ["foreign", "Zahraničí"]],
-      varieties: [["all", "Vše"], ["wintering", "❄ Zimuje"], ["not-wintering", "❄ Nezimuje"], ["wintering-empty", "Bez stavu"], ["photo", "S fotkou"]],
+      varieties: [["all", "Vše"], ["newest", "Nejnovější"], ["wintering", "❄ Zimuje"], ["not-wintering", "❄ Nezimuje"], ["wintering-empty", "Bez stavu"], ["photo", "S fotkou"], ["no-photo", "Bez fotky"]],
       crosses: [],
       sync: [],
     }[state.view] || [];
