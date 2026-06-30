@@ -27,7 +27,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="styles.css?v=20260626-131" />
+    <link rel="stylesheet" href="styles.css?v=20260630-136" />
   </head>
   <body>
     <div class="app-shell">
@@ -394,10 +394,31 @@
             <section class="panel trash-panel">
               <div class="panel-heading">
                 <h2>Koš</h2>
+                <button class="text-button" type="button" id="emptyTrashBtn" hidden>Vysypat koš</button>
                 <span class="pill" id="trashSummary">Koš je zatím prázdný.</span>
               </div>
               <p class="panel-note">Smazané věci se schovají sem. Odtud je můžeš vrátit zpět nebo smazat navždy.</p>
               <div class="trash-list" id="trashList"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-heading">
+                <h2>Zimování</h2>
+              </div>
+              <p class="panel-note">Tady nastavíš aktuální zimovací období. Starší období zůstávají uložená a nové začne prázdné.</p>
+              <div class="fee-settings">
+                <label>
+                  <span>Aktuální období</span>
+                  <select id="winteringSeasonSelect"></select>
+                </label>
+                <div class="wide fee-extra-settings">
+                  <div class="fee-extra-settings-head">
+                    <span>Další období</span>
+                    <button class="button ghost" type="button" id="newWinteringSeasonBtn">Nové zimování</button>
+                  </div>
+                  <small id="winteringSettingsHint">Přepnutí období nezasáhne staré záznamy. Jen otevře nové zimování.</small>
+                </div>
+              </div>
             </section>
 
             <section class="panel">
@@ -1085,14 +1106,14 @@
     <datalist id="varietyList"></datalist>
     <datalist id="seasonList"></datalist>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <link rel="stylesheet" href="styles.css?v=20260626-131" />
-    <script src="vendor/lzma1-browser-setup.js?v=20260626-131" charset="utf-8"></script>
-    <script src="vendor/lzma.js?v=20260626-131" charset="utf-8"></script>
-    <script src="vendor/lzma1-browser-expose.js?v=20260626-131" charset="utf-8"></script>
-    <script src="vendor/pay-by-square.js?v=20260626-131" charset="utf-8"></script>
-    <script src="brand-logo-data.js?v=20260626-131" charset="utf-8"></script>
-    <script src="seed-data.js?v=20260626-131" charset="utf-8"></script>
-    <script src="app.js?v=20260626-131" charset="utf-8"></script>
+    <link rel="stylesheet" href="styles.css?v=20260630-136" />
+    <script src="vendor/lzma1-browser-setup.js?v=20260630-136" charset="utf-8"></script>
+    <script src="vendor/lzma.js?v=20260630-136" charset="utf-8"></script>
+    <script src="vendor/lzma1-browser-expose.js?v=20260630-136" charset="utf-8"></script>
+    <script src="vendor/pay-by-square.js?v=20260630-136" charset="utf-8"></script>
+    <script src="brand-logo-data.js?v=20260630-136" charset="utf-8"></script>
+    <script src="seed-data.js?v=20260630-136" charset="utf-8"></script>
+    <script src="app.js?v=20260630-136" charset="utf-8"></script>
     <script>
       if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
         let refreshedByNewWorker = false;

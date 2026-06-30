@@ -601,6 +601,49 @@ textarea {
   color: #8f1f1f;
 }
 
+.pill.payment-paid {
+  border-color: rgba(39, 152, 83, 0.28);
+  background: #d8f8df;
+  color: #176141;
+}
+
+.pill.payment-waiting {
+  border-color: rgba(184, 132, 29, 0.28);
+  background: #fff1bf;
+  color: #7a5200;
+}
+
+.pill.payment-overdue {
+  border-color: rgba(203, 92, 92, 0.3);
+  background: #ffe0e0;
+  color: #8f1f1f;
+}
+
+.pill.shipping-new {
+  border-color: rgba(170, 162, 149, 0.3);
+  background: #f2ece3;
+  color: #6b6258;
+}
+
+.pill.shipping-packed {
+  border-color: rgba(157, 132, 212, 0.26);
+  background: #f1eaff;
+  color: #6b3fa0;
+}
+
+.pill.shipping-shipped,
+.pill.message-sent {
+  border-color: rgba(94, 148, 210, 0.26);
+  background: #e8f3ff;
+  color: #21598b;
+}
+
+.pill.shipping-done {
+  border-color: rgba(196, 140, 224, 0.26);
+  background: #f7ebff;
+  color: #7a3ea8;
+}
+
 .pill.order-alternate-preview-pill {
   border-width: 1px;
   box-shadow: 0 8px 16px rgba(170, 61, 61, 0.08);
@@ -1015,6 +1058,37 @@ textarea {
   border: 1px solid rgba(40, 93, 65, 0.16);
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.52);
+}
+
+.offer-item-variety-helper {
+  display: grid;
+  gap: 8px;
+  margin-top: -2px;
+  padding: 12px 14px;
+  border: 1px solid rgba(40, 93, 65, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.offer-item-variety-helper small {
+  color: #5d6f63;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.offer-item-create-variety {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #234b36;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.offer-item-create-variety input {
+  width: 18px;
+  height: 18px;
+  accent-color: #2d8b57;
 }
 
 .offer-variety-option {
@@ -1827,8 +1901,114 @@ textarea {
   box-shadow: 0 10px 18px rgba(69, 42, 24, 0.08);
 }
 
+.wintering-mobile-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 132px 156px;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(111, 167, 201, 0.24);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at top right, rgba(188, 232, 248, 0.2), transparent 38%),
+    linear-gradient(145deg, rgba(255, 250, 245, 0.98), rgba(244, 250, 252, 0.96));
+}
+
+.wintering-mobile-panel > div {
+  display: grid;
+  gap: 4px;
+}
+
+.wintering-mobile-panel span {
+  color: rgba(45, 76, 93, 0.74);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.wintering-mobile-panel strong {
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
+.wintering-mobile-season-field {
+  margin: 0;
+}
+
+.wintering-mobile-season-field select {
+  width: 100%;
+}
+
+.wintering-mobile-panel .button {
+  min-height: 52px;
+  padding: 0 14px;
+  border-radius: 18px;
+  font-size: 0.95rem;
+  font-weight: 900;
+}
+
 .catalog-mobile-variety.is-inactive {
   opacity: 0.82;
+}
+
+.catalog-mobile-variety.is-wintering {
+  border-color: rgba(111, 167, 201, 0.32);
+}
+
+.catalog-mobile-variety.is-not-wintering {
+  border-color: rgba(185, 150, 107, 0.32);
+}
+
+.catalog-mobile-winter-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  background: rgba(255, 250, 244, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 18px rgba(20, 34, 45, 0.18);
+  font-size: 0.92rem;
+  font-weight: 900;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.catalog-mobile-winter-badge.is-wintering {
+  color: #1f607c;
+  background: linear-gradient(135deg, rgba(239, 251, 255, 0.98), rgba(192, 235, 248, 0.94));
+  box-shadow: 0 0 0 1px rgba(122, 203, 232, 0.18), 0 0 16px rgba(111, 198, 236, 0.32), 0 10px 18px rgba(20, 34, 45, 0.16);
+}
+
+.catalog-mobile-winter-badge.is-not-wintering {
+  color: #bf3148;
+  background: linear-gradient(135deg, rgba(255, 244, 246, 0.98), rgba(247, 211, 219, 0.96));
+}
+
+.catalog-mobile-winter-badge.is-wintering-empty {
+  color: #8f8a83;
+  background: linear-gradient(135deg, rgba(248, 244, 240, 0.96), rgba(226, 220, 213, 0.92));
+  opacity: 0.68;
+}
+
+.catalog-mobile-winter-badge.is-not-wintering::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: #bf3148;
+  transform: rotate(-42deg);
+  box-shadow: 0 0 8px rgba(191, 49, 72, 0.24);
 }
 
 .catalog-mobile-cross.progress {

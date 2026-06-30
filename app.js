@@ -170,6 +170,7 @@ const state = {
   deliveryFilter: "",
   orderVarietyFilter: "",
   seasonFilter: "",
+  winteringSeason: "",
   crossStageFilter: "",
   crossResultFilter: "",
   dashboardProfitYear: "",
@@ -281,6 +282,8 @@ const els = {
   deliveryFilter: document.querySelector("#deliveryFilter"),
   orderVarietyFilter: document.querySelector("#orderVarietyFilter"),
   seasonFilter: document.querySelector("#seasonFilter"),
+  winteringSeasonSelect: document.querySelector("#winteringSeasonSelect"),
+  newWinteringSeasonBtn: document.querySelector("#newWinteringSeasonBtn"),
   crossStageFilter: document.querySelector("#crossStageFilter"),
   crossResultFilter: document.querySelector("#crossResultFilter"),
   orderQuickFilters: document.querySelector("#orderQuickFilters"),
@@ -333,6 +336,7 @@ const els = {
   varietyDialog: document.querySelector("#varietyDialog"),
   varietyForm: document.querySelector("#varietyForm"),
   varietyDialogTitle: document.querySelector("#varietyDialogTitle"),
+  varietyWinteringLegend: document.querySelector("#varietyWinteringLegend"),
   crossDialog: document.querySelector("#crossDialog"),
   crossForm: document.querySelector("#crossForm"),
   crossDialogTitle: document.querySelector("#crossDialogTitle"),
@@ -401,9 +405,7 @@ init();
 
 function init() {
   migrateSupabaseSyncClientConfig();
-  els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", {
-    dateStyle: "full",
-  }).format(new Date());
+  if (els.todayLine) els.todayLine.textContent = desktopTodayLineText();
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
 
   document.querySelectorAll("[data-view]").forEach((button) => {
@@ -749,6 +751,12 @@ function init() {
   els.varietyUsageFilter.addEventListener("change", (event) => {
     state.varietyUsageFilter = event.target.value;
     renderVarieties();
+  });
+  els.winteringSeasonSelect?.addEventListener("change", (event) => {
+    setSelectedWinteringSeason(event.target.value, { persistCurrent: false });
+  });
+  els.newWinteringSeasonBtn?.addEventListener("click", () => {
+    createNextWinteringSeason();
   });
   els.varietySort.addEventListener("change", (event) => {
     state.varietySort = event.target.value;
@@ -1242,6 +1250,7 @@ function normalizeVarietySnapshot(variety = {}) {
     stockAvailable: normalizeWholeNumber(variety.stockAvailable),
     stockReserved: normalizeWholeNumber(variety.stockReserved),
     note: cleanBusinessNote(variety.note),
+    wintering: normalizeWinteringMap(variety.wintering),
     active: variety.active !== false,
     createdAt: variety.createdAt || now,
     updatedAt: variety.updatedAt || now,
@@ -1326,6 +1335,19 @@ function permanentlyDeleteTrashEntry(entryId) {
   toast("Záznam smazán z koše navždy.");
 }
 
+function emptyTrash() {
+  const count = ensureTrashData().length;
+  if (!count) {
+    toast("Koš je už prázdný.");
+    return;
+  }
+  if (!confirm(`Vysypat celý koš? Smaže se navždy ${count} záznamů.`)) return;
+  state.data.trash = [];
+  saveData();
+  renderAll();
+  toast("Koš byl vysypán.");
+}
+
 function trashEntryMarkup(entry = {}) {
   return `<article class="trash-entry">
     <div class="trash-entry-copy">
@@ -1345,9 +1367,14 @@ function trashEntryMarkup(entry = {}) {
 function renderTrashPanel() {
   const summaryEl = document.querySelector("#trashSummary");
   const listEl = document.querySelector("#trashList");
+  const emptyBtn = document.querySelector("#emptyTrashBtn");
   if (!summaryEl || !listEl) return;
   const entries = trashEntriesSorted();
   summaryEl.textContent = trashCountLabel();
+  if (emptyBtn) {
+    emptyBtn.hidden = !entries.length;
+    emptyBtn.onclick = () => emptyTrash();
+  }
   listEl.innerHTML = entries.length
     ? entries.map((entry) => trashEntryMarkup(entry)).join("")
     : `<div class="trash-empty">Koš je zatím prázdný.</div>`;
@@ -1426,6 +1453,7 @@ function renderShared() {
   renderCrossVarietyOptions();
   renderOrderVarietyFilter();
   renderSeasonList();
+  renderWinteringControls();
   renderFeeSettings();
   updatePhotoFolderStatus();
   renderStudioShell();
@@ -1516,6 +1544,7 @@ async function installPwaApp() {
 
 function renderStudioShell() {
   if (!els.studioHeadline || !els.studioMiniStats) return;
+  if (els.todayLine) els.todayLine.textContent = desktopTodayLineText();
   const orders = state.data.orders;
   const customers = state.data.customers;
   const paymentDue = orders.filter((order) => order.paymentStatus === "čeká" || order.paymentStatus === "nezaplaceno").length;
@@ -2237,6 +2266,56 @@ function renderVarietiesScene() {
   wireActionSurface(els.varietiesScene);
 }
 
+function renderVarietiesScene() {
+  if (!els.varietiesScene) return;
+  const varieties = state.data.varieties;
+  const winterSeason = selectedWinteringSeason();
+  const wintering = varieties.filter((variety) => varietyWinteringStatus(variety, winterSeason) === "wintering").length;
+  const notWintering = varieties.filter((variety) => varietyWinteringStatus(variety, winterSeason) === "not-wintering").length;
+  const used = varieties.filter((variety) => varietyUsageCount(variety.name) > 0).length;
+  const topVariety = topVarietyHighlights(1)[0];
+
+  els.varietiesScene.innerHTML = [
+    sceneCardMarkup({
+      eyebrow: "Zimuje",
+      value: wintering,
+      title: "Zimování",
+      meta: `${winterSeason} · ${varieties.length} celkem`,
+      tone: "tone-mint",
+      actionLabel: "Přidat",
+      actionAttrs: 'data-action-new-variety="1"',
+    }),
+    sceneCardMarkup({
+      eyebrow: "Nezimuje",
+      value: notWintering,
+      title: "Odrůdy",
+      meta: "",
+      tone: "tone-sky",
+      actionLabel: "Filtrovat",
+      actionAttrs: 'data-action-variety-filter="not-wintering"',
+    }),
+    sceneCardMarkup({
+      eyebrow: "Použité",
+      value: used,
+      title: "V objednávkách",
+      meta: "",
+      tone: "tone-sage",
+      actionLabel: "Filtrovat",
+      actionAttrs: 'data-action-variety-filter="used"',
+    }),
+    sceneCardMarkup({
+      eyebrow: "Top",
+      value: topVariety ? `${topVariety.count}×` : "—",
+      title: topVariety ? topVariety.name : "Bez favorita",
+      meta: "",
+      tone: "tone-rose",
+      actionLabel: topVariety ? "Detail" : "Katalog",
+      actionAttrs: topVariety ? `data-action-variety-name="${escapeHtml(topVariety.name)}"` : 'data-action-view="varieties"',
+    }),
+  ].join("");
+  wireActionSurface(els.varietiesScene);
+}
+
 function renderCrossesScene() {
   if (!els.crossesScene) return;
   const crosses = state.data.crosses;
@@ -2720,6 +2799,8 @@ function varietyCatalogCardMarkup(variety) {
   const used = varietyUsageCount(variety.name);
   const images = varietyImages(variety);
   const note = cleanBusinessNote(variety?.note || "");
+  const winterSeason = selectedWinteringSeason();
+  const winterStatus = varietyWinteringStatus(variety, winterSeason);
   const mainImage = images[0];
   const visual = mainImage
     ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", 'loading="lazy"')
@@ -2747,6 +2828,50 @@ function varietyCatalogCardMarkup(variety) {
         <span class="variety-catalog-card-chip">${escapeHtml(priceHistoryText(variety))}</span>
         <span class="variety-catalog-card-chip">${escapeHtml(varietyUsageText(used))}</span>
         ${stateChip}
+      </div>
+      <div class="variety-catalog-card-footer">
+        <span class="variety-catalog-card-price">${escapeHtml(varietyPriceText(variety))}</span>
+        <span class="variety-catalog-card-actions">
+          <button class="mini-button" type="button" title="Upravit" data-edit-variety="${safeId}">✎</button>
+          <button class="mini-button" type="button" title="Smazat" data-delete-variety="${safeId}">×</button>
+        </span>
+      </div>
+    </div>
+  </article>`;
+}
+
+function varietyCatalogCardMarkup(variety) {
+  const safeId = escapeHtml(variety.id);
+  const used = varietyUsageCount(variety.name);
+  const images = varietyImages(variety);
+  const note = cleanBusinessNote(variety?.note || "");
+  const winterSeason = selectedWinteringSeason();
+  const winterStatus = varietyWinteringStatus(variety, winterSeason);
+  const mainImage = images[0];
+  const visual = mainImage
+    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", 'loading="lazy"')
+    : `<div class="variety-catalog-card-placeholder">
+        <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
+      </div>`;
+  const winterBadgeTitle = winteringStatusLabel(winterStatus);
+  const winterBadge = `<span class="variety-catalog-card-winter-badge ${winteringStatusClassName(winterStatus)}" title="${escapeHtml(winterBadgeTitle)}" aria-label="${escapeHtml(winterBadgeTitle)}">❄</span>`;
+
+  return `<article class="variety-catalog-card ${winteringStatusClassName(winterStatus)}" data-open-variety="${safeId}" tabindex="0" title="Otevřít odrůdu">
+    <div class="variety-catalog-card-visual">
+      ${winterBadge}
+      ${visual}
+    </div>
+    <div class="variety-catalog-card-copy">
+      <div class="variety-catalog-card-heading">
+        <button class="text-button variety-name-button variety-catalog-card-name" type="button" data-open-variety-detail="${safeId}">
+          ${escapeHtml(variety.name)}
+        </button>
+      </div>
+      ${note ? `<p class="variety-catalog-card-note">${escapeHtml(note)}</p>` : ""}
+      <div class="variety-catalog-card-tags">
+        <span class="variety-catalog-card-chip">${escapeHtml(varietyPhotoCountText(images.length))}</span>
+        <span class="variety-catalog-card-chip">${escapeHtml(priceHistoryText(variety))}</span>
+        <span class="variety-catalog-card-chip">${escapeHtml(varietyUsageText(used))}</span>
       </div>
       <div class="variety-catalog-card-footer">
         <span class="variety-catalog-card-price">${escapeHtml(varietyPriceText(variety))}</span>
@@ -4382,6 +4507,57 @@ function renderSeasonList() {
   els.seasonList.innerHTML = seasons.map((season) => `<option value="${escapeHtml(season)}"></option>`).join("");
 }
 
+function renderWinteringControls() {
+  const seasons = winteringSeasonOptions();
+  const selected = selectedWinteringSeason();
+  const seasonSelect = els.winteringSeasonSelect || document.querySelector("#winteringSeasonSelect");
+  const nextButton = els.newWinteringSeasonBtn || document.querySelector("#newWinteringSeasonBtn");
+  if (seasonSelect) {
+    seasonSelect.innerHTML = seasons
+      .map((season) => `<option value="${escapeHtml(season)}">${escapeHtml(season)}</option>`)
+      .join("");
+    seasonSelect.value = selected;
+  }
+  if (nextButton) {
+    nextButton.textContent = `Nové zimování ${nextWinteringSeason(selected)}`;
+  }
+  if (els.varietyUsageFilter) {
+    const currentFilter = state.varietyUsageFilter;
+    els.varietyUsageFilter.innerHTML = `
+      <option value="">Vše</option>
+      <option value="used">V objednávkách</option>
+      <option value="unused">Bez objednávek</option>
+      <option value="wintering">❄ Zimuje</option>
+      <option value="photo">S fotkou</option>
+      <option value="not-wintering">❄ Nezimuje</option>
+      <option value="wintering-empty">Bez stavu</option>
+    `;
+    els.varietyUsageFilter.value = currentFilter;
+    if (els.varietyUsageFilter.value !== currentFilter) {
+      state.varietyUsageFilter = "";
+      els.varietyUsageFilter.value = "";
+    }
+  }
+
+  const fieldset = els.varietyForm?.querySelector(".variety-active-toggle");
+  if (fieldset && !fieldset.dataset.winteringReady) {
+    fieldset.dataset.winteringReady = "1";
+    fieldset.innerHTML = `
+      <legend id="varietyWinteringLegend">Zimování</legend>
+      <label class="check toggle-choice"><input type="radio" name="winteringStatus" value="" checked> Bez stavu</label>
+      <label class="check toggle-choice"><input type="radio" name="winteringStatus" value="wintering"> Zimuje</label>
+      <label class="check toggle-choice"><input type="radio" name="winteringStatus" value="not-wintering"> Nezimuje</label>
+    `;
+    els.varietyWinteringLegend = fieldset.querySelector("#varietyWinteringLegend");
+  }
+  if (!els.varietyWinteringLegend) {
+    els.varietyWinteringLegend = els.varietyForm?.querySelector("#varietyWinteringLegend") || null;
+  }
+  if (els.varietyWinteringLegend) {
+    els.varietyWinteringLegend.textContent = `Zimování ${selected}`;
+  }
+}
+
 function renderFeeSettings() {
   const settings = feeSettings();
   els.defaultShippingFeeCz.value = settings.shippingFeeCz || "";
@@ -4431,6 +4607,8 @@ function readFeeSettingsDraftFromPanel() {
     paymentSwift: els.paymentSwift?.value,
     extraFees: collectFeeSettingsExtraRows(),
     facebookOfferTemplate: current.facebookOfferTemplate,
+    currentWinteringSeason: current.currentWinteringSeason,
+    winteringSeasons: current.winteringSeasons,
   });
 }
 
@@ -7035,6 +7213,8 @@ function addCustomerNote(id) {
 
 function openVarietyDialog(id = null) {
   const variety = id ? findVariety(id) : null;
+  const winteringSeason = selectedWinteringSeason();
+  const winteringStatus = varietyWinteringStatus(variety, winteringSeason);
   els.varietyDialogTitle.textContent = variety ? "Upravit odrůdu" : "Nová odrůda";
   els.varietyForm.reset();
   els.varietyForm.elements.id.value = variety?.id || "";
@@ -7048,7 +7228,10 @@ function openVarietyDialog(id = null) {
   els.varietyForm.elements.mainPhoto.value = variety?.photoUrl || "";
   els.varietyForm.elements.removedPhotos.value = "";
   els.varietyForm.elements.note.value = variety?.note || "";
-  els.varietyForm.elements.active.checked = variety?.active !== false;
+  if (els.varietyWinteringLegend) els.varietyWinteringLegend.textContent = `Zimování ${winteringSeason}`;
+  els.varietyForm.querySelectorAll('input[name="winteringStatus"]').forEach((input) => {
+    input.checked = input.value === winteringStatus;
+  });
   renderMainPhotoPicker(variety);
   showDialog(els.varietyDialog);
 }
@@ -7136,6 +7319,8 @@ async function saveVarietyFromForm() {
   const gallery = unique(allImages.filter((image) => image !== photoUrl));
   const salePrice = normalizeAmount(form.get("salePrice"));
   const saleCurrency = "CZK";
+  const winteringStatus = winteringStatusKey(form.get("winteringStatus"));
+  const wintering = updateVarietyWintering(existing, selectedWinteringSeason(), winteringStatus);
   const variety = {
     id,
     name,
@@ -7147,7 +7332,8 @@ async function saveVarietyFromForm() {
     stockAvailable: normalizeWholeNumber(form.get("stockAvailable")),
     stockReserved: normalizeWholeNumber(form.get("stockReserved")),
     note: clean(form.get("note")),
-    active: form.has("active"),
+    wintering,
+    active: existing?.active !== false,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
@@ -10326,11 +10512,13 @@ function filteredVarieties() {
   return state.data.varieties
     .filter((variety) => {
       const used = varietyUsageCount(variety.name);
+      const winterStatus = varietyWinteringStatus(variety);
       if (state.varietyUsageFilter === "used" && used === 0) return false;
       if (state.varietyUsageFilter === "unused" && used > 0) return false;
-      if (state.varietyUsageFilter === "active" && variety.active === false) return false;
+      if (state.varietyUsageFilter === "wintering" && winterStatus !== "wintering") return false;
       if (state.varietyUsageFilter === "photo" && !varietyImages(variety).length) return false;
-      if (state.varietyUsageFilter === "inactive" && variety.active !== false) return false;
+      if (state.varietyUsageFilter === "not-wintering" && winterStatus !== "not-wintering") return false;
+      if (state.varietyUsageFilter === "wintering-empty" && winterStatus) return false;
       if (!query) return true;
       return normalize([variety.name, variety.note, variety.salePrice, variety.saleCurrency, varietyPriceText(variety)].join(" ")).includes(query);
     })
@@ -10435,6 +10623,149 @@ function seasonOptions() {
     `Sezóna ${currentYear - 1}`,
     ...state.data.orders.map((order) => clean(order.season)).filter(Boolean),
   ]).sort((a, b) => b.localeCompare(a, "cs"));
+}
+
+function normalizeWinteringSeasonValue(value = "") {
+  const match = clean(value).match(/^(\d{4})\s*\/\s*(\d{4})$/);
+  if (!match) return "";
+  const startYear = Number(match[1]);
+  const endYear = Number(match[2]);
+  if (!Number.isInteger(startYear) || !Number.isInteger(endYear) || endYear !== startYear + 1) return "";
+  return `${startYear}/${endYear}`;
+}
+
+function suggestedWinteringSeason(date = new Date()) {
+  const year = date.getFullYear();
+  return date.getMonth() >= 6 ? `${year}/${year + 1}` : `${year - 1}/${year}`;
+}
+
+function winteringSeasonSortValue(season = "") {
+  const normalized = normalizeWinteringSeasonValue(season);
+  return normalized ? Number(normalized.slice(0, 4)) : -1;
+}
+
+function normalizeWinteringSeasonList(values = []) {
+  return unique((Array.isArray(values) ? values : [values])
+    .map((value) => normalizeWinteringSeasonValue(value))
+    .filter(Boolean))
+    .sort((a, b) => winteringSeasonSortValue(b) - winteringSeasonSortValue(a));
+}
+
+function winteringStatusKey(value = "") {
+  return ["wintering", "not-wintering"].includes(clean(value)) ? clean(value) : "";
+}
+
+function normalizeWinteringMap(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const normalized = {};
+  Object.entries(value).forEach(([season, status]) => {
+    const safeSeason = normalizeWinteringSeasonValue(season);
+    const safeStatus = winteringStatusKey(status);
+    if (safeSeason && safeStatus) normalized[safeSeason] = safeStatus;
+  });
+  return normalized;
+}
+
+function winteringStatusLabel(status = "") {
+  if (status === "wintering") return "Zimuje";
+  if (status === "not-wintering") return "Nezimuje";
+  return "Bez stavu";
+}
+
+function desktopTodayLineText() {
+  const dateText = new Intl.DateTimeFormat("cs-CZ", {
+    dateStyle: "full",
+  }).format(new Date());
+  const season = feeSettings().currentWinteringSeason || selectedWinteringSeason();
+  return season ? `${dateText} · Zimování ${season}` : dateText;
+}
+
+function winteringStatusChipLabel(status = "") {
+  if (status === "wintering") return "❄ Zimuje";
+  if (status === "not-wintering") return "❄ Nezimuje";
+  return "❄ Bez stavu";
+}
+
+function winteringStatusClassName(status = "") {
+  if (status === "wintering") return "is-wintering";
+  if (status === "not-wintering") return "is-not-wintering";
+  return "is-wintering-empty";
+}
+
+function winteringSeasonOptions() {
+  const settings = feeSettings();
+  const seasons = normalizeWinteringSeasonList([
+    suggestedWinteringSeason(),
+    settings.currentWinteringSeason,
+    ...(settings.winteringSeasons || []),
+    ...state.data.varieties.flatMap((variety) => Object.keys(normalizeWinteringMap(variety?.wintering))),
+  ]);
+  if (!settings.currentWinteringSeason && seasons[0]) settings.currentWinteringSeason = seasons[0];
+  if (!settings.winteringSeasons?.length) settings.winteringSeasons = seasons;
+  return seasons;
+}
+
+function selectedWinteringSeason() {
+  const options = winteringSeasonOptions();
+  const preferred = normalizeWinteringSeasonValue(state.winteringSeason || feeSettings().currentWinteringSeason);
+  return options.includes(preferred) ? preferred : (options[0] || suggestedWinteringSeason());
+}
+
+function varietyWinteringStatus(variety, season = selectedWinteringSeason()) {
+  const safeSeason = normalizeWinteringSeasonValue(season);
+  if (!safeSeason) return "";
+  return winteringStatusKey(normalizeWinteringMap(variety?.wintering)[safeSeason]);
+}
+
+function updateVarietyWintering(variety, season, status) {
+  const safeSeason = normalizeWinteringSeasonValue(season);
+  const safeStatus = winteringStatusKey(status);
+  const next = normalizeWinteringMap(variety?.wintering);
+  if (!safeSeason) return next;
+  if (safeStatus) next[safeSeason] = safeStatus;
+  else delete next[safeSeason];
+  return next;
+}
+
+function nextWinteringSeason(season = selectedWinteringSeason()) {
+  const safeSeason = normalizeWinteringSeasonValue(season) || suggestedWinteringSeason();
+  const startYear = Number(safeSeason.slice(0, 4));
+  return `${startYear + 1}/${startYear + 2}`;
+}
+
+function setSelectedWinteringSeason(season, options = {}) {
+  const safeSeason = normalizeWinteringSeasonValue(season);
+  if (!safeSeason) return;
+  state.winteringSeason = safeSeason;
+  if (options.persistCurrent) {
+    state.data.settings = normalizeFeeSettings({
+      ...feeSettings(),
+      currentWinteringSeason: safeSeason,
+      winteringSeasons: [...feeSettings().winteringSeasons, safeSeason],
+    });
+    saveData();
+  }
+  renderWinteringControls();
+  renderVarieties();
+}
+
+function createNextWinteringSeason() {
+  const nextSeason = nextWinteringSeason(feeSettings().currentWinteringSeason || selectedWinteringSeason());
+  state.data.settings = normalizeFeeSettings({
+    ...feeSettings(),
+    currentWinteringSeason: nextSeason,
+    winteringSeasons: [...feeSettings().winteringSeasons, nextSeason],
+  });
+  state.winteringSeason = nextSeason;
+  saveData();
+  renderWinteringControls();
+  renderVarieties();
+  toast(`Zalozeno zimovaci obdobi ${nextSeason}.`);
+}
+
+function winteringHistoryEntries(variety) {
+  return Object.entries(normalizeWinteringMap(variety?.wintering))
+    .sort((a, b) => winteringSeasonSortValue(b[0]) - winteringSeasonSortValue(a[0]));
 }
 
 function totalByCurrencyText(orders) {
@@ -10594,6 +10925,7 @@ function feeSettings() {
 }
 
 function normalizeFeeSettings(settings = {}) {
+  const currentWinteringSeason = normalizeWinteringSeasonValue(settings?.currentWinteringSeason ?? settings?.winteringCurrentSeason) || suggestedWinteringSeason();
   return {
     shippingFeeCz: normalizeAmount(settings?.shippingFeeCz ?? settings?.shippingFee),
     shippingFeeSk: normalizeAmount(settings?.shippingFeeSk),
@@ -10610,6 +10942,8 @@ function normalizeFeeSettings(settings = {}) {
     paymentSwift: clean(settings?.paymentSwift ?? settings?.paymentBic ?? settings?.paymentSwiftBic),
     extraFees: configuredExtraFees(settings?.extraFees),
     facebookOfferTemplate: clean(settings?.facebookOfferTemplate),
+    currentWinteringSeason,
+    winteringSeasons: normalizeWinteringSeasonList([...(settings?.winteringSeasons || []), currentWinteringSeason]),
   };
 }
 
@@ -11091,6 +11425,151 @@ function openVarietyDetailDialog(id) {
   showDialog(els.galleryDialog);
 }
 
+function openVarietyDetailDialog(id) {
+  const variety = findVariety(id);
+  if (!variety) return;
+  const images = varietyImages(variety);
+  const orders = ordersForVariety(variety.name);
+  const priceHistory = normalizePriceHistory(variety.priceHistory);
+  const winterSeason = selectedWinteringSeason();
+  const winterStatus = varietyWinteringStatus(variety, winterSeason);
+  const winterHistory = winteringHistoryEntries(variety);
+  els.galleryTitle.textContent = variety.name;
+  const gallery = images.length
+    ? `<section class="variety-detail-section">
+        <div class="gallery-actions">
+          <button class="button secondary" type="button" data-download-photo>Stáhnout fotku</button>
+        </div>
+        <div class="gallery-viewer" data-gallery-section data-current-photo-index="0">
+          <div class="gallery-main" data-gallery-main tabindex="0">
+            ${galleryMainContent(images, variety.name, 0)}
+          </div>
+        </div>
+        <div class="gallery-strip">
+          ${images
+            .map(
+              (image, index) => `<button class="gallery-thumb-button ${index === 0 ? "active" : ""}" type="button" data-gallery-select="${index}" title="Fotka ${index + 1}">
+                ${photoImageMarkup(image, `${variety.name} ${index + 1}`, "", 'loading="lazy"')}
+              </button>`,
+            )
+            .join("")}
+        </div>
+      </section>`
+    : `<section class="variety-detail-section"><div class="gallery-empty">${varietyThumb(variety)}<span>Bez fotek</span></div></section>`;
+
+  const buyers = orders.length
+    ? orders
+        .map((order) => {
+          const customer = findCustomer(order.customerId);
+          return `<article class="stack-item">
+            <div>
+              <strong>${escapeHtml(customerName(customer))}</strong>
+              <small>${formatDate(order.orderDate)} · ${escapeHtml(formatOrderPrice(order))} · ${escapeHtml([paymentLabels[order.paymentStatus], shippingLabels[order.shippingStatus]].filter(Boolean).join(" / "))}</small>
+              <small>${escapeHtml(order.varietiesText || "Bez odrůd")}</small>
+            </div>
+            <span class="row-actions">
+              <button class="mini-button" type="button" title="Zákazník" data-focus-variety-customer="${order.customerId}">↗</button>
+              <button class="mini-button" type="button" title="Objednávka" data-open-variety-order="${order.id}">✎</button>
+            </span>
+          </article>`;
+        })
+        .join("")
+    : emptyState("Zatím není v žádné objednávce.");
+
+  els.galleryContent.innerHTML = `
+    <div class="variety-dialog-actions">
+      <button class="button secondary" type="button" data-order-variety="${variety.id}">Nová objednávka s odrůdou</button>
+      <button class="button secondary" type="button" data-focus-variety-orders="${escapeHtml(variety.name)}">Zobrazit objednávky</button>
+      <button class="button ghost" type="button" data-edit-variety="${variety.id}">Upravit odrůdu</button>
+    </div>
+    <section class="variety-detail-section">
+      <div class="price-summary">
+        <span>Prodejní cena</span>
+        <strong>${escapeHtml(varietyPriceText(variety))}</strong>
+      </div>
+      <div class="panel-heading">
+        <h2>Zimování</h2>
+        <strong>${escapeHtml(winterSeason)}</strong>
+      </div>
+      <div class="pill-row">
+        <span class="pill ${winterStatus === "wintering" ? "ok" : winterStatus === "not-wintering" ? "warn" : ""}">${escapeHtml(winteringStatusChipLabel(winterStatus))}</span>
+      </div>
+      <div class="detail-lines">
+        ${detailLine("Aktivní období", winterSeason)}
+        ${detailLine("Stav", winteringStatusLabel(winterStatus))}
+      </div>
+      ${winterHistory.length ? `<div class="detail-lines">${winterHistory.map(([season, status]) => detailLine(season, winteringStatusLabel(status))).join("")}</div>` : ""}
+    </section>
+    <section class="variety-detail-section">
+      <div class="panel-heading">
+        <h2>Historie ceny</h2>
+        <strong>${priceHistory.length}</strong>
+      </div>
+      <div class="price-history">
+        ${priceHistory.length ? priceHistory.map(renderPriceHistoryItem).join("") : `<span class="cell-sub">Zatím bez historie ceny</span>`}
+      </div>
+    </section>
+    ${gallery}
+    <section class="variety-detail-section">
+      <div class="panel-heading">
+        <h2>Kdo koupil</h2>
+        <strong>${orders.length}</strong>
+      </div>
+      <div class="stack-list">${buyers}</div>
+    </section>
+  `;
+  els.galleryContent.querySelector("[data-order-variety]").addEventListener("click", () => {
+    els.galleryDialog.close();
+    openOrderDialog(null, state.selectedCustomerId, {
+      varietiesText: `${variety.name} 1x`,
+      price: variety.salePrice || "",
+      currency: normalizeCurrency(variety.saleCurrency),
+      season: defaultSeason(),
+    });
+  });
+  els.galleryContent.querySelector("[data-focus-variety-orders]").addEventListener("click", () => {
+    els.galleryDialog.close();
+    focusOrdersForVariety(variety.name);
+  });
+  els.galleryContent.querySelector("[data-edit-variety]").addEventListener("click", () => {
+    els.galleryDialog.close();
+    openVarietyDialog(variety.id);
+  });
+  els.galleryContent.querySelectorAll("[data-open-variety-order]").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.galleryDialog.close();
+      openOrderDialog(button.dataset.openVarietyOrder);
+    });
+  });
+  els.galleryContent.querySelectorAll("[data-focus-variety-customer]").forEach((button) => {
+    button.addEventListener("click", () => {
+      els.galleryDialog.close();
+      focusCustomer(button.dataset.focusVarietyCustomer);
+    });
+  });
+  els.galleryContent.querySelectorAll("[data-gallery-select]").forEach((button) => {
+    button.addEventListener("click", () => selectGalleryImage(images, variety.name, Number(button.dataset.gallerySelect)));
+  });
+  els.galleryContent.querySelector("[data-download-photo]")?.addEventListener("click", () => {
+    const section = els.galleryContent.querySelector("[data-gallery-section]");
+    const index = Number(section?.dataset.currentPhotoIndex || 0);
+    downloadPhoto(images[index], variety.name, index);
+  });
+  els.galleryContent.querySelector("[data-gallery-main]")?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-gallery-step]")) return;
+    openGalleryFullscreen();
+  });
+  els.galleryContent.querySelectorAll("[data-gallery-step]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      stepGalleryImage(images, variety.name, Number(button.dataset.galleryStep));
+    });
+  });
+  els.galleryDialog.onkeydown = (event) => handleGalleryKeys(event, images, variety.name);
+  hydrateLocalPhotoImages(els.galleryContent);
+  showDialog(els.galleryDialog);
+}
+
 function selectGalleryImage(images, varietyName, index) {
   const image = images[index];
   const section = els.galleryContent.querySelector("[data-gallery-section]");
@@ -11231,25 +11710,27 @@ function renderTags(tags) {
 
 function statusPill(value, label) {
   const classes = {
-    zaplaceno: "paid",
-    čeká: "pending",
-    nezaplaceno: "overdue",
+    zaplaceno: "payment-paid",
+    čeká: "payment-waiting",
+    nezaplaceno: "payment-overdue",
   };
   return `<span class="pill ${classes[value] || ""}">${escapeHtml(label || value || "—")}</span>`;
 }
 
 function shippingPill(value, label) {
+  const safeValue = clean(value);
   const classes = {
-    nová: "",
-    připraveno: "ready",
-    odesláno: "sent",
-    zaplaceno: "paid",
+    nová: "shipping-new",
+    připraveno: "shipping-packed",
+    odesláno: "shipping-shipped",
+    zaplaceno: "shipping-done",
   };
-  return `<span class="pill ${classes[value] || ""}">${escapeHtml(label || value || "—")}</span>`;
+  const displayLabel = safeValue === "připraveno" ? "Zabaleno" : (label || value || "—");
+  return `<span class="pill ${classes[safeValue] || ""}">${escapeHtml(displayLabel)}</span>`;
 }
 
 function orderPaymentTextPill(order = {}) {
-  return clean(order.paymentTextSentAt) ? `<span class="pill sent">Text odeslán</span>` : "";
+  return clean(order.paymentTextSentAt) ? `<span class="pill message-sent">Text odeslán</span>` : "";
 }
 
 function orderAlternateReservationsPill(order = {}) {
@@ -14085,6 +14566,7 @@ function mergeVarieties(items) {
         stockAvailable: normalizeWholeNumber(variety.stockAvailable),
         stockReserved: normalizeWholeNumber(variety.stockReserved),
         note: clean(variety.note),
+        wintering: normalizeWinteringMap(variety.wintering),
         active: variety.active !== false,
         createdAt: variety.createdAt || now,
         updatedAt: variety.updatedAt || now,
@@ -14099,6 +14581,10 @@ function mergeVarieties(items) {
     if (!existing.saleCurrency && variety.saleCurrency) existing.saleCurrency = normalizeCurrency(variety.saleCurrency);
     if (!existing.stockAvailable && variety.stockAvailable) existing.stockAvailable = normalizeWholeNumber(variety.stockAvailable);
     if (!existing.stockReserved && variety.stockReserved) existing.stockReserved = normalizeWholeNumber(variety.stockReserved);
+    existing.wintering = {
+      ...normalizeWinteringMap(existing.wintering),
+      ...normalizeWinteringMap(variety.wintering),
+    };
     existing.priceHistory = normalizePriceHistory([...(initialPriceHistoryForVariety(existing, now) || []), ...initialPriceHistoryForVariety(variety, now)]);
     existing.active = existing.active !== false || variety.active !== false;
     existing.updatedAt = variety.updatedAt || existing.updatedAt;
