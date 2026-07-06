@@ -24,6 +24,7 @@ const PHOTO_UPLOAD_QUALITY_STEPS = [0.9, 0.86, 0.82, 0.78, 0.74];
 const FACEBOOK_PHOTO_BATCH_SIZE = 12;
 const SUPABASE_PHOTO_CACHE_PREFIX = "supabase-cache:";
 const SUPABASE_PREPARED_PHOTO_CACHE_PREFIX = "supabase-prepared-cache:";
+const SUPABASE_LOCAL_ORIGINAL_PREFIX = "supabase-local-original:";
 const SUPABASE_PHOTO_CACHE_MAX_BYTES = 300 * 1024 * 1024;
 const SUPABASE_PHOTO_CACHE_MAX_ITEMS = 1200;
 const SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES = 12 * 1024 * 1024;
@@ -2476,6 +2477,7 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncLogout", logoutSync);
     bindClick("#syncPush", () => pushSync());
     bindClick("#syncPull", () => pullSync());
+    bindClick("#cleanCloudPhotos", () => cleanOrphanCloudPhotos());
     bindClick("#syncAuto", toggleAutoSync);
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
       const node = document.querySelector(`#${id}`);
@@ -6238,6 +6240,8 @@ async function supabasePhotoRefToPreparedFile(ref, ownerName = "fotka") {
 }
 
 async function supabasePhotoRefToFile(ref, ownerName = "fotka") {
+  const localOriginal = await getLocalSupabaseOriginalFile(ref, ownerName);
+  if (localOriginal) return localOriginal;
   const cached = await getCachedSupabasePhotoBlob(ref);
   if (cached) return new File([cached], `${safeFileName(ownerName)}${photoExtension(cached)}`, { type: cached.type || "image/jpeg" });
   const path = parseSupabasePhotoRef(ref);
@@ -6254,6 +6258,99 @@ async function supabasePhotoRefToFile(ref, ownerName = "fotka") {
   const blob = await response.blob();
   cacheSupabasePhotoBlob(ref, blob, path).catch(() => {});
   return new File([blob], clean(path).split("/").pop() || `${safeFileName(ownerName)}.jpg`, { type: blob.type || "image/jpeg" });
+}
+
+function collectSupabaseOriginalPhotoEntries(data = state.data) {
+  const entries = [];
+  const add = (ref, ownerName) => {
+    const value = clean(ref);
+    if (!value.startsWith(SUPABASE_PHOTO_PREFIX)) return;
+    const path = parseSupabasePhotoRef(value);
+    if (!path || isSupabaseThumbnailPath(path)) return;
+    entries.push({ ref: value, path, ownerName: clean(ownerName) || "fotka" });
+  };
+  for (const variety of data?.varieties || []) {
+    for (const ref of varietyImages(variety)) add(ref, variety?.name || "odruda");
+  }
+  for (const cross of data?.crosses || []) {
+    for (const ref of crossSeedlingImages(cross)) add(ref, cross?.seedlingName || "semenac");
+  }
+  for (const offer of data?.offers || []) {
+    for (const item of offer?.items || []) add(item?.photoUrl, offerItemName(item) || "nabidka");
+  }
+  return entries;
+}
+
+function buildSupabaseOriginalDownloadPlan(data = state.data) {
+  const byRef = new Map();
+  const ownerCounts = new Map();
+  for (const entry of collectSupabaseOriginalPhotoEntries(data)) {
+    if (byRef.has(entry.ref)) continue;
+    const baseKey = safeFileName(entry.ownerName || "fotka", "fotka");
+    const nextIndex = (ownerCounts.get(baseKey) || 0) + 1;
+    ownerCounts.set(baseKey, nextIndex);
+    byRef.set(entry.ref, {
+      ...entry,
+      fileName: buildOwnerPhotoFileName(entry.ownerName, entry.path, nextIndex),
+    });
+  }
+  return [...byRef.values()];
+}
+
+function storagePathExtension(path) {
+  return clean(path).match(/\.[a-z0-9]+$/i)?.[0] || ".jpg";
+}
+
+function buildOwnerPhotoFileName(ownerName, path = "", index = 1) {
+  const base = safeFileName(ownerName || "fotka", "fotka");
+  return `${base}${index > 1 ? `-${index}` : ""}${storagePathExtension(path)}`;
+}
+
+async function downloadSupabaseOriginalsToMobile() {
+  try {
+    const plan = buildSupabaseOriginalDownloadPlan(state.data);
+    if (!plan.length) {
+      toast("V mobilu teď nejsou žádné cloudové originály ke stažení.");
+      return false;
+    }
+    updateSyncIndicator("working");
+    let downloaded = 0;
+    let alreadyStored = 0;
+    let failed = 0;
+    for (const entry of plan) {
+      const existing = await getLocalSupabaseOriginalRecord(entry.ref);
+      if (existing?.blob) {
+        alreadyStored += 1;
+        continue;
+      }
+      const file = await supabasePhotoRefToFile(entry.ref, entry.ownerName);
+      if (!file) {
+        failed += 1;
+        continue;
+      }
+      await saveLocalSupabaseOriginal(entry.ref, file, {
+        fileName: entry.fileName,
+        ownerName: entry.ownerName,
+        path: entry.path,
+      });
+      downloaded += 1;
+    }
+    updateSyncIndicator();
+    if (!downloaded && !failed) {
+      toast(`Originály už v mobilu jsou. Celkem ${alreadyStored}.`);
+      return true;
+    }
+    if (failed) {
+      toast(`Hotovo jen částečně. Staženo ${downloaded}, už bylo ${alreadyStored}, chyba ${failed}.`);
+      return false;
+    }
+    toast(`Originály uložené do mobilu. Nové: ${downloaded}, už bylo: ${alreadyStored}.`);
+    return true;
+  } catch (error) {
+    updateSyncIndicator("error");
+    toast(`Stahování originálů selhalo: ${friendlySyncError(error)}`);
+    return false;
+  }
 }
 
 function defaultOfferOrderFees(customerId) {
@@ -6587,7 +6684,13 @@ async function downloadVarietyPhoto(id) {
   try {
     if (image.startsWith(SUPABASE_PHOTO_PREFIX)) {
       toast("Stahuji fotku...");
-      href = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(image)) || await createSignedPhotoUrl(parseSupabasePhotoRef(image));
+      const file = await supabasePhotoRefToFile(image, variety.name);
+      if (file) {
+        href = URL.createObjectURL(file);
+        revokeAfterDownload = true;
+      } else {
+        href = await fetchSupabasePhotoObjectUrl(parseSupabasePhotoRef(image)) || await createSignedPhotoUrl(parseSupabasePhotoRef(image));
+      }
     } else {
       const file = await photoToFile(image, variety.name);
       if (file) {
@@ -6870,6 +6973,120 @@ function trashCountLabel() {
   return `V koši čeká ${count} záznamů.`;
 }
 
+function collectTrashPhotoPaths(entries = []) {
+  const paths = new Set();
+  const add = (ref) => {
+    const path = parseSupabasePhotoRef(clean(ref));
+    if (!path) return;
+    paths.add(path);
+    const thumbPath = supabaseThumbnailPath(path);
+    if (thumbPath) paths.add(thumbPath);
+  };
+  (entries || []).forEach((entry) => {
+    const type = clean(entry?.type);
+    if (type === "variety") {
+      const variety = entry?.payload?.variety || {};
+      add(variety.photoUrl);
+      (variety.gallery || []).forEach(add);
+      return;
+    }
+    if (type === "cross") {
+      const cross = entry?.payload?.cross || {};
+      add(cross.seedlingPhotoUrl);
+      (cross.seedlingGallery || []).forEach(add);
+      return;
+    }
+    if (type === "offer") {
+      (entry?.payload?.offer?.items || []).forEach((item) => add(item?.photoUrl));
+      return;
+    }
+    if (type === "offer-item") add(entry?.payload?.item?.photoUrl);
+  });
+  return paths;
+}
+
+async function releaseTrashPhotos(entriesToDelete = [], remainingTrashEntries = []) {
+  const candidatePaths = [...collectTrashPhotoPaths(entriesToDelete)];
+  if (!candidatePaths.length) return;
+  const retainedPaths = collectPhotoPaths(state.data);
+  collectTrashPhotoPaths(remainingTrashEntries).forEach((path) => retainedPaths.add(path));
+  const pathsToDelete = candidatePaths.filter((path) => !retainedPaths.has(path));
+  if (!pathsToDelete.length) return;
+  await deleteStoragePaths(pathsToDelete);
+}
+
+function orphanPhotoSummary(paths = []) {
+  const originals = paths.filter((path) => !isSupabaseThumbnailPath(path));
+  const thumbs = paths.filter((path) => isSupabaseThumbnailPath(path));
+  return { total: paths.length, originals: originals.length, thumbs: thumbs.length };
+}
+
+function buildOrphanPhotoReport(paths = []) {
+  const summary = orphanPhotoSummary(paths);
+  const lines = [
+    "Staré fotky v cloudu - kontrolní seznam",
+    `Vygenerováno: ${new Date().toISOString()}`,
+    `Celkem souborů: ${summary.total}`,
+    `Originály: ${summary.originals}`,
+    `Náhledy: ${summary.thumbs}`,
+    "",
+    "Seznam cest:",
+    ...paths.slice().sort((a, b) => a.localeCompare(b, "cs")).map((path) => path),
+  ];
+  return lines.join("\n");
+}
+
+async function cleanOrphanCloudPhotos() {
+  try {
+    const session = await ensureSession();
+    const userId = clean(session.user?.id) || "user";
+    updateSyncIndicator("working");
+    const retainedPaths = collectPhotoPaths(state.data);
+    collectTrashPhotoPaths(ensureTrashData()).forEach((path) => retainedPaths.add(path));
+    const existingPaths = await listStoragePaths(`${encodeURIComponent(userId)}/`);
+    const orphanPaths = existingPaths.filter((path) => !retainedPaths.has(path));
+    if (!orphanPaths.length) {
+      state.syncProblem = "";
+      updateSyncIndicator();
+      toast("Staré fotky v cloudu nebyly nalezeny.");
+      return true;
+    }
+    const summary = orphanPhotoSummary(orphanPaths);
+    downloadBlob(
+      new Blob([buildOrphanPhotoReport(orphanPaths)], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-stare-fotky-${todayISO()}.txt`
+    );
+    toast("Seznam starých fotek byl stažen.");
+    if (!confirm(`Našla jsem ${summary.total} starých souborů v cloudu.\nOriginály: ${summary.originals}\nNáhledy: ${summary.thumbs}\n\nSeznam jsem stáhla do TXT. Smazat je?`)) {
+      state.syncProblem = "";
+      updateSyncIndicator();
+      return false;
+    }
+    await deleteStoragePaths(orphanPaths);
+    const afterDeletePaths = await listStoragePaths(`${encodeURIComponent(userId)}/`);
+    const remainingPaths = orphanPaths.filter((path) => afterDeletePaths.includes(path));
+    if (remainingPaths.length) {
+      downloadBlob(
+        new Blob([buildOrphanPhotoReport(remainingPaths)], { type: "text/plain;charset=utf-8" }),
+        `africke-koprivy-stare-fotky-zustaly-${todayISO()}.txt`
+      );
+      state.syncProblem = `Pozor: ${remainingPaths.length} souborů v cloudu zůstalo.`;
+      updateSyncIndicator("error");
+      toast("Některé soubory v cloudu zůstaly. Stáhla jsem jejich seznam.");
+      return false;
+    }
+    state.syncProblem = "";
+    updateSyncIndicator();
+    toast(`Smazáno ${orphanPaths.length} starých souborů z cloudu.`);
+    return true;
+  } catch (error) {
+    state.syncProblem = `Čištění cloudu selhalo: ${friendlySyncError(error)}`;
+    updateSyncIndicator("error");
+    toast(state.syncProblem);
+    return false;
+  }
+}
+
 function restoreTrashEntry(entryId) {
   const entry = findTrashEntry(entryId);
   if (!entry) return;
@@ -6929,23 +7146,37 @@ function restoreTrashEntry(entryId) {
   toast("Záznam vrácen z koše.");
 }
 
-function permanentlyDeleteTrashEntry(entryId) {
+async function permanentlyDeleteTrashEntry(entryId) {
   const entry = findTrashEntry(entryId);
   if (!entry) return;
   if (!confirm(`Smazat ${trashTypeLabel(entry).toLowerCase()} z koše navždy?`)) return;
+  const remainingTrashEntries = ensureTrashData().filter((item) => clean(item.id) !== clean(entryId));
+  try {
+    await releaseTrashPhotos([entry], remainingTrashEntries);
+  } catch (error) {
+    toast(`Fotky v cloudu se nepodařilo smazat: ${friendlySyncError(error)}. Záznam zůstává v koši.`);
+    return;
+  }
   removeTrashEntry(entryId);
   saveData();
   render();
   toast("Záznam smazán z koše navždy.");
 }
 
-function emptyTrash() {
+async function emptyTrash() {
   const count = ensureTrashData().length;
   if (!count) {
     toast("Koš je už prázdný.");
     return;
   }
   if (!confirm(`Vysypat celý koš? Smaže se navždy ${count} záznamů.`)) return;
+  const entries = ensureTrashData().slice();
+  try {
+    await releaseTrashPhotos(entries, []);
+  } catch (error) {
+    toast(`Fotky v cloudu se nepodařilo smazat: ${friendlySyncError(error)}. Koš zůstává beze změny.`);
+    return;
+  }
   state.data.trash = [];
   saveData();
   render();
@@ -8654,8 +8885,8 @@ async function resolvePhotoUrl(ref) {
   const value = clean(ref);
   if (!value) return "";
   if (value.startsWith("data:image/") || value.startsWith("blob:") || value.startsWith("http")) return value;
-  if (state.photoUrls.has(value)) return state.photoUrls.get(value);
   if (value.startsWith(INDEXED_PHOTO_PREFIX)) {
+    if (state.photoUrls.has(value)) return state.photoUrls.get(value);
     const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, value.slice(INDEXED_PHOTO_PREFIX.length));
     if (!record?.blob) return "";
     const url = URL.createObjectURL(record.blob);
@@ -8664,6 +8895,17 @@ async function resolvePhotoUrl(ref) {
   }
   if (value.startsWith(SUPABASE_PHOTO_PREFIX)) {
     const path = parseSupabasePhotoRef(value);
+    if (!isSupabaseThumbnailPath(path)) {
+      const localRecord = await getLocalSupabaseOriginalRecord(value);
+      if (localRecord?.blob) {
+        const currentUrl = state.photoUrls.get(value);
+        if (currentUrl?.startsWith("blob:")) return currentUrl;
+        const localUrl = URL.createObjectURL(localRecord.blob);
+        state.photoUrls.set(value, localUrl);
+        return localUrl;
+      }
+    }
+    if (state.photoUrls.has(value)) return state.photoUrls.get(value);
     const cached = await getCachedSupabasePhotoBlob(value);
     if (cached) {
       const cachedUrl = URL.createObjectURL(cached);
@@ -8681,6 +8923,49 @@ async function resolvePhotoUrl(ref) {
     return url;
   }
   return "";
+}
+
+function localSupabaseOriginalKey(ref) {
+  const value = clean(ref);
+  return value.startsWith(SUPABASE_PHOTO_PREFIX) ? `${SUPABASE_LOCAL_ORIGINAL_PREFIX}${value}` : "";
+}
+
+async function getLocalSupabaseOriginalRecord(ref) {
+  const key = localSupabaseOriginalKey(ref);
+  if (!key) return null;
+  try {
+    return await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, key);
+  } catch {
+    return null;
+  }
+}
+
+async function getLocalSupabaseOriginalFile(ref, ownerName = "fotka") {
+  const record = await getLocalSupabaseOriginalRecord(ref);
+  if (!record?.blob) return null;
+  return new File(
+    [record.blob],
+    clean(record.name) || `${safeFileName(ownerName)}${photoExtension(record.blob)}`,
+    { type: clean(record.type) || record.blob.type || "image/jpeg" }
+  );
+}
+
+async function saveLocalSupabaseOriginal(ref, file, options = {}) {
+  const key = localSupabaseOriginalKey(ref);
+  if (!key || !file) return false;
+  const storedFile = file instanceof File ? file : new File([file], clean(options.fileName) || "fotka.jpg", { type: file?.type || "image/jpeg" });
+  await idbPut(await openPhotoDb(), PHOTO_BLOB_STORE, {
+    id: key,
+    blob: storedFile,
+    name: clean(options.fileName) || clean(storedFile.name) || "fotka.jpg",
+    type: clean(options.type) || clean(storedFile.type) || "image/jpeg",
+    size: Number(storedFile.size) || 0,
+    ownerName: clean(options.ownerName),
+    path: clean(options.path) || parseSupabasePhotoRef(ref),
+    sourceRef: clean(ref),
+    downloadedAt: new Date().toISOString(),
+  });
+  return true;
 }
 
 async function fetchSupabasePhotoObjectUrl(path, ref = "") {
@@ -8771,7 +9056,7 @@ async function photoToFile(ref, ownerName = "fotka") {
     return record?.blob ? new File([record.blob], record.name || `${safeFileName(ownerName)}.jpg`, { type: record.type || record.blob.type || "image/jpeg" }) : null;
   }
   if (value.startsWith("data:image/")) return dataUrlToFile(value, `${safeFileName(ownerName)}.jpg`);
-  if (value.startsWith(SUPABASE_PHOTO_PREFIX)) return null;
+  if (value.startsWith(SUPABASE_PHOTO_PREFIX)) return getLocalSupabaseOriginalFile(value, ownerName);
   return null;
 }
 
@@ -9387,13 +9672,27 @@ async function listStoragePaths(prefix) {
 }
 
 async function deleteStoragePaths(paths) {
-  for (let index = 0; index < paths.length; index += 100) {
-    await supabaseRequest(`/storage/v1/object/${SUPABASE_SYNC_BUCKET}`, { method: "DELETE", body: { prefixes: paths.slice(index, index + 100) } });
+  const config = loadSyncConfig();
+  const session = await ensureSession();
+  for (const path of paths) {
+    const response = await fetch(`${config.url.replace(/\/+$/, "")}/storage/v1/object/${SUPABASE_SYNC_BUCKET}/${encodeStoragePath(path)}`, {
+      method: "DELETE",
+      headers: {
+        apikey: config.anonKey,
+        Authorization: `Bearer ${session.accessToken}`,
+      },
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      if (response.status === 404 || /object not found|not found/i.test(message)) continue;
+      throw new Error(message || `HTTP ${response.status}`);
+    }
   }
 }
 
 async function uploadPhotoList(userId, ownerName, refs) {
   const uploaded = [];
+  let uploadedLocalCount = 0;
   for (const ref of unique(refs)) {
     if (ref.startsWith(SUPABASE_PHOTO_PREFIX)) uploaded.push(ref);
     else {
@@ -9404,7 +9703,14 @@ async function uploadPhotoList(userId, ownerName, refs) {
       await uploadStorage(path, uploadFile);
       const thumb = await createPhotoThumbnail(uploadFile);
       if (thumb) await uploadStorage(supabaseThumbnailPath(path), thumb);
-      uploaded.push(`${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`);
+      const uploadedRef = `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`;
+      uploadedLocalCount += 1;
+      await saveLocalSupabaseOriginal(uploadedRef, uploadFile, {
+        fileName: buildOwnerPhotoFileName(ownerName, path, uploadedLocalCount),
+        ownerName,
+        path,
+      });
+      uploaded.push(uploadedRef);
     }
   }
   return unique(uploaded);
@@ -9523,6 +9829,10 @@ function bytesToBase64(bytes) {
 function base64ToBytes(value) {
   const binary = atob(clean(value));
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function parseSupabasePhotoRef(ref) {
@@ -11995,6 +12305,9 @@ function openOfferDetailSheet(id, options = {}) {
     <div class="two">
       ${actionButtons}
     </div>
+    ${loggedIn ? `<button class="button secondary" type="button" id="cleanCloudPhotos">Vyčistit staré fotky v cloudu</button>` : ""}
+    ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Stáhnout originály do mobilu</button>` : ""}
+    ${loggedIn ? `<small class="sub">Jednou stáhne plné fotky do telefonu. Potom je mobil použije i pro ZIP a stahování.</small>` : ""}
     <small class="sub">${footerText}</small>
   </section>
   <section class="sync-card">
@@ -12251,6 +12564,8 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncPush", () => pushSync());
     bindClick("#syncPull", () => pullSync());
     bindClick("#syncAuto", toggleAutoSync);
+    bindClick("#cleanCloudPhotos", () => cleanOrphanCloudPhotos());
+    bindClick("#downloadMobileOriginals", () => downloadSupabaseOriginalsToMobile());
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
       const node = document.querySelector(`#${id}`);
       if (node) node.oninput = saveSyncConfigFromInputs;
@@ -12271,7 +12586,7 @@ function openOfferDetailSheet(id, options = {}) {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !els.list?.contains(target)) return false;
 
-    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #saveAppSettings, [data-trash-empty-all]");
+    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #cleanCloudPhotos, #downloadMobileOriginals, #saveAppSettings, [data-trash-empty-all]");
     if (action) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -12280,6 +12595,8 @@ function openOfferDetailSheet(id, options = {}) {
       else if (action.id === "syncLogout") logoutSync();
       else if (action.id === "syncPull") pullSync();
       else if (action.id === "syncPush") pushSync();
+      else if (action.id === "cleanCloudPhotos") cleanOrphanCloudPhotos();
+      else if (action.id === "downloadMobileOriginals") downloadSupabaseOriginalsToMobile();
       else if (action.id === "saveAppSettings") saveAppSettingsFromInputs();
       else if (action.hasAttribute("data-trash-empty-all")) emptyTrash();
       return true;

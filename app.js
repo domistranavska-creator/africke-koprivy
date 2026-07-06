@@ -507,6 +507,7 @@ function init() {
   document.querySelector("#syncLogoutBtn")?.addEventListener("click", logoutSupabaseSync);
   document.querySelector("#syncPushBtn")?.addEventListener("click", pushSupabaseSync);
   document.querySelector("#syncPullBtn")?.addEventListener("click", pullSupabaseSync);
+  document.querySelector("#cleanCloudPhotosBtn")?.addEventListener("click", cleanSupabaseOrphanPhotos);
   els.syncAutoEnabled?.addEventListener("change", () => {
     saveSupabaseSyncConfigFromPanel({ quiet: true });
     updateSupabaseSyncStatus();
@@ -1228,6 +1229,69 @@ function trashCountLabel() {
   return `V koši čeká ${count} záznamů.`;
 }
 
+function collectSupabasePhotoPathsFromTrashEntries(entries = []) {
+  const paths = new Set();
+  const add = (ref) => {
+    const path = parseSupabasePhotoRef(clean(ref));
+    if (!path) return;
+    paths.add(path);
+    const thumbPath = supabaseThumbnailPath(path);
+    if (thumbPath) paths.add(thumbPath);
+  };
+  (entries || []).forEach((entry) => {
+    const type = clean(entry?.type);
+    if (type === "variety") {
+      const variety = entry?.payload?.variety || {};
+      add(variety.photoUrl);
+      (variety.gallery || []).forEach(add);
+      return;
+    }
+    if (type === "cross") {
+      const cross = entry?.payload?.cross || {};
+      add(cross.seedlingPhotoUrl);
+      (cross.seedlingGallery || []).forEach(add);
+      return;
+    }
+    if (type === "offer") {
+      (entry?.payload?.offer?.items || []).forEach((item) => add(item?.photoUrl));
+      return;
+    }
+    if (type === "offer-item") add(entry?.payload?.item?.photoUrl);
+  });
+  return paths;
+}
+
+async function releaseSupabaseTrashPhotos(entriesToDelete = [], remainingTrashEntries = []) {
+  const candidatePaths = [...collectSupabasePhotoPathsFromTrashEntries(entriesToDelete)];
+  if (!candidatePaths.length) return;
+  const retainedPaths = collectSupabasePhotoPaths(state.data);
+  collectSupabasePhotoPathsFromTrashEntries(remainingTrashEntries).forEach((path) => retainedPaths.add(path));
+  const pathsToDelete = candidatePaths.filter((path) => !retainedPaths.has(path));
+  if (!pathsToDelete.length) return;
+  await deleteSupabaseStoragePaths(pathsToDelete);
+}
+
+function orphanPhotoSummary(paths = []) {
+  const originals = paths.filter((path) => !isSupabaseThumbnailPath(path));
+  const thumbs = paths.filter((path) => isSupabaseThumbnailPath(path));
+  return { total: paths.length, originals: originals.length, thumbs: thumbs.length };
+}
+
+function buildOrphanPhotoReport(paths = []) {
+  const summary = orphanPhotoSummary(paths);
+  const lines = [
+    "Staré fotky v cloudu - kontrolní seznam",
+    `Vygenerováno: ${new Date().toISOString()}`,
+    `Celkem souborů: ${summary.total}`,
+    `Originály: ${summary.originals}`,
+    `Náhledy: ${summary.thumbs}`,
+    "",
+    "Seznam cest:",
+    ...paths.slice().sort((a, b) => a.localeCompare(b, "cs")).map((path) => path),
+  ];
+  return lines.join("\n");
+}
+
 function upsertRestoredRecord(collection, record) {
   const items = Array.isArray(state.data[collection]) ? state.data[collection] : [];
   const index = items.findIndex((item) => clean(item.id) === clean(record.id));
@@ -1325,23 +1389,39 @@ function restoreTrashEntry(entryId) {
   toast("Záznam vrácen z koše.");
 }
 
-function permanentlyDeleteTrashEntry(entryId) {
+async function permanentlyDeleteTrashEntry(entryId) {
   const entry = findTrashEntry(entryId);
   if (!entry) return;
   if (!confirm(`Smazat ${trashTypeLabel(entry).toLowerCase()} z koše navždy?`)) return;
+  const remainingTrashEntries = ensureTrashData().filter((item) => clean(item.id) !== clean(entryId));
+  try {
+    await releaseSupabaseTrashPhotos([entry], remainingTrashEntries);
+  } catch (error) {
+    const message = friendlySupabaseError(error);
+    toast(`Fotky v cloudu se nepodařilo smazat: ${message}. Záznam zůstává v koši.`);
+    return;
+  }
   removeTrashEntry(entryId);
   saveData();
   renderAll();
   toast("Záznam smazán z koše navždy.");
 }
 
-function emptyTrash() {
+async function emptyTrash() {
   const count = ensureTrashData().length;
   if (!count) {
     toast("Koš je už prázdný.");
     return;
   }
   if (!confirm(`Vysypat celý koš? Smaže se navždy ${count} záznamů.`)) return;
+  const entries = ensureTrashData().slice();
+  try {
+    await releaseSupabaseTrashPhotos(entries, []);
+  } catch (error) {
+    const message = friendlySupabaseError(error);
+    toast(`Fotky v cloudu se nepodařilo smazat: ${message}. Koš zůstává beze změny.`);
+    return;
+  }
   state.data.trash = [];
   saveData();
   renderAll();
@@ -2764,6 +2844,7 @@ function renderVarieties() {
   const varieties = filteredVarieties();
   renderVarietiesScene();
   els.varietyUsageFilter.value = state.varietyUsageFilter;
+  if (state.varietySort === "updated") state.varietySort = "created";
   els.varietySort.value = state.varietySort;
   els.varietiesTable.innerHTML = varieties.length
     ? varieties.map((variety) => varietyCatalogCardMarkup(variety)).join("")
@@ -9582,6 +9663,53 @@ function updateSupabaseSyncConfig(patch) {
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = Boolean(config.autoSync);
 }
 
+async function cleanSupabaseOrphanPhotos() {
+  try {
+    const session = await ensureSupabaseSession();
+    const userId = clean(session.user?.id) || "user";
+    updateSupabaseSyncStatus("Kontroluji staré fotky v cloudu...");
+    const retainedPaths = collectSupabasePhotoPaths(state.data);
+    collectSupabasePhotoPathsFromTrashEntries(ensureTrashData()).forEach((path) => retainedPaths.add(path));
+    const existingPaths = await listSupabaseStoragePaths(`${encodeURIComponent(userId)}/`);
+    const orphanPaths = existingPaths.filter((path) => !retainedPaths.has(path));
+    if (!orphanPaths.length) {
+      updateSupabaseSyncStatus("Cloud je čistý. Staré fotky nebyly nalezeny.");
+      toast("Staré fotky v cloudu nebyly nalezeny.");
+      return true;
+    }
+    const summary = orphanPhotoSummary(orphanPaths);
+    downloadBlob(
+      new Blob([buildOrphanPhotoReport(orphanPaths)], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-stare-fotky-${toDateInput(new Date())}.txt`
+    );
+    toast("Seznam starých fotek byl stažen.");
+    if (!confirm(`Našla jsem ${summary.total} starých souborů v cloudu.\nOriginály: ${summary.originals}\nNáhledy: ${summary.thumbs}\n\nSeznam jsem stáhla do TXT. Smazat je?`)) {
+      updateSupabaseSyncStatus("Čištění cloudu zrušeno.");
+      return false;
+    }
+    await deleteSupabaseStoragePaths(orphanPaths);
+    const afterDeletePaths = await listSupabaseStoragePaths(`${encodeURIComponent(userId)}/`);
+    const remainingPaths = orphanPaths.filter((path) => afterDeletePaths.includes(path));
+    if (remainingPaths.length) {
+      downloadBlob(
+        new Blob([buildOrphanPhotoReport(remainingPaths)], { type: "text/plain;charset=utf-8" }),
+        `africke-koprivy-stare-fotky-zustaly-${toDateInput(new Date())}.txt`
+      );
+      updateSupabaseSyncStatus(`Mazání cloudu nebylo úplné. Zůstalo ${remainingPaths.length} souborů.`);
+      toast(`Pozor: ${remainingPaths.length} souborů v cloudu zůstalo. Stáhla jsem jejich seznam.`);
+      return false;
+    }
+    updateSupabaseSyncStatus(`Hotovo. Smazáno ${orphanPaths.length} souborů z cloudu.`);
+    toast(`Smazáno ${orphanPaths.length} starých souborů z cloudu.`);
+    return true;
+  } catch (error) {
+    const message = friendlySupabaseError(error);
+    updateSupabaseSyncStatus(`Čištění cloudu selhalo: ${message}`);
+    toast(`Čištění cloudu selhalo: ${message}`);
+    return false;
+  }
+}
+
 function currentSupabaseEncryptionPassword() {
   const value = clean(els.syncEncryptionKey?.value);
   if (value) {
@@ -10025,11 +10153,20 @@ async function listSupabaseStoragePaths(prefix) {
 }
 
 async function deleteSupabaseStoragePaths(paths) {
-  for (let index = 0; index < paths.length; index += 100) {
-    await supabaseStorageRequest(`/storage/v1/object/${SUPABASE_SYNC_BUCKET}`, {
+  const session = await ensureSupabaseSession();
+  for (const path of paths) {
+    const response = await fetch(`${supabaseBaseUrl()}/storage/v1/object/${SUPABASE_SYNC_BUCKET}/${encodeStoragePath(path)}`, {
       method: "DELETE",
-      body: { prefixes: paths.slice(index, index + 100) },
+      headers: {
+        apikey: supabaseAnonKey(),
+        Authorization: `Bearer ${session.accessToken}`,
+      },
     });
+    if (!response.ok) {
+      const message = await response.text();
+      if (response.status === 404 || /object not found|not found/i.test(message)) continue;
+      throw new Error(message || `HTTP ${response.status}`);
+    }
   }
 }
 
@@ -10523,7 +10660,9 @@ function filteredVarieties() {
       return normalize([variety.name, variety.note, variety.salePrice, variety.saleCurrency, varietyPriceText(variety)].join(" ")).includes(query);
     })
     .sort((a, b) => {
-      if (state.varietySort === "updated") return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+      if (state.varietySort === "created" || state.varietySort === "updated") {
+        return String(b.createdAt || b.updatedAt || "").localeCompare(String(a.createdAt || a.updatedAt || ""));
+      }
       if (state.varietySort === "name") return naturalCompare(a.name, b.name);
       if (state.varietySort === "price-asc" || state.varietySort === "price-desc") {
         const aPrice = varietyComparablePriceCzk(a);
