@@ -8431,8 +8431,8 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     if (!context) return file;
     context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     const titleLines = wrapCanvasText(context, entry.title || entry.label, imageWidth - padding * 3, context.font).slice(0, 2);
-    const titleBadgeHeight = padding * 1.25 + titleLines.length * titleLineHeight;
-    const footerHeight = Math.max(142, Math.round(imageWidth * 0.18));
+    const titleBlockHeight = padding * 0.65 + titleLines.length * titleLineHeight;
+    const footerHeight = Math.max(210, Math.round(imageWidth * 0.27) + (titleLines.length > 1 ? titleLineHeight : 0));
     canvas.width = imageWidth;
     canvas.height = imageHeight + footerHeight;
     context.fillStyle = "#fbf7e9";
@@ -8450,20 +8450,19 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     context.lineTo(canvas.width, imageHeight + 1);
     context.stroke();
 
-    drawFacebookRoundedRect(context, padding, padding, imageWidth - padding * 2, titleBadgeHeight, Math.round(titleBadgeHeight / 2), "rgba(255, 253, 245, 0.92)", "rgba(13, 59, 45, 0.12)");
     context.fillStyle = "#0d3b2d";
     context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     context.textAlign = "center";
     context.textBaseline = "alphabetic";
     titleLines.forEach((line, index) => {
-      context.fillText(line, imageWidth / 2, padding + padding * 0.55 + titleFontSize + index * titleLineHeight);
+      context.fillText(line, imageWidth / 2, imageHeight + padding * 0.9 + titleFontSize + index * titleLineHeight);
     });
 
     const priceText = clean(entry.priceText) || "Bez ceny";
     const quantityTextValue = clean(entry.quantityLabel) || "";
     const gap = Math.max(16, Math.round(imageWidth * 0.025));
-    const cardY = imageHeight + Math.round(footerHeight * 0.18);
-    const cardHeight = Math.round(footerHeight * 0.64);
+    const cardY = imageHeight + padding * 0.9 + titleBlockHeight + Math.round(padding * 0.25);
+    const cardHeight = Math.max(92, Math.min(Math.round(imageWidth * 0.14), canvas.height - cardY - padding * 0.65));
     const priceWidth = Math.round((imageWidth - padding * 2 - gap) * 0.58);
     const qtyWidth = imageWidth - padding * 2 - gap - priceWidth;
     drawFacebookValueCard(context, padding, cardY, priceWidth, cardHeight, "Cena", priceText, valueFontSize, labelFontSize, "#8d2d4c");

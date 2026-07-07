@@ -5792,8 +5792,8 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     if (!context) return file;
     context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     const titleLines = wrapCanvasText(context, entry.title || entry.label, imageWidth - padding * 3).slice(0, 2);
-    const titleBadgeHeight = padding * 1.25 + titleLines.length * titleLineHeight;
-    const footerHeight = Math.max(142, Math.round(imageWidth * 0.18));
+    const titleBlockHeight = padding * 0.65 + titleLines.length * titleLineHeight;
+    const footerHeight = Math.max(210, Math.round(imageWidth * 0.27) + (titleLines.length > 1 ? titleLineHeight : 0));
     canvas.width = imageWidth;
     canvas.height = imageHeight + footerHeight;
     context.fillStyle = "#fbf7e9";
@@ -5810,20 +5810,19 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     context.moveTo(0, imageHeight + 1);
     context.lineTo(canvas.width, imageHeight + 1);
     context.stroke();
-    drawFacebookRoundedRect(context, padding, padding, imageWidth - padding * 2, titleBadgeHeight, Math.round(titleBadgeHeight / 2), "rgba(255, 253, 245, 0.92)", "rgba(13, 59, 45, 0.12)");
     context.fillStyle = "#0d3b2d";
     context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     context.textAlign = "center";
     context.textBaseline = "alphabetic";
     titleLines.forEach((line, index) => {
-      context.fillText(line, imageWidth / 2, padding + padding * 0.55 + titleFontSize + index * titleLineHeight);
+      context.fillText(line, imageWidth / 2, imageHeight + padding * 0.9 + titleFontSize + index * titleLineHeight);
     });
 
     const priceText = clean(entry.priceText) || "Bez ceny";
     const quantityTextValue = clean(entry.quantityLabel) || "";
     const gap = Math.max(16, Math.round(imageWidth * 0.025));
-    const cardY = imageHeight + Math.round(footerHeight * 0.18);
-    const cardHeight = Math.round(footerHeight * 0.64);
+    const cardY = imageHeight + padding * 0.9 + titleBlockHeight + Math.round(padding * 0.25);
+    const cardHeight = Math.max(92, Math.min(Math.round(imageWidth * 0.14), canvas.height - cardY - padding * 0.65));
     const priceWidth = Math.round((imageWidth - padding * 2 - gap) * 0.58);
     const qtyWidth = imageWidth - padding * 2 - gap - priceWidth;
     drawFacebookValueCard(context, padding, cardY, priceWidth, cardHeight, "Cena", priceText, valueFontSize, labelFontSize, "#8d2d4c");
@@ -9195,39 +9194,39 @@ async function createMobileOriginalFolderFile(file, entry = {}) {
     const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
     const width = Math.max(1, Math.round(sourceWidth * scale));
     const height = Math.max(1, Math.round(sourceHeight * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (!context) return file;
-    context.drawImage(image, 0, 0, width, height);
-
     const label = clean(entry.ownerName) || "Africké kopřivy";
-    const padding = Math.max(18, Math.round(width * 0.035));
+    const padding = Math.max(22, Math.round(width * 0.036));
     const fontSize = Math.max(34, Math.min(76, Math.round(width * 0.055)));
     const lineHeight = Math.round(fontSize * 1.15);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) return file;
     context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
-    const lines = wrapCanvasText(context, label, width - padding * 4).slice(0, 2);
-    const textWidth = Math.max(...lines.map((line) => context.measureText(line).width), fontSize * 3);
-    const badgeWidth = Math.min(width - padding * 2, Math.ceil(textWidth + padding * 1.8));
-    const badgeHeight = Math.ceil(padding * 1.2 + lines.length * lineHeight);
-    const x = padding;
-    const y = padding;
-
-    context.save();
-    context.shadowColor = "rgba(0, 0, 0, 0.34)";
-    context.shadowBlur = Math.round(padding * 0.55);
-    context.shadowOffsetY = Math.round(padding * 0.18);
-    roundRectPath(context, x, y, badgeWidth, badgeHeight, Math.round(badgeHeight / 2));
-    context.fillStyle = "rgba(255, 254, 248, 0.94)";
-    context.fill();
-    context.restore();
+    const lines = wrapCanvasText(context, label, width - padding * 2.4).slice(0, 2);
+    const footerHeight = Math.max(Math.round(width * 0.13), Math.ceil(padding * 1.45 + lines.length * lineHeight));
+    canvas.width = width;
+    canvas.height = height + footerHeight;
+    context.fillStyle = "#fbf7e9";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, width, height);
+    const gradient = context.createLinearGradient(0, height, width, canvas.height);
+    gradient.addColorStop(0, "#fff8e9");
+    gradient.addColorStop(1, "#dff4df");
+    context.fillStyle = gradient;
+    context.fillRect(0, height, width, footerHeight);
+    context.strokeStyle = "#95c49f";
+    context.lineWidth = Math.max(2, Math.round(width * 0.004));
+    context.beginPath();
+    context.moveTo(0, height + 1);
+    context.lineTo(width, height + 1);
+    context.stroke();
 
     context.fillStyle = "#0d3b2d";
-    context.textAlign = "left";
+    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    context.textAlign = "center";
     context.textBaseline = "alphabetic";
     lines.forEach((line, index) => {
-      context.fillText(line, x + padding * 0.9, y + padding * 0.8 + fontSize + index * lineHeight);
+      context.fillText(line, width / 2, height + padding * 0.75 + fontSize + index * lineHeight);
     });
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
@@ -10033,11 +10032,20 @@ async function uploadPhotoList(userId, ownerName, refs) {
       if (thumb) await uploadStorage(supabaseThumbnailPath(path), thumb);
       const uploadedRef = `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`;
       uploadedLocalCount += 1;
-      await saveLocalSupabaseOriginal(uploadedRef, uploadFile, {
-        fileName: buildOwnerPhotoFileName(ownerName, path, uploadedLocalCount),
-        ownerName,
+      const localEntry = {
+        ref: uploadedRef,
         path,
-      });
+        ownerName,
+        fileName: buildOwnerPhotoFileName(ownerName, path, uploadedLocalCount),
+      };
+      try {
+        await saveLocalSupabaseOriginal(uploadedRef, file, localEntry);
+      } catch {
+        await saveLocalSupabaseOriginal(uploadedRef, uploadFile, localEntry);
+      }
+      getMobileOriginalsFolderHandle({ requestPermission: false })
+        .then((directoryHandle) => directoryHandle ? writeMobileOriginalToFolder(directoryHandle, localEntry, file) : false)
+        .catch(() => {});
       uploaded.push(uploadedRef);
     }
   }
