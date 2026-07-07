@@ -494,6 +494,7 @@ function init() {
   document.querySelector("#parseImportBtn")?.addEventListener("click", parseImportInput);
   document.querySelector("#clearImportBtn")?.addEventListener("click", clearImport);
   document.querySelector("#backupDataBtn").addEventListener("click", backupData);
+  document.querySelector("#prepareCloudOriginalsPlanBtn")?.addEventListener("click", prepareSupabaseOriginalsCleanupPlan);
   document.querySelector("#exportOrdersBtn").addEventListener("click", exportOrders);
   document.querySelector("#exportCustomersBtn").addEventListener("click", exportCustomers);
   document.querySelector("#exportVarietiesBtn").addEventListener("click", exportVarieties);
@@ -9757,6 +9758,71 @@ async function cleanSupabaseOrphanPhotos() {
     toast(`Čištění cloudu selhalo: ${message}`);
     return false;
   }
+}
+
+async function prepareSupabaseOriginalsCleanupPlan() {
+  try {
+    const session = await ensureSupabaseSession();
+    const userId = clean(session.user?.id) || "user";
+    updateSupabaseSyncStatus("Připravuji seznam originálů v cloudu...");
+    const referencedPaths = collectSupabasePhotoPaths(state.data);
+    collectSupabasePhotoPathsFromTrashEntries(ensureTrashData()).forEach((path) => referencedPaths.add(path));
+    const existingPaths = await listSupabaseStoragePaths(`${encodeURIComponent(userId)}/`);
+    const existingSet = new Set(existingPaths);
+    const referencedOriginals = [...referencedPaths]
+      .map(clean)
+      .filter((path) => path && !isSupabaseThumbnailPath(path) && existingSet.has(path))
+      .sort((a, b) => a.localeCompare(b, "cs"));
+    const readyOriginals = referencedOriginals.filter((path) => existingSet.has(supabaseThumbnailPath(path)));
+    const missingThumbs = referencedOriginals.filter((path) => !existingSet.has(supabaseThumbnailPath(path)));
+    const unusedOriginals = existingPaths
+      .filter((path) => !isSupabaseThumbnailPath(path) && !referencedPaths.has(path))
+      .sort((a, b) => a.localeCompare(b, "cs"));
+    const report = buildSupabaseOriginalsCleanupPlanReport({
+      readyOriginals,
+      missingThumbs,
+      unusedOriginals,
+      existingPaths,
+    });
+    downloadBlob(
+      new Blob([report], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-plan-originaly-cloud-${toDateInput(new Date())}.txt`
+    );
+    updateSupabaseSyncStatus(`Seznam hotový. Originály s náhledem: ${readyOriginals.length}, bez náhledu: ${missingThumbs.length}. Nic jsem nemazala.`);
+    toast("Seznam originálů v cloudu stažený. Nic se nemazalo.");
+    return true;
+  } catch (error) {
+    const message = friendlySupabaseError(error);
+    updateSupabaseSyncStatus(`Seznam originálů se nepodařilo připravit: ${message}`);
+    toast(`Seznam originálů se nepodařilo připravit: ${message}`);
+    return false;
+  }
+}
+
+function buildSupabaseOriginalsCleanupPlanReport({ readyOriginals = [], missingThumbs = [], unusedOriginals = [], existingPaths = [] } = {}) {
+  const lines = [
+    "Africké kopřivy - kontrolní seznam originálů v cloudu",
+    `Vygenerováno: ${new Date().toISOString()}`,
+    "",
+    "TENTO SOUBOR NIC NEMAZAL.",
+    "Je to jen příprava pro budoucí úsporu cloudu.",
+    "Bezpečné pravidlo: mazat až později jen originály, nikdy složku _nahledy_v2.",
+    "",
+    `V cloudu celkem souborů: ${existingPaths.length}`,
+    `Originály, které mají náhled: ${readyOriginals.length}`,
+    `Originály bez nalezeného náhledu: ${missingThumbs.length}`,
+    `Nepoužité originály mimo aktuální data/koš: ${unusedOriginals.length}`,
+    "",
+    "1) Originály, které mají náhled a jednou mohou být kandidáti na smazání:",
+    ...readyOriginals.map((path) => path),
+    "",
+    "2) Originály BEZ náhledu - ty zatím nemazat:",
+    ...missingThumbs.map((path) => path),
+    "",
+    "3) Nepoužité originály mimo aktuální data/koš - kontrolovat ručně:",
+    ...unusedOriginals.map((path) => path),
+  ];
+  return lines.join("\n");
 }
 
 function currentSupabaseEncryptionPassword() {
