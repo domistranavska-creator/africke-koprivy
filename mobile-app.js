@@ -25,6 +25,7 @@ const FACEBOOK_PHOTO_BATCH_SIZE = 12;
 const SUPABASE_PHOTO_CACHE_PREFIX = "supabase-cache:";
 const SUPABASE_PREPARED_PHOTO_CACHE_PREFIX = "supabase-prepared-cache:";
 const SUPABASE_LOCAL_ORIGINAL_PREFIX = "supabase-local-original:";
+const MOBILE_ORIGINALS_FOLDER_HANDLE_ID = "mobile-originals-folder-handle";
 const SUPABASE_PHOTO_CACHE_MAX_BYTES = 300 * 1024 * 1024;
 const SUPABASE_PHOTO_CACHE_MAX_ITEMS = 1200;
 const SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES = 12 * 1024 * 1024;
@@ -68,6 +69,7 @@ const state = {
   activeOfferId: "",
   facebookDraftTextByOffer: new Map(),
   facebookPhotoOffsetByOffer: new Map(),
+  mobileOriginalsStatusToken: 0,
 };
 
 const els = {
@@ -6314,42 +6316,62 @@ async function downloadSupabaseOriginalsToMobile() {
       return false;
     }
     updateSyncIndicator("working");
+    const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: true });
     let downloaded = 0;
     let alreadyStored = 0;
+    let copiedToFolder = 0;
+    let folderFailed = 0;
     let failed = 0;
     for (const entry of plan) {
+      let file = null;
       const existing = await getLocalSupabaseOriginalRecord(entry.ref);
       if (existing?.blob) {
         alreadyStored += 1;
-        continue;
+        file = await getLocalSupabaseOriginalFile(entry.ref, entry.ownerName);
+      } else {
+        file = await supabasePhotoRefToFile(entry.ref, entry.ownerName);
+        if (!file) {
+          failed += 1;
+          continue;
+        }
+        await saveLocalSupabaseOriginal(entry.ref, file, {
+          fileName: entry.fileName,
+          ownerName: entry.ownerName,
+          path: entry.path,
+        });
+        downloaded += 1;
       }
-      const file = await supabasePhotoRefToFile(entry.ref, entry.ownerName);
-      if (!file) {
-        failed += 1;
-        continue;
+      if (directoryHandle && file) {
+        try {
+          await writeMobileOriginalToFolder(directoryHandle, entry, file);
+          copiedToFolder += 1;
+        } catch {
+          folderFailed += 1;
+        }
       }
-      await saveLocalSupabaseOriginal(entry.ref, file, {
-        fileName: entry.fileName,
-        ownerName: entry.ownerName,
-        path: entry.path,
-      });
-      downloaded += 1;
     }
     updateSyncIndicator();
     if (!downloaded && !failed) {
-      toast(`Originály už v mobilu jsou. Celkem ${alreadyStored}.`);
+      toast(directoryHandle
+        ? `Originály už v mobilu jsou. Do složky zapsáno ${copiedToFolder}.`
+        : `Originály už v mobilu jsou. Celkem ${alreadyStored}.`);
       return true;
     }
     if (failed) {
       toast(`Hotovo jen částečně. Staženo ${downloaded}, už bylo ${alreadyStored}, chyba ${failed}.`);
       return false;
     }
-    toast(`Originály uložené do mobilu. Nové: ${downloaded}, už bylo: ${alreadyStored}.`);
+    toast(folderFailed
+      ? `Originály uložené. Nové ${downloaded}, složka chyba ${folderFailed}.`
+      : `Originály uložené do mobilu. Nové: ${downloaded}, už bylo: ${alreadyStored}.`);
     return true;
   } catch (error) {
     updateSyncIndicator("error");
     toast(`Stahování originálů selhalo: ${friendlySyncError(error)}`);
     return false;
+  }
+  finally {
+    refreshMobileOriginalsStatus({ quiet: true }).catch(() => {});
   }
 }
 
@@ -8948,6 +8970,143 @@ async function getLocalSupabaseOriginalFile(ref, ownerName = "fotka") {
     clean(record.name) || `${safeFileName(ownerName)}${photoExtension(record.blob)}`,
     { type: clean(record.type) || record.blob.type || "image/jpeg" }
   );
+}
+
+async function countLocalSupabaseOriginals() {
+  try {
+    const records = await idbGetAll(await openPhotoDb(), PHOTO_BLOB_STORE);
+    return records.filter((record) => clean(record?.id).startsWith(SUPABASE_LOCAL_ORIGINAL_PREFIX)).length;
+  } catch {
+    return 0;
+  }
+}
+
+async function mobileOriginalsStatusCounts() {
+  const plan = buildSupabaseOriginalDownloadPlan(state.data);
+  let stored = 0;
+  for (const entry of plan) {
+    const record = await getLocalSupabaseOriginalRecord(entry.ref);
+    if (record?.blob) stored += 1;
+  }
+  return { stored, total: plan.length };
+}
+
+function mobileOriginalsFolderSupported() {
+  return typeof window.showDirectoryPicker === "function";
+}
+
+function setMobileOriginalsStatusText(text) {
+  const node = document.querySelector("#mobileOriginalsStatus");
+  if (node) node.textContent = text;
+}
+
+function setMobileOriginalsFolderStatusText(text) {
+  const node = document.querySelector("#mobileOriginalsFolderStatus");
+  if (node) node.textContent = text;
+}
+
+async function refreshMobileOriginalsStatus(options = {}) {
+  const node = document.querySelector("#mobileOriginalsStatus");
+  if (!node) return 0;
+  const token = state.mobileOriginalsStatusToken + 1;
+  state.mobileOriginalsStatusToken = token;
+  if (!options.quiet) setMobileOriginalsStatusText("Originály v mobilu: počítám...");
+  const counts = await mobileOriginalsStatusCounts();
+  if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`Originály v mobilu: ${counts.stored} / ${counts.total}`);
+  refreshMobileOriginalsFolderStatus().catch(() => {});
+  return counts.stored;
+}
+
+async function refreshMobileOriginalsFolderStatus() {
+  const node = document.querySelector("#mobileOriginalsFolderStatus");
+  if (!node) return;
+  if (!mobileOriginalsFolderSupported()) {
+    setMobileOriginalsFolderStatusText("Složka: telefon výběr složky nepovoluje");
+    return;
+  }
+  const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, MOBILE_ORIGINALS_FOLDER_HANDLE_ID);
+  const name = clean(record?.directoryHandle?.name);
+  setMobileOriginalsFolderStatusText(name ? `Složka: ${name}` : "Složka: nevybraná");
+}
+
+async function getMobileOriginalsFolderHandle(options = {}) {
+  if (!mobileOriginalsFolderSupported()) return null;
+  const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, MOBILE_ORIGINALS_FOLDER_HANDLE_ID);
+  const handle = record?.directoryHandle;
+  if (!handle) return null;
+  try {
+    if (typeof handle.queryPermission === "function") {
+      let permission = await handle.queryPermission({ mode: "readwrite" });
+      if (permission !== "granted" && options.requestPermission && typeof handle.requestPermission === "function") {
+        permission = await handle.requestPermission({ mode: "readwrite" });
+      }
+      if (permission !== "granted") return null;
+    }
+    return handle;
+  } catch {
+    return null;
+  }
+}
+
+async function pickMobileOriginalsFolder() {
+  if (!mobileOriginalsFolderSupported()) {
+    toast("Telefon výběr složky pro webovou appku nepovoluje.");
+    refreshMobileOriginalsStatus({ quiet: true }).catch(() => {});
+    return false;
+  }
+  try {
+    const directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    await idbPut(await openPhotoDb(), PHOTO_BLOB_STORE, {
+      id: MOBILE_ORIGINALS_FOLDER_HANDLE_ID,
+      directoryHandle,
+      name: clean(directoryHandle?.name),
+      pickedAt: new Date().toISOString(),
+    });
+    toast("Složka pro originály uložená.");
+    await refreshMobileOriginalsStatus({ quiet: true });
+    await exportMobileOriginalsToFolder();
+    return true;
+  } catch (error) {
+    if (error?.name !== "AbortError") toast(`Složku se nepodařilo vybrat: ${friendlySyncError(error)}`);
+    refreshMobileOriginalsStatus({ quiet: true }).catch(() => {});
+    return false;
+  }
+}
+
+async function writeMobileOriginalToFolder(directoryHandle, entry, file) {
+  if (!directoryHandle || !file) return false;
+  const fileHandle = await directoryHandle.getFileHandle(entry.fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(file);
+  } finally {
+    await writable.close();
+  }
+  return true;
+}
+
+async function exportMobileOriginalsToFolder() {
+  const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: true });
+  if (!directoryHandle) return { copied: 0, failed: 0, skipped: 0 };
+  const plan = buildSupabaseOriginalDownloadPlan(state.data);
+  let copied = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const entry of plan) {
+    const file = await getLocalSupabaseOriginalFile(entry.ref, entry.ownerName);
+    if (!file) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await writeMobileOriginalToFolder(directoryHandle, entry, file);
+      copied += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  if (copied || failed) toast(failed ? `Do složky se uložilo ${copied}, chyba ${failed}.` : `Do složky uloženo ${copied} originálů.`);
+  return { copied, failed, skipped };
 }
 
 async function saveLocalSupabaseOriginal(ref, file, options = {}) {
@@ -12307,6 +12466,9 @@ function openOfferDetailSheet(id, options = {}) {
     </div>
     ${loggedIn ? `<button class="button secondary" type="button" id="cleanCloudPhotos">Vyčistit staré fotky v cloudu</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Stáhnout originály do mobilu</button>` : ""}
+    ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro originály</button>` : ""}
+    ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Originály v mobilu: počítám...</strong>` : ""}
+    ${loggedIn ? `<small class="sub" id="mobileOriginalsFolderStatus">Složka: kontroluji...</small>` : ""}
     ${loggedIn ? `<small class="sub">Jednou stáhne plné fotky do telefonu. Potom je mobil použije i pro ZIP a stahování.</small>` : ""}
     <small class="sub">${footerText}</small>
   </section>
@@ -12566,6 +12728,7 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncAuto", toggleAutoSync);
     bindClick("#cleanCloudPhotos", () => cleanOrphanCloudPhotos());
     bindClick("#downloadMobileOriginals", () => downloadSupabaseOriginalsToMobile());
+    bindClick("#pickMobileOriginalsFolder", () => pickMobileOriginalsFolder());
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
       const node = document.querySelector(`#${id}`);
       if (node) node.oninput = saveSyncConfigFromInputs;
@@ -12586,7 +12749,7 @@ function openOfferDetailSheet(id, options = {}) {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !els.list?.contains(target)) return false;
 
-    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #cleanCloudPhotos, #downloadMobileOriginals, #saveAppSettings, [data-trash-empty-all]");
+    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #cleanCloudPhotos, #downloadMobileOriginals, #pickMobileOriginalsFolder, #saveAppSettings, [data-trash-empty-all]");
     if (action) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -12597,6 +12760,7 @@ function openOfferDetailSheet(id, options = {}) {
       else if (action.id === "syncPush") pushSync();
       else if (action.id === "cleanCloudPhotos") cleanOrphanCloudPhotos();
       else if (action.id === "downloadMobileOriginals") downloadSupabaseOriginalsToMobile();
+      else if (action.id === "pickMobileOriginalsFolder") pickMobileOriginalsFolder();
       else if (action.id === "saveAppSettings") saveAppSettingsFromInputs();
       else if (action.hasAttribute("data-trash-empty-all")) emptyTrash();
       return true;
@@ -12736,6 +12900,10 @@ function openOfferDetailSheet(id, options = {}) {
       updateSyncIndicator();
     } catch (error) {
       console.error("AK91 updateSyncIndicator failed", error);
+    }
+
+    if (state.view === "sync") {
+      refreshMobileOriginalsStatus().catch(() => {});
     }
   };
 

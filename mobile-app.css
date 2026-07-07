@@ -1529,6 +1529,19 @@ textarea {
   box-shadow: var(--soft-shadow);
 }
 
+.mobile-originals-status {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(72, 171, 116, 0.28);
+  border-radius: 999px;
+  background: rgba(218, 249, 225, 0.82);
+  color: #0d3b2d;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
 .empty {
   padding: 30px 18px;
   border: 1px solid rgba(255, 255, 255, 0.12);
