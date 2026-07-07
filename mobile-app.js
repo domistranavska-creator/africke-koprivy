@@ -8988,7 +8988,8 @@ async function mobileOriginalsStatusCounts() {
     const record = await getLocalSupabaseOriginalRecord(entry.ref);
     if (record?.blob) stored += 1;
   }
-  return { stored, total: plan.length };
+  const folder = await countMobileOriginalFolderFiles(plan);
+  return { stored, total: plan.length, folder };
 }
 
 function mobileOriginalsFolderSupported() {
@@ -9010,9 +9011,12 @@ async function refreshMobileOriginalsStatus(options = {}) {
   if (!node) return 0;
   const token = state.mobileOriginalsStatusToken + 1;
   state.mobileOriginalsStatusToken = token;
-  if (!options.quiet) setMobileOriginalsStatusText("Originály v mobilu: počítám...");
+  if (!options.quiet) setMobileOriginalsStatusText("Fotky v mobilu: počítám...");
   const counts = await mobileOriginalsStatusCounts();
-  if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`Originály v mobilu: ${counts.stored} / ${counts.total}`);
+  if (state.mobileOriginalsStatusToken === token) {
+    const folderText = counts.folder === null ? "" : `, ve složce: ${counts.folder} / ${counts.total}`;
+    setMobileOriginalsStatusText(`Fotky v appce: ${counts.stored} / ${counts.total}${folderText}`);
+  }
   refreshMobileOriginalsFolderStatus().catch(() => {});
   return counts.stored;
 }
@@ -9075,14 +9079,95 @@ async function pickMobileOriginalsFolder() {
 
 async function writeMobileOriginalToFolder(directoryHandle, entry, file) {
   if (!directoryHandle || !file) return false;
-  const fileHandle = await directoryHandle.getFileHandle(entry.fileName, { create: true });
+  const folderFile = await createMobileOriginalFolderFile(file, entry);
+  const fileName = mobileOriginalFolderFileName(entry);
+  const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
   try {
-    await writable.write(file);
+    await writable.write(folderFile);
   } finally {
     await writable.close();
   }
   return true;
+}
+
+function mobileOriginalFolderFileName(entry = {}) {
+  return clean(entry.fileName).replace(/\.[a-z0-9]+$/i, ".jpg") || `${safeFileName(entry.ownerName, "fotka")}.jpg`;
+}
+
+async function countMobileOriginalFolderFiles(plan = buildSupabaseOriginalDownloadPlan(state.data)) {
+  const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: false });
+  if (!directoryHandle) return null;
+  let count = 0;
+  for (const entry of plan) {
+    try {
+      const fileHandle = await directoryHandle.getFileHandle(mobileOriginalFolderFileName(entry));
+      const file = await fileHandle.getFile();
+      if (file && Number(file.size) >= 0) count += 1;
+    } catch {
+      // Soubor ve zvolené složce zatím není.
+    }
+  }
+  return count;
+}
+
+async function createMobileOriginalFolderFile(file, entry = {}) {
+  if (!file?.type?.startsWith("image/")) return file;
+  let objectUrl = "";
+  try {
+    objectUrl = URL.createObjectURL(file);
+    const image = await loadCanvasImage(objectUrl);
+    if (!image) return file;
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return file;
+    const maxEdge = 2400;
+    const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.drawImage(image, 0, 0, width, height);
+
+    const label = clean(entry.ownerName) || "Africké kopřivy";
+    const padding = Math.max(18, Math.round(width * 0.035));
+    const fontSize = Math.max(34, Math.min(76, Math.round(width * 0.055)));
+    const lineHeight = Math.round(fontSize * 1.15);
+    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    const lines = wrapCanvasText(context, label, width - padding * 4).slice(0, 2);
+    const textWidth = Math.max(...lines.map((line) => context.measureText(line).width), fontSize * 3);
+    const badgeWidth = Math.min(width - padding * 2, Math.ceil(textWidth + padding * 1.8));
+    const badgeHeight = Math.ceil(padding * 1.2 + lines.length * lineHeight);
+    const x = padding;
+    const y = padding;
+
+    context.save();
+    context.shadowColor = "rgba(0, 0, 0, 0.34)";
+    context.shadowBlur = Math.round(padding * 0.55);
+    context.shadowOffsetY = Math.round(padding * 0.18);
+    roundRectPath(context, x, y, badgeWidth, badgeHeight, Math.round(badgeHeight / 2));
+    context.fillStyle = "rgba(255, 254, 248, 0.94)";
+    context.fill();
+    context.restore();
+
+    context.fillStyle = "#0d3b2d";
+    context.textAlign = "left";
+    context.textBaseline = "alphabetic";
+    lines.forEach((line, index) => {
+      context.fillText(line, x + padding * 0.9, y + padding * 0.8 + fontSize + index * lineHeight);
+    });
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    if (!blob) return file;
+    return new File([blob], clean(entry.fileName).replace(/\.[a-z0-9]+$/i, ".jpg") || `${safeFileName(label, "fotka")}.jpg`, { type: "image/jpeg" });
+  } catch {
+    return file;
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function exportMobileOriginalsToFolder() {
@@ -9093,7 +9178,21 @@ async function exportMobileOriginalsToFolder() {
   let failed = 0;
   let skipped = 0;
   for (const entry of plan) {
-    const file = await getLocalSupabaseOriginalFile(entry.ref, entry.ownerName);
+    let file = await getLocalSupabaseOriginalFile(entry.ref, entry.ownerName);
+    if (!file) {
+      file = await supabasePhotoRefToFile(entry.ref, entry.ownerName);
+      if (file) {
+        try {
+          await saveLocalSupabaseOriginal(entry.ref, file, {
+            fileName: entry.fileName,
+            ownerName: entry.ownerName,
+            path: entry.path,
+          });
+        } catch {
+          // I kdyby mobilní úložiště nešlo doplnit, složku zkusíme zapsat.
+        }
+      }
+    }
     if (!file) {
       skipped += 1;
       continue;
@@ -12467,8 +12566,9 @@ function openOfferDetailSheet(id, options = {}) {
     ${loggedIn ? `<button class="button secondary" type="button" id="cleanCloudPhotos">Vyčistit staré fotky v cloudu</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Stáhnout originály do mobilu</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro originály</button>` : ""}
-    ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Originály v mobilu: počítám...</strong>` : ""}
+    ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Fotky v mobilu: počítám...</strong>` : ""}
     ${loggedIn ? `<small class="sub" id="mobileOriginalsFolderStatus">Složka: kontroluji...</small>` : ""}
+    ${loggedIn ? `<small class="sub">Počítají se fotky, ne odrůdy. Jedna odrůda může mít víc fotek.</small>` : ""}
     ${loggedIn ? `<small class="sub">Jednou stáhne plné fotky do telefonu. Potom je mobil použije i pro ZIP a stahování.</small>` : ""}
     <small class="sub">${footerText}</small>
   </section>
