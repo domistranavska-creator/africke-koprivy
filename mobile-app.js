@@ -2479,7 +2479,6 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncLogout", logoutSync);
     bindClick("#syncPush", () => pushSync());
     bindClick("#syncPull", () => pullSync());
-    bindClick("#cleanCloudPhotos", () => cleanOrphanCloudPhotos());
     bindClick("#syncAuto", toggleAutoSync);
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
       const node = document.querySelector(`#${id}`);
@@ -5783,37 +5782,52 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
     const imageWidth = Math.max(1, Math.round(sourceWidth * scale));
     const imageHeight = Math.max(1, Math.round(sourceHeight * scale));
-    const padding = Math.max(26, Math.round(imageWidth * 0.035));
-    const fontSize = Math.max(34, Math.min(58, Math.round(imageWidth * 0.052)));
-    const lineHeight = Math.round(fontSize * 1.22);
+    const padding = Math.max(28, Math.round(imageWidth * 0.036));
+    const titleFontSize = Math.max(38, Math.min(72, Math.round(imageWidth * 0.062)));
+    const valueFontSize = Math.max(36, Math.min(70, Math.round(imageWidth * 0.058)));
+    const labelFontSize = Math.max(18, Math.min(30, Math.round(imageWidth * 0.026)));
+    const titleLineHeight = Math.round(titleFontSize * 1.12);
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
     if (!context) return file;
-    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
-    const lines = wrapCanvasText(context, entry.label, imageWidth - padding * 2).slice(0, 3);
-    const footerHeight = padding * 2 + lines.length * lineHeight;
+    context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
+    const titleLines = wrapCanvasText(context, entry.title || entry.label, imageWidth - padding * 3).slice(0, 2);
+    const titleBadgeHeight = padding * 1.25 + titleLines.length * titleLineHeight;
+    const footerHeight = Math.max(142, Math.round(imageWidth * 0.18));
     canvas.width = imageWidth;
     canvas.height = imageHeight + footerHeight;
     context.fillStyle = "#fbf7e9";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, imageWidth, imageHeight);
     const gradient = context.createLinearGradient(0, imageHeight, canvas.width, canvas.height);
-    gradient.addColorStop(0, "#f8f1da");
-    gradient.addColorStop(1, "#e0f3df");
+    gradient.addColorStop(0, "#fff8e9");
+    gradient.addColorStop(1, "#dff4df");
     context.fillStyle = gradient;
     context.fillRect(0, imageHeight, canvas.width, footerHeight);
-    context.strokeStyle = "#9ac7ac";
+    context.strokeStyle = "#95c49f";
     context.lineWidth = Math.max(2, Math.round(imageWidth * 0.004));
     context.beginPath();
     context.moveTo(0, imageHeight + 1);
     context.lineTo(canvas.width, imageHeight + 1);
     context.stroke();
+    drawFacebookRoundedRect(context, padding, padding, imageWidth - padding * 2, titleBadgeHeight, Math.round(titleBadgeHeight / 2), "rgba(255, 253, 245, 0.92)", "rgba(13, 59, 45, 0.12)");
     context.fillStyle = "#0d3b2d";
-    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     context.textAlign = "center";
-    lines.forEach((line, index) => {
-      context.fillText(line, canvas.width / 2, imageHeight + padding + fontSize + index * lineHeight);
+    context.textBaseline = "alphabetic";
+    titleLines.forEach((line, index) => {
+      context.fillText(line, imageWidth / 2, padding + padding * 0.55 + titleFontSize + index * titleLineHeight);
     });
+
+    const priceText = clean(entry.priceText) || "Bez ceny";
+    const quantityTextValue = clean(entry.quantityLabel) || "";
+    const gap = Math.max(16, Math.round(imageWidth * 0.025));
+    const cardY = imageHeight + Math.round(footerHeight * 0.18);
+    const cardHeight = Math.round(footerHeight * 0.64);
+    const priceWidth = Math.round((imageWidth - padding * 2 - gap) * 0.58);
+    const qtyWidth = imageWidth - padding * 2 - gap - priceWidth;
+    drawFacebookValueCard(context, padding, cardY, priceWidth, cardHeight, "Cena", priceText, valueFontSize, labelFontSize, "#8d2d4c");
+    drawFacebookValueCard(context, padding + priceWidth + gap, cardY, qtyWidth, cardHeight, "Kusy", quantityTextValue, valueFontSize, labelFontSize, "#0d3b2d");
     context.textAlign = "left";
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
     if (!blob) return file;
@@ -5823,6 +5837,39 @@ async function createFacebookLabeledPhotoFile(file, entry) {
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
+}
+
+function drawFacebookRoundedRect(context, x, y, width, height, radius, fillStyle, strokeStyle = "") {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+  context.fillStyle = fillStyle;
+  context.fill();
+  if (strokeStyle) {
+    context.strokeStyle = strokeStyle;
+    context.lineWidth = 2;
+    context.stroke();
+  }
+}
+
+function drawFacebookValueCard(context, x, y, width, height, label, value, valueFontSize, labelFontSize, color) {
+  drawFacebookRoundedRect(context, x, y, width, height, Math.round(height * 0.28), "rgba(255, 255, 250, 0.76)", "rgba(13, 59, 45, 0.12)");
+  context.textAlign = "center";
+  context.fillStyle = color;
+  context.font = `950 ${valueFontSize}px 'Segoe UI', Arial, sans-serif`;
+  context.fillText(value, x + width / 2, y + height * 0.5 + valueFontSize * 0.22);
+  context.fillStyle = "rgba(13, 59, 45, 0.68)";
+  context.font = `800 ${labelFontSize}px 'Segoe UI', Arial, sans-serif`;
+  context.fillText(label, x + width / 2, y + height - labelFontSize * 0.65);
 }
 
 async function createZipBlob(entries) {
@@ -6049,7 +6096,9 @@ function facebookOfferZipEntries(offer) {
       if (!ref) return null;
       const priceText = clean(item?.price) ? formatMoney(item.price, item.currency || "CZK") : "";
       const price = priceText ? `${normalizeAmount(item.price)}-${normalizeCurrencyLabel(item.currency || "CZK")}` : "";
-      const label = `${offerItemNameSafe(item)} - ${quantityText(available)} ks${priceText ? ` - ${priceText}` : ""}`;
+      const title = offerItemNameSafe(item);
+      const quantityLabel = `${quantityText(available)} ks`;
+      const label = `${title} - ${quantityLabel}${priceText ? ` - ${priceText}` : ""}`;
       const base = safeFileName(`${String(index + 1).padStart(3, "0")}-${offerItemNameSafe(item)}-${quantityText(available)}ks-${price}`, `fotka-${index + 1}`);
       let name = base;
       let suffix = 2;
@@ -6058,7 +6107,7 @@ function facebookOfferZipEntries(offer) {
         suffix += 1;
       }
       usedNames.add(name);
-      return { ref, name, label };
+      return { ref, name, label, title, quantityLabel, priceText };
     })
     .filter(Boolean);
 }
@@ -6275,12 +6324,22 @@ function collectSupabaseOriginalPhotoEntries(data = state.data) {
     for (const ref of varietyImages(variety)) add(ref, variety?.name || "odruda");
   }
   for (const cross of data?.crosses || []) {
-    for (const ref of crossSeedlingImages(cross)) add(ref, cross?.seedlingName || "semenac");
+    for (const ref of crossSeedlingImages(cross)) add(ref, crossSeedlingOwnerName(cross));
   }
   for (const offer of data?.offers || []) {
     for (const item of offer?.items || []) add(item?.photoUrl, offerItemName(item) || "nabidka");
   }
   return entries;
+}
+
+function crossSeedlingOwnerName(cross = {}) {
+  const linked = findById("varieties", clean(cross.linkedVarietyId));
+  const namedVariety = findVarietyByName(clean(cross.seedlingName || cross.name));
+  const generic = new Set(["semenac", "semenacek", "semenak", "krizeni"]);
+  const candidates = [cross.seedlingName, cross.name, linked?.name, namedVariety?.name, crossLineage(cross)]
+    .map(clean)
+    .filter(Boolean);
+  return candidates.find((name) => !generic.has(normalize(name).replace(/[^a-z0-9]+/g, ""))) || candidates[0] || "semenac";
 }
 
 function buildSupabaseOriginalDownloadPlan(data = state.data) {
@@ -8988,8 +9047,7 @@ async function mobileOriginalsStatusCounts() {
     const record = await getLocalSupabaseOriginalRecord(entry.ref);
     if (record?.blob) stored += 1;
   }
-  const folder = await countMobileOriginalFolderFiles(plan);
-  return { stored, total: plan.length, folder };
+  return { stored, total: plan.length, plan };
 }
 
 function mobileOriginalsFolderSupported() {
@@ -9012,10 +9070,22 @@ async function refreshMobileOriginalsStatus(options = {}) {
   const token = state.mobileOriginalsStatusToken + 1;
   state.mobileOriginalsStatusToken = token;
   if (!options.quiet) setMobileOriginalsStatusText("Fotky v mobilu: počítám...");
-  const counts = await mobileOriginalsStatusCounts();
+  const counts = await mobileOriginalsStatusCounts().catch(() => null);
+  if (!counts) {
+    if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText("Fotky v mobilu: nejdou teď spočítat");
+    return 0;
+  }
   if (state.mobileOriginalsStatusToken === token) {
-    const folderText = counts.folder === null ? "" : `, ve složce: ${counts.folder} / ${counts.total}`;
-    setMobileOriginalsStatusText(`Fotky v appce: ${counts.stored} / ${counts.total}${folderText}`);
+    const baseText = `Fotky v appce: ${counts.stored} / ${counts.total}`;
+    setMobileOriginalsStatusText(`${baseText}, ve složce: počítám...`);
+    countMobileOriginalFolderFiles(counts.plan)
+      .then((folder) => {
+        if (state.mobileOriginalsStatusToken !== token) return;
+        setMobileOriginalsStatusText(folder === null ? baseText : `${baseText}, ve složce: ${folder} / ${counts.total}`);
+      })
+      .catch(() => {
+        if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`${baseText}, ve složce: nelze ověřit`);
+      });
   }
   refreshMobileOriginalsFolderStatus().catch(() => {});
   return counts.stored;
@@ -12563,7 +12633,6 @@ function openOfferDetailSheet(id, options = {}) {
     <div class="two">
       ${actionButtons}
     </div>
-    ${loggedIn ? `<button class="button secondary" type="button" id="cleanCloudPhotos">Vyčistit staré fotky v cloudu</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Stáhnout originály do mobilu</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro originály</button>` : ""}
     ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Fotky v mobilu: počítám...</strong>` : ""}
@@ -12826,7 +12895,6 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncPush", () => pushSync());
     bindClick("#syncPull", () => pullSync());
     bindClick("#syncAuto", toggleAutoSync);
-    bindClick("#cleanCloudPhotos", () => cleanOrphanCloudPhotos());
     bindClick("#downloadMobileOriginals", () => downloadSupabaseOriginalsToMobile());
     bindClick("#pickMobileOriginalsFolder", () => pickMobileOriginalsFolder());
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
@@ -12849,7 +12917,7 @@ function openOfferDetailSheet(id, options = {}) {
     const target = event.target instanceof Element ? event.target : null;
     if (!target || !els.list?.contains(target)) return false;
 
-    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #cleanCloudPhotos, #downloadMobileOriginals, #pickMobileOriginalsFolder, #saveAppSettings, [data-trash-empty-all]");
+    const action = target.closest("#syncLogin, #syncLogout, #syncPull, #syncPush, #downloadMobileOriginals, #pickMobileOriginalsFolder, #saveAppSettings, [data-trash-empty-all]");
     if (action) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -12858,7 +12926,6 @@ function openOfferDetailSheet(id, options = {}) {
       else if (action.id === "syncLogout") logoutSync();
       else if (action.id === "syncPull") pullSync();
       else if (action.id === "syncPush") pushSync();
-      else if (action.id === "cleanCloudPhotos") cleanOrphanCloudPhotos();
       else if (action.id === "downloadMobileOriginals") downloadSupabaseOriginalsToMobile();
       else if (action.id === "pickMobileOriginalsFolder") pickMobileOriginalsFolder();
       else if (action.id === "saveAppSettings") saveAppSettingsFromInputs();

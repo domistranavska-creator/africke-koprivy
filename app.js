@@ -507,7 +507,6 @@ function init() {
   document.querySelector("#syncLogoutBtn")?.addEventListener("click", logoutSupabaseSync);
   document.querySelector("#syncPushBtn")?.addEventListener("click", pushSupabaseSync);
   document.querySelector("#syncPullBtn")?.addEventListener("click", pullSupabaseSync);
-  document.querySelector("#cleanCloudPhotosBtn")?.addEventListener("click", cleanSupabaseOrphanPhotos);
   els.syncAutoEnabled?.addEventListener("change", () => {
     saveSupabaseSyncConfigFromPanel({ quiet: true });
     updateSupabaseSyncStatus();
@@ -8355,7 +8354,9 @@ function facebookOfferZipEntries(offer) {
       if (!ref) return null;
       const priceText = clean(item?.price) ? formatMoney(item.price, item.currency || "CZK") : "";
       const price = priceText ? `${normalizeAmount(item.price)}-${normalizeCurrencyLabel(item.currency || "CZK")}` : "";
-      const label = `${offerItemNameSafe(item)} - ${quantityText(available)} ks${priceText ? ` - ${priceText}` : ""}`;
+      const title = offerItemNameSafe(item);
+      const quantityLabel = `${quantityText(available)} ks`;
+      const label = `${title} - ${quantityLabel}${priceText ? ` - ${priceText}` : ""}`;
       const base = safeFileName(`${String(index + 1).padStart(3, "0")}-${offerItemNameSafe(item)}-${quantityText(available)}ks-${price}`, `fotka-${index + 1}`);
       let name = base;
       let suffix = 2;
@@ -8364,7 +8365,7 @@ function facebookOfferZipEntries(offer) {
         suffix += 1;
       }
       usedNames.add(name);
-      return { ref, name, label };
+      return { ref, name, label, title, quantityLabel, priceText };
     })
     .filter(Boolean);
 }
@@ -8420,37 +8421,53 @@ async function createFacebookLabeledPhotoFile(file, entry) {
     const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
     const imageWidth = Math.max(1, Math.round(sourceWidth * scale));
     const imageHeight = Math.max(1, Math.round(sourceHeight * scale));
-    const padding = Math.max(26, Math.round(imageWidth * 0.035));
-    const fontSize = Math.max(34, Math.min(58, Math.round(imageWidth * 0.052)));
-    const lineHeight = Math.round(fontSize * 1.22);
+    const padding = Math.max(28, Math.round(imageWidth * 0.036));
+    const titleFontSize = Math.max(38, Math.min(72, Math.round(imageWidth * 0.062)));
+    const valueFontSize = Math.max(36, Math.min(70, Math.round(imageWidth * 0.058)));
+    const labelFontSize = Math.max(18, Math.min(30, Math.round(imageWidth * 0.026)));
+    const titleLineHeight = Math.round(titleFontSize * 1.12);
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
     if (!context) return file;
-    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
-    const lines = wrapCanvasText(context, entry.label, imageWidth - padding * 2, context.font).slice(0, 3);
-    const footerHeight = padding * 2 + lines.length * lineHeight;
+    context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
+    const titleLines = wrapCanvasText(context, entry.title || entry.label, imageWidth - padding * 3, context.font).slice(0, 2);
+    const titleBadgeHeight = padding * 1.25 + titleLines.length * titleLineHeight;
+    const footerHeight = Math.max(142, Math.round(imageWidth * 0.18));
     canvas.width = imageWidth;
     canvas.height = imageHeight + footerHeight;
     context.fillStyle = "#fbf7e9";
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(image, 0, 0, imageWidth, imageHeight);
     const gradient = context.createLinearGradient(0, imageHeight, canvas.width, canvas.height);
-    gradient.addColorStop(0, "#f8f1da");
-    gradient.addColorStop(1, "#e0f3df");
+    gradient.addColorStop(0, "#fff8e9");
+    gradient.addColorStop(1, "#dff4df");
     context.fillStyle = gradient;
     context.fillRect(0, imageHeight, canvas.width, footerHeight);
-    context.strokeStyle = "#9ac7ac";
+    context.strokeStyle = "#95c49f";
     context.lineWidth = Math.max(2, Math.round(imageWidth * 0.004));
     context.beginPath();
     context.moveTo(0, imageHeight + 1);
     context.lineTo(canvas.width, imageHeight + 1);
     context.stroke();
+
+    drawFacebookRoundedRect(context, padding, padding, imageWidth - padding * 2, titleBadgeHeight, Math.round(titleBadgeHeight / 2), "rgba(255, 253, 245, 0.92)", "rgba(13, 59, 45, 0.12)");
     context.fillStyle = "#0d3b2d";
-    context.font = `900 ${fontSize}px 'Segoe UI', Arial, sans-serif`;
+    context.font = `900 ${titleFontSize}px 'Segoe UI', Arial, sans-serif`;
     context.textAlign = "center";
-    lines.forEach((line, index) => {
-      context.fillText(line, canvas.width / 2, imageHeight + padding + fontSize + index * lineHeight);
+    context.textBaseline = "alphabetic";
+    titleLines.forEach((line, index) => {
+      context.fillText(line, imageWidth / 2, padding + padding * 0.55 + titleFontSize + index * titleLineHeight);
     });
+
+    const priceText = clean(entry.priceText) || "Bez ceny";
+    const quantityTextValue = clean(entry.quantityLabel) || "";
+    const gap = Math.max(16, Math.round(imageWidth * 0.025));
+    const cardY = imageHeight + Math.round(footerHeight * 0.18);
+    const cardHeight = Math.round(footerHeight * 0.64);
+    const priceWidth = Math.round((imageWidth - padding * 2 - gap) * 0.58);
+    const qtyWidth = imageWidth - padding * 2 - gap - priceWidth;
+    drawFacebookValueCard(context, padding, cardY, priceWidth, cardHeight, "Cena", priceText, valueFontSize, labelFontSize, "#8d2d4c");
+    drawFacebookValueCard(context, padding + priceWidth + gap, cardY, qtyWidth, cardHeight, "Kusy", quantityTextValue, valueFontSize, labelFontSize, "#0d3b2d");
     context.textAlign = "left";
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
     if (!blob) return file;
@@ -8460,6 +8477,39 @@ async function createFacebookLabeledPhotoFile(file, entry) {
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
+}
+
+function drawFacebookRoundedRect(context, x, y, width, height, radius, fillStyle, strokeStyle = "") {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+  context.fillStyle = fillStyle;
+  context.fill();
+  if (strokeStyle) {
+    context.strokeStyle = strokeStyle;
+    context.lineWidth = 2;
+    context.stroke();
+  }
+}
+
+function drawFacebookValueCard(context, x, y, width, height, label, value, valueFontSize, labelFontSize, color) {
+  drawFacebookRoundedRect(context, x, y, width, height, Math.round(height * 0.28), "rgba(255, 255, 250, 0.76)", "rgba(13, 59, 45, 0.12)");
+  context.textAlign = "center";
+  context.fillStyle = color;
+  context.font = `950 ${valueFontSize}px 'Segoe UI', Arial, sans-serif`;
+  context.fillText(value, x + width / 2, y + height * 0.5 + valueFontSize * 0.22);
+  context.fillStyle = "rgba(13, 59, 45, 0.68)";
+  context.font = `800 ${labelFontSize}px 'Segoe UI', Arial, sans-serif`;
+  context.fillText(label, x + width / 2, y + height - labelFontSize * 0.65);
 }
 
 async function createZipBlob(entries) {
