@@ -9085,12 +9085,16 @@ async function refreshMobileOriginalsStatus(options = {}) {
   if (state.mobileOriginalsStatusToken === token) {
     const baseText = `Appka: ${counts.stored}/${counts.total} velkých fotek`;
     const cachedFolder = await getMobileOriginalsFolderCountCache(counts.total).catch(() => null);
+    const folderName = await getMobileOriginalsFolderName().catch(() => "");
     setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: kontroluji...`);
     countMobileOriginalFolderFiles(counts.plan, { timeoutMs: 8000 })
       .then((folder) => {
         if (state.mobileOriginalsStatusToken !== token) return;
         if (folder === null) {
-          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: nevybraná / nejde ověřit`);
+          const fallbackText = folderName
+            ? `${baseText} · Složka: vybraná, počet ověř tlačítkem`
+            : `${baseText} · Složka: nevybraná`;
+          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : fallbackText);
           return;
         }
         rememberMobileOriginalsFolderCount(folder, counts.total).catch(() => {});
@@ -9104,6 +9108,11 @@ async function refreshMobileOriginalsStatus(options = {}) {
   }
   refreshMobileOriginalsFolderStatus().catch(() => {});
   return counts.stored;
+}
+
+async function getMobileOriginalsFolderName() {
+  const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, MOBILE_ORIGINALS_FOLDER_HANDLE_ID);
+  return clean(record?.name || record?.directoryHandle?.name);
 }
 
 async function getMobileOriginalsFolderCountCache(total = 0) {
@@ -9131,8 +9140,7 @@ async function refreshMobileOriginalsFolderStatus() {
     setMobileOriginalsFolderStatusText("Složka: telefon výběr složky nepovoluje");
     return;
   }
-  const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, MOBILE_ORIGINALS_FOLDER_HANDLE_ID);
-  const name = clean(record?.directoryHandle?.name);
+  const name = await getMobileOriginalsFolderName();
   setMobileOriginalsFolderStatusText(name ? `Složka: ${name}` : "Složka: nevybraná");
 }
 
@@ -9169,7 +9177,7 @@ async function pickMobileOriginalsFolder() {
       name: clean(directoryHandle?.name),
       pickedAt: new Date().toISOString(),
     });
-    toast("Složka pro originály uložená.");
+    toast("Složka pro originály uložená. Teď ji appka ověřuje.");
     await refreshMobileOriginalsStatus({ quiet: true });
     await exportMobileOriginalsToFolder();
     return true;
@@ -12692,7 +12700,7 @@ function openOfferDetailSheet(id, options = {}) {
       ${actionButtons}
     </div>
     ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Doplnit chybějící velké fotky</button>` : ""}
-    ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro zálohu fotek</button>` : ""}
+    ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat / ověřit složku fotek</button>` : ""}
     ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Fotky v mobilu: počítám...</strong>` : ""}
     ${loggedIn ? `<small class="sub" id="mobileOriginalsFolderStatus">Složka: kontroluji...</small>` : ""}
     ${loggedIn ? `<small class="sub">V appce = velké fotky uložené uvnitř aplikace. Ve složce = kopie fotek jako normální soubory v telefonu.</small>` : ""}
