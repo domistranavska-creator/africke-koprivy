@@ -26,6 +26,7 @@ const SUPABASE_PHOTO_CACHE_PREFIX = "supabase-cache:";
 const SUPABASE_PREPARED_PHOTO_CACHE_PREFIX = "supabase-prepared-cache:";
 const SUPABASE_LOCAL_ORIGINAL_PREFIX = "supabase-local-original:";
 const MOBILE_ORIGINALS_FOLDER_HANDLE_ID = "mobile-originals-folder-handle";
+const MOBILE_ORIGINALS_FOLDER_COUNT_ID = "mobile-originals-folder-count";
 const SUPABASE_PHOTO_CACHE_MAX_BYTES = 300 * 1024 * 1024;
 const SUPABASE_PHOTO_CACHE_MAX_ITEMS = 1200;
 const SUPABASE_PHOTO_CACHE_MAX_SINGLE_BYTES = 12 * 1024 * 1024;
@@ -6412,6 +6413,9 @@ async function downloadSupabaseOriginalsToMobile() {
         }
       }
     }
+    if (directoryHandle) {
+      await rememberMobileOriginalsFolderCount(copiedToFolder + alreadyInFolder, plan.length).catch(() => {});
+    }
     updateSyncIndicator();
     if (!downloaded && !failed) {
       toast(directoryHandle
@@ -9080,18 +9084,44 @@ async function refreshMobileOriginalsStatus(options = {}) {
   }
   if (state.mobileOriginalsStatusToken === token) {
     const baseText = `Appka: ${counts.stored}/${counts.total} velkých fotek`;
-    setMobileOriginalsStatusText(`${baseText} · Složka: počítám...`);
-    countMobileOriginalFolderFiles(counts.plan)
+    const cachedFolder = await getMobileOriginalsFolderCountCache(counts.total).catch(() => null);
+    setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: kontroluji...`);
+    countMobileOriginalFolderFiles(counts.plan, { timeoutMs: 8000 })
       .then((folder) => {
         if (state.mobileOriginalsStatusToken !== token) return;
-        setMobileOriginalsStatusText(folder === null ? `${baseText} · Složka: nevybraná / nejde ověřit` : `${baseText} · Složka: ${folder}/${counts.total} souborů`);
+        if (folder === null) {
+          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: nevybraná / nejde ověřit`);
+          return;
+        }
+        rememberMobileOriginalsFolderCount(folder, counts.total).catch(() => {});
+        setMobileOriginalsStatusText(`${baseText} · Složka: ${folder}/${counts.total} souborů`);
       })
       .catch(() => {
-        if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`${baseText} · Složka: nejde ověřit`);
+        if (state.mobileOriginalsStatusToken === token) {
+          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: kontrola trvá, zkuste obnovit`);
+        }
       });
   }
   refreshMobileOriginalsFolderStatus().catch(() => {});
   return counts.stored;
+}
+
+async function getMobileOriginalsFolderCountCache(total = 0) {
+  const record = await idbGet(await openPhotoDb(), PHOTO_BLOB_STORE, MOBILE_ORIGINALS_FOLDER_COUNT_ID);
+  const count = wholeNumber(record?.count, -1);
+  const expectedTotal = wholeNumber(record?.total, -1);
+  if (count < 0 || expectedTotal !== total) return null;
+  return { count, total: expectedTotal };
+}
+
+async function rememberMobileOriginalsFolderCount(count, total) {
+  if (count < 0 || total < 0) return;
+  await idbPut(await openPhotoDb(), PHOTO_BLOB_STORE, {
+    id: MOBILE_ORIGINALS_FOLDER_COUNT_ID,
+    count,
+    total,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 async function refreshMobileOriginalsFolderStatus() {
@@ -9177,7 +9207,14 @@ function mobileOriginalFolderFileName(entry = {}) {
   return clean(entry.fileName).replace(/\.[a-z0-9]+$/i, ".jpg") || `${safeFileName(entry.ownerName, "fotka")}.jpg`;
 }
 
-async function countMobileOriginalFolderFiles(plan = buildSupabaseOriginalDownloadPlan(state.data)) {
+async function countMobileOriginalFolderFiles(plan = buildSupabaseOriginalDownloadPlan(state.data), options = {}) {
+  const timeoutMs = wholeNumber(options.timeoutMs, 0);
+  if (timeoutMs > 0) {
+    return Promise.race([
+      countMobileOriginalFolderFiles(plan, { ...options, timeoutMs: 0 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("folder-count-timeout")), timeoutMs)),
+    ]);
+  }
   const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: false });
   if (!directoryHandle) return null;
   let count = 0;
