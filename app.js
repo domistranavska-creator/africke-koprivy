@@ -495,6 +495,7 @@ function init() {
   document.querySelector("#clearImportBtn")?.addEventListener("click", clearImport);
   document.querySelector("#backupDataBtn").addEventListener("click", backupData);
   document.querySelector("#prepareCloudOriginalsPlanBtn")?.addEventListener("click", prepareSupabaseOriginalsCleanupPlan);
+  document.querySelector("#deleteCloudOriginalsBtn")?.addEventListener("click", deleteSupabaseOriginalsWithThumbnails);
   document.querySelector("#exportOrdersBtn").addEventListener("click", exportOrders);
   document.querySelector("#exportCustomersBtn").addEventListener("click", exportCustomers);
   document.querySelector("#exportVarietiesBtn").addEventListener("click", exportVarieties);
@@ -9762,6 +9763,15 @@ async function cleanSupabaseOrphanPhotos() {
 
 async function prepareSupabaseOriginalsCleanupPlan() {
   try {
+    const detailedPlan = await buildSupabaseOriginalsRemovalPlan();
+    const detailedReport = buildSupabaseOriginalsCleanupPlanReport(detailedPlan);
+    downloadBlob(
+      new Blob([detailedReport], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-plan-originaly-cloud-${toDateInput(new Date())}.txt`
+    );
+    updateSupabaseSyncStatus(`Seznam hotový. Použití v appce: ${detailedPlan.usages.length}, unikátní originály: ${detailedPlan.appOriginalPaths.length}, kandidáti na smazání: ${detailedPlan.readyOriginals.length}. Nic jsem nemazala.`);
+    toast("Detailní seznam originálů v cloudu stažený. Nic se nemazalo.");
+    return true;
     const session = await ensureSupabaseSession();
     const userId = clean(session.user?.id) || "user";
     updateSupabaseSyncStatus("Připravuji seznam originálů v cloudu...");
@@ -9823,6 +9833,163 @@ function buildSupabaseOriginalsCleanupPlanReport({ readyOriginals = [], missingT
     ...unusedOriginals.map((path) => path),
   ];
   return lines.join("\n");
+}
+
+function buildSupabaseOriginalsCleanupPlanReport({
+  readyOriginals = [],
+  missingThumbs = [],
+  unusedOriginals = [],
+  existingPaths = [],
+  usages = [],
+  appOriginalPaths = [],
+  missingOriginalsInCloud = [],
+  duplicatedUsages = [],
+} = {}) {
+  const lines = [
+    "Africke koprivy - kontrolni seznam originalu v cloudu",
+    `Vygenerovano: ${new Date().toISOString()}`,
+    "",
+    "TENTO SOUBOR NIC NEMAZAL.",
+    "Je to jen kontrola pred mazanim.",
+    "Bezpecne pravidlo: mazat jen originaly, nikdy slozku _nahledy_v2.",
+    "",
+    `V cloudu celkem souboru: ${existingPaths.length}`,
+    `Pouziti fotek v appce: ${usages.length}`,
+    `Unikatni originaly pouzite v appce: ${appOriginalPaths.length}`,
+    `Originaly, ktere maji nahled: ${readyOriginals.length}`,
+    `Originaly bez nalezeneho nahledu: ${missingThumbs.length}`,
+    `Originaly pouzite v appce, ale nenalezene v cloudu: ${missingOriginalsInCloud.length}`,
+    `Originaly pouzite v appce vickrat: ${duplicatedUsages.length}`,
+    `Nepouzite originaly mimo aktualni data/kos: ${unusedOriginals.length}`,
+    "",
+    "0) Proc se cisla mohou lisit:",
+    "Appka pocita pouziti fotek. Cloud pocita fyzicke soubory. Jeden soubor muze byt pouzity vickrat.",
+    "",
+    "1) Originaly, ktere maji nahled a jsou kandidati na smazani:",
+    ...readyOriginals.map((path) => path),
+    "",
+    "2) Originaly BEZ nahledu - ty nemazat:",
+    ...missingThumbs.map((path) => path),
+    "",
+    "3) Nepouzite originaly mimo aktualni data/kos - kontrolovat rucne:",
+    ...unusedOriginals.map((path) => path),
+    "",
+    "4) Originaly pouzite v appce vickrat:",
+    ...duplicatedUsages.flatMap(([path, items]) => [
+      `${path} (${items.length}x)`,
+      ...items.map((item) => `  - ${item.where}: ${item.label}`),
+    ]),
+    "",
+    "5) Originaly pouzite v appce, ale nenalezene v cloudu:",
+    ...missingOriginalsInCloud.map((path) => {
+      const items = usages.filter((item) => item.path === path);
+      return `${path}${items.length ? ` :: ${items.map((item) => `${item.where}: ${item.label}`).join(" | ")}` : ""}`;
+    }),
+  ];
+  return lines.join("\n");
+}
+
+async function buildSupabaseOriginalsRemovalPlan() {
+  const session = await ensureSupabaseSession();
+  const userId = clean(session.user?.id) || "user";
+  const usages = collectSupabasePhotoPathUsages(state.data);
+  const usageMap = new Map();
+  usages.forEach((usage) => {
+    const path = clean(usage.path);
+    if (!path) return;
+    if (!usageMap.has(path)) usageMap.set(path, []);
+    usageMap.get(path).push(usage);
+  });
+  const referencedPaths = collectSupabasePhotoPaths(state.data);
+  collectSupabasePhotoPathsFromTrashEntries(ensureTrashData()).forEach((path) => referencedPaths.add(path));
+  const existingPaths = await listSupabaseStoragePaths(`${encodeURIComponent(userId)}/`);
+  const existingSet = new Set(existingPaths);
+  const appOriginalPaths = [...new Set(usages.map((usage) => clean(usage.path)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "cs"));
+  const referencedOriginals = [...referencedPaths]
+    .map(clean)
+    .filter((path) => path && !isSupabaseThumbnailPath(path) && existingSet.has(path))
+    .sort((a, b) => a.localeCompare(b, "cs"));
+  const readyOriginals = referencedOriginals.filter((path) => existingSet.has(supabaseThumbnailPath(path)));
+  const missingThumbs = referencedOriginals.filter((path) => !existingSet.has(supabaseThumbnailPath(path)));
+  const missingOriginalsInCloud = appOriginalPaths.filter((path) => !existingSet.has(path));
+  const duplicatedUsages = [...usageMap.entries()]
+    .filter(([, items]) => items.length > 1)
+    .sort((a, b) => a[0].localeCompare(b[0], "cs"));
+  const unusedOriginals = existingPaths
+    .filter((path) => !isSupabaseThumbnailPath(path) && !referencedPaths.has(path))
+    .sort((a, b) => a.localeCompare(b, "cs"));
+  return { readyOriginals, missingThumbs, unusedOriginals, existingPaths, usages, appOriginalPaths, missingOriginalsInCloud, duplicatedUsages };
+}
+
+async function deleteSupabaseOriginalsWithThumbnails() {
+  try {
+    updateSupabaseSyncStatus("Kontroluji originály před mazáním...");
+    const plan = await buildSupabaseOriginalsRemovalPlan();
+    const pathsToDelete = plan.readyOriginals.filter((path) => path && !isSupabaseThumbnailPath(path));
+    if (!pathsToDelete.length) {
+      updateSupabaseSyncStatus("Nenašla jsem originály s náhledem ke smazání.");
+      toast("Není co mazat. Originály s náhledem nebyly nalezeny.");
+      return false;
+    }
+    downloadBlob(
+      new Blob([buildSupabaseOriginalsCleanupPlanReport(plan)], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-pred-smazanim-originalu-${toDateInput(new Date())}.txt`
+    );
+    const firstConfirm = confirm(`Smazat z cloudu ${pathsToDelete.length} originálních fotek?\n\nNáhledy ve složce _nahledy_v2 zůstanou.\nOriginály musí být uložené v mobilu nebo v jiné záloze.`);
+    if (!firstConfirm) {
+      updateSupabaseSyncStatus("Mazání originálů zrušeno.");
+      return false;
+    }
+    const secondConfirm = confirm(`Poslední kontrola:\n\nOpravdu smazat jen originály: ${pathsToDelete.length}?\nNáhledy se mazat nebudou.`);
+    if (!secondConfirm) {
+      updateSupabaseSyncStatus("Mazání originálů zrušeno.");
+      return false;
+    }
+    const deleted = [];
+    const failed = [];
+    const batchSize = 25;
+    for (let index = 0; index < pathsToDelete.length; index += batchSize) {
+      const batch = pathsToDelete.slice(index, index + batchSize);
+      updateSupabaseSyncStatus(`Mažu originály z cloudu: ${index} / ${pathsToDelete.length}`);
+      try {
+        await deleteSupabaseStoragePaths(batch);
+        deleted.push(...batch);
+      } catch (error) {
+        const message = friendlySupabaseError(error);
+        failed.push(...batch.map((path) => `${path} :: ${message}`));
+      }
+    }
+    updateSupabaseSyncStatus(`Kontroluji cloud po mazání...`);
+    const afterPlan = await buildSupabaseOriginalsRemovalPlan();
+    const reportLines = [
+      "Africké kopřivy - výsledek mazání originálů",
+      `Vygenerováno: ${new Date().toISOString()}`,
+      "",
+      `Pokus o smazání originálů: ${pathsToDelete.length}`,
+      `Smazáno bez chyby: ${deleted.length}`,
+      `Chyby: ${failed.length}`,
+      `Originály s náhledem po mazání: ${afterPlan.readyOriginals.length}`,
+      `Originály bez náhledu po mazání: ${afterPlan.missingThumbs.length}`,
+      "",
+      "Zůstávající originály s náhledem:",
+      ...afterPlan.readyOriginals,
+      "",
+      "Chyby:",
+      ...failed,
+    ];
+    downloadBlob(
+      new Blob([reportLines.join("\n")], { type: "text/plain;charset=utf-8" }),
+      `africke-koprivy-vysledek-mazani-originalu-${toDateInput(new Date())}.txt`
+    );
+    updateSupabaseSyncStatus(`Hotovo. Smazáno ${deleted.length} originálů. Náhledy zůstaly.`);
+    toast(`Hotovo. Smazáno ${deleted.length} originálů z cloudu.`);
+    return true;
+  } catch (error) {
+    const message = friendlySupabaseError(error);
+    updateSupabaseSyncStatus(`Mazání originálů selhalo: ${message}`);
+    toast(`Mazání originálů selhalo: ${message}`);
+    return false;
+  }
 }
 
 function currentSupabaseEncryptionPassword() {
@@ -10238,6 +10405,32 @@ function collectSupabasePhotoPaths(data) {
     for (const item of offer.items || []) add(item.photoUrl);
   }
   return paths;
+}
+
+function collectSupabasePhotoPathUsages(data) {
+  const usages = [];
+  const add = (value, where, label) => {
+    const ref = clean(value);
+    if (!isSupabasePhotoRef(ref)) return;
+    const path = parseSupabasePhotoRef(ref);
+    if (!path || isSupabaseThumbnailPath(path)) return;
+    usages.push({ path, where: clean(where), label: clean(label) });
+  };
+  for (const variety of data?.varieties || []) {
+    add(variety.photoUrl, "Odrůda hlavní fotka", variety.name);
+    (variety.gallery || []).forEach((image, index) => add(image, `Odrůda galerie ${index + 1}`, variety.name));
+  }
+  for (const cross of data?.crosses || []) {
+    const label = clean(cross.seedlingName || cross.name || crossLineageLabel(cross) || "Křížení");
+    add(cross.seedlingPhotoUrl, "Křížení hlavní fotka", label);
+    (cross.seedlingGallery || []).forEach((image, index) => add(image, `Křížení galerie ${index + 1}`, label));
+  }
+  for (const offer of data?.offers || []) {
+    for (const item of offer.items || []) {
+      add(item.photoUrl, `Nabídka ${clean(offer.title) || clean(offer.date) || ""}`.trim(), offerItemNameSafe(item));
+    }
+  }
+  return usages;
 }
 
 async function cleanupSupabaseStorage(userId, usedPaths) {

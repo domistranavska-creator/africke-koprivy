@@ -6378,9 +6378,12 @@ async function downloadSupabaseOriginalsToMobile() {
     let downloaded = 0;
     let alreadyStored = 0;
     let copiedToFolder = 0;
+    let alreadyInFolder = 0;
     let folderFailed = 0;
     let failed = 0;
-    for (const entry of plan) {
+    for (let index = 0; index < plan.length; index += 1) {
+      const entry = plan[index];
+      setMobileOriginalsStatusText(`Doplňuji fotky: ${index + 1} / ${plan.length}`);
       let file = null;
       const existing = await getLocalSupabaseOriginalRecord(entry.ref);
       if (existing?.blob) {
@@ -6401,8 +6404,9 @@ async function downloadSupabaseOriginalsToMobile() {
       }
       if (directoryHandle && file) {
         try {
-          await writeMobileOriginalToFolder(directoryHandle, entry, file);
-          copiedToFolder += 1;
+          const folderResult = await writeMobileOriginalToFolder(directoryHandle, entry, file, { skipExisting: true });
+          if (folderResult === "exists") alreadyInFolder += 1;
+          else if (folderResult) copiedToFolder += 1;
         } catch {
           folderFailed += 1;
         }
@@ -6411,7 +6415,7 @@ async function downloadSupabaseOriginalsToMobile() {
     updateSyncIndicator();
     if (!downloaded && !failed) {
       toast(directoryHandle
-        ? `Originály už v mobilu jsou. Do složky zapsáno ${copiedToFolder}.`
+        ? `Fotky už v appce jsou. Do složky nové ${copiedToFolder}, už bylo ${alreadyInFolder}.`
         : `Originály už v mobilu jsou. Celkem ${alreadyStored}.`);
       return true;
     }
@@ -6420,8 +6424,8 @@ async function downloadSupabaseOriginalsToMobile() {
       return false;
     }
     toast(folderFailed
-      ? `Originály uložené. Nové ${downloaded}, složka chyba ${folderFailed}.`
-      : `Originály uložené do mobilu. Nové: ${downloaded}, už bylo: ${alreadyStored}.`);
+      ? `Fotky doplněné. Nové v appce ${downloaded}, složka chyba ${folderFailed}.`
+      : `Fotky doplněné. V appce nové ${downloaded}, už bylo ${alreadyStored}, do složky nové ${copiedToFolder}.`);
     return true;
   } catch (error) {
     updateSyncIndicator("error");
@@ -9075,15 +9079,15 @@ async function refreshMobileOriginalsStatus(options = {}) {
     return 0;
   }
   if (state.mobileOriginalsStatusToken === token) {
-    const baseText = `Fotky v appce: ${counts.stored} / ${counts.total}`;
-    setMobileOriginalsStatusText(`${baseText}, ve složce: počítám...`);
+    const baseText = `Appka: ${counts.stored}/${counts.total} velkých fotek`;
+    setMobileOriginalsStatusText(`${baseText} · Složka: počítám...`);
     countMobileOriginalFolderFiles(counts.plan)
       .then((folder) => {
         if (state.mobileOriginalsStatusToken !== token) return;
-        setMobileOriginalsStatusText(folder === null ? baseText : `${baseText}, ve složce: ${folder} / ${counts.total}`);
+        setMobileOriginalsStatusText(folder === null ? `${baseText} · Složka: nevybraná / nejde ověřit` : `${baseText} · Složka: ${folder}/${counts.total} souborů`);
       })
       .catch(() => {
-        if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`${baseText}, ve složce: nelze ověřit`);
+        if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText(`${baseText} · Složka: nejde ověřit`);
       });
   }
   refreshMobileOriginalsFolderStatus().catch(() => {});
@@ -9146,10 +9150,19 @@ async function pickMobileOriginalsFolder() {
   }
 }
 
-async function writeMobileOriginalToFolder(directoryHandle, entry, file) {
+async function writeMobileOriginalToFolder(directoryHandle, entry, file, options = {}) {
   if (!directoryHandle || !file) return false;
-  const folderFile = await createMobileOriginalFolderFile(file, entry);
   const fileName = mobileOriginalFolderFileName(entry);
+  if (options.skipExisting) {
+    try {
+      const existingHandle = await directoryHandle.getFileHandle(fileName);
+      const existingFile = await existingHandle.getFile();
+      if (existingFile && existingFile.size >= 0) return "exists";
+    } catch {
+      // Soubor ve složce zatím není, zapíšeme ho.
+    }
+  }
+  const folderFile = await createMobileOriginalFolderFile(file, entry);
   const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
   const writable = await fileHandle.createWritable();
   try {
@@ -12641,12 +12654,13 @@ function openOfferDetailSheet(id, options = {}) {
     <div class="two">
       ${actionButtons}
     </div>
-    ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Stáhnout originály do mobilu</button>` : ""}
-    ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro originály</button>` : ""}
+    ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Doplnit chybějící velké fotky</button>` : ""}
+    ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat složku pro zálohu fotek</button>` : ""}
     ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Fotky v mobilu: počítám...</strong>` : ""}
     ${loggedIn ? `<small class="sub" id="mobileOriginalsFolderStatus">Složka: kontroluji...</small>` : ""}
-    ${loggedIn ? `<small class="sub">Počítají se fotky, ne odrůdy. Jedna odrůda může mít víc fotek.</small>` : ""}
-    ${loggedIn ? `<small class="sub">Jednou stáhne plné fotky do telefonu. Potom je mobil použije i pro ZIP a stahování.</small>` : ""}
+    ${loggedIn ? `<small class="sub">V appce = velké fotky uložené uvnitř aplikace. Ve složce = kopie fotek jako normální soubory v telefonu.</small>` : ""}
+    ${loggedIn ? `<small class="sub">Před mazáním originálů v cloudu musí být hotovo hlavně: Fotky v appce i ve složce. Pokud složka nejde ověřit, zkontroluj ji ručně v telefonu.</small>` : ""}
+    ${loggedIn ? `<small class="sub">Tlačítko doplní jen chybějící fotky. Co už ve složce je, znovu nepřepisuje.</small>` : ""}
     <small class="sub">${footerText}</small>
   </section>
   <section class="sync-card">
