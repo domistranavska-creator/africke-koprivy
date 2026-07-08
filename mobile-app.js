@@ -93,6 +93,7 @@ function init() {
   window.__akPrepareFacebookOffer = (id) => prepareFacebookOffer(id || state.activeOfferId);
   if (els.todayLine) els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
+  if (reconcileOfferItemVarietyLinks(state.data)) saveData();
   document.addEventListener("click", handleGlobalClick, true);
   document.addEventListener("change", handleGlobalChange, true);
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
@@ -7935,6 +7936,7 @@ function normalizeReservation(reservation = {}) {
 }
 
 function reconcileOfferItemVarietyLinks(data = state.data) {
+  let changed = false;
   const varieties = Array.isArray(data?.varieties) ? data.varieties : [];
   const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]));
   const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
@@ -7946,13 +7948,30 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
       const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
       const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
       if (!variety) return;
-      item.varietyId = clean(variety.id);
-      item.varietyName = clean(variety.name);
+      if (clean(item.varietyId) !== clean(variety.id)) {
+        item.varietyId = clean(variety.id);
+        changed = true;
+      }
+      if (clean(item.varietyName) !== clean(variety.name)) {
+        item.varietyName = clean(variety.name);
+        changed = true;
+      }
       const varietyPhotos = new Set(varietyImages(variety));
-      if (clean(item.photoUrl) && varietyPhotos.has(clean(item.photoUrl))) item.photoUrl = "";
+      const itemPhoto = clean(item.photoUrl);
+      if (itemPhoto && !varietyPhotos.size) {
+        variety.photoUrl = itemPhoto;
+        variety.gallery = [];
+        varietyPhotos.add(itemPhoto);
+        changed = true;
+      }
+      if (itemPhoto && varietyPhotos.has(itemPhoto)) {
+        item.photoUrl = "";
+        changed = true;
+      }
     });
     sortOfferItemsInPlace(offer);
   });
+  return changed;
 }
 
 function findById(collection, id) {
@@ -8919,6 +8938,17 @@ async function resolvePhotos(root) {
             return;
           }
         }
+        const ownerFolderRef = clean(image.dataset.photoOwnerFolderRef);
+        if (ownerFolderRef && image.dataset.photoOwnerFolderFallbackLoaded !== "1") {
+          image.dataset.photoOwnerFolderFallbackLoaded = "1";
+          const folderUrl = await resolvePhotoUrl(ownerFolderRef);
+          if (folderUrl) {
+            image.src = folderUrl;
+            image.dataset.photoLoaded = "1";
+            clearPhotoMissing(image);
+            return;
+          }
+        }
         if (!fallbackAllowed || !image.dataset.photoFullRef || image.dataset.photoFallbackLoaded === "1") return;
         image.dataset.photoFallbackLoaded = "1";
         const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
@@ -8929,6 +8959,7 @@ async function resolvePhotos(root) {
       };
       let url = await resolvePhotoUrl(ref);
       if (!url && clean(image.dataset.photoOwnerThumbRef)) url = await resolvePhotoUrl(image.dataset.photoOwnerThumbRef);
+      if (!url && clean(image.dataset.photoOwnerFolderRef)) url = await resolvePhotoUrl(image.dataset.photoOwnerFolderRef);
       if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
       if (url) {
         image.src = url;
@@ -9049,7 +9080,30 @@ async function resolvePhotoUrl(ref) {
     state.photoUrls.set(value, url);
     return url;
   }
+  if (value.startsWith("supabase-folder-thumb:")) {
+    return resolveSupabaseFolderThumbUrl(value.slice("supabase-folder-thumb:".length));
+  }
   return "";
+}
+
+async function resolveSupabaseFolderThumbUrl(encodedPath = "") {
+  const folder = decodeURIComponent(clean(encodedPath));
+  if (!folder || state.photoUrls.has(`folder:${folder}`)) return state.photoUrls.get(`folder:${folder}`) || "";
+  try {
+    const entries = await supabaseRequest(`/storage/v1/object/list/${SUPABASE_SYNC_BUCKET}`, {
+      method: "POST",
+      body: { prefix: folder, limit: 20, offset: 0, sortBy: { column: "created_at", order: "desc" } },
+    });
+    const file = (entries || []).map((entry) => clean(entry?.name)).find((name) => /\.(jpe?g|png|webp)$/i.test(name));
+    if (!file) return "";
+    const path = `${folder}${file}`;
+    const ref = `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`;
+    const url = await resolvePhotoUrl(ref);
+    if (url) state.photoUrls.set(`folder:${folder}`, url);
+    return url || "";
+  } catch {
+    return "";
+  }
 }
 
 function localSupabaseOriginalKey(ref) {
@@ -12170,7 +12224,8 @@ function openOfferDetailSheet(id, options = {}) {
     const safeFallback = ak93DisplayText(fallbackText, "AK");
     if (safeImage) {
       const ownerThumbRef = ak93OwnerThumbnailFallbackRef(safeImage, safeFallback);
-      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-owner-thumb-ref="${escapeHtml(ownerThumbRef)}" data-photo-allow-fallback="1" alt="${escapeHtml(alt || safeFallback)}">`;
+      const ownerFolderRef = ak93OwnerThumbnailFolderFallbackRef(safeImage, safeFallback);
+      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-owner-thumb-ref="${escapeHtml(ownerThumbRef)}" data-photo-owner-folder-ref="${escapeHtml(ownerFolderRef)}" data-photo-allow-fallback="1" alt="${escapeHtml(alt || safeFallback)}">`;
     }
     return `<div class="catalog-mobile-placeholder"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
   }
@@ -12187,6 +12242,16 @@ function openOfferDetailSheet(id, options = {}) {
     if (!userId || !ownerFolder || !fileName) return "";
     const fallbackPath = `${userId}/${ownerFolder}/${SUPABASE_THUMB_DIR}/${fileName.replace(/\.[a-z0-9]+$/i, ".jpg")}`;
     return `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(fallbackPath)}`;
+  }
+
+  function ak93OwnerThumbnailFolderFallbackRef(ref = "", ownerName = "") {
+    const value = clean(ref);
+    if (!value.startsWith(SUPABASE_PHOTO_PREFIX)) return "";
+    const path = parseSupabasePhotoRef(value);
+    const userId = path.split("/")[0];
+    const ownerFolder = safeFileName(ownerName, "");
+    if (!userId || !ownerFolder) return "";
+    return `supabase-folder-thumb:${encodeURIComponent(`${userId}/${ownerFolder}/${SUPABASE_THUMB_DIR}/`)}`;
   }
 
   function ak93CatalogActionButtons(id, actions = []) {
