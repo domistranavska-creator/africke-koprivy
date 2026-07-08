@@ -407,6 +407,7 @@ function init() {
   migrateSupabaseSyncClientConfig();
   if (els.todayLine) els.todayLine.textContent = desktopTodayLineText();
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
+  if (reconcileOfferItemVarietyLinks(state.data)) saveData();
 
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => openMainView(button.dataset.view));
@@ -7947,6 +7948,7 @@ function syncOfferItemsForVariety(variety, options = {}) {
 }
 
 function reconcileOfferItemVarietyLinks(data = state.data) {
+  let changed = false;
   const varieties = Array.isArray(data?.varieties) ? data.varieties : [];
   const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]));
   const byName = new Map(varieties.map((variety) => [varietyNameMatchKey(variety.name), variety]).filter(([key]) => key));
@@ -7958,13 +7960,30 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
       const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
       const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
       if (!variety) return;
-      item.varietyId = variety.id;
-      item.varietyName = variety.name;
+      if (clean(item.varietyId) !== clean(variety.id)) {
+        item.varietyId = variety.id;
+        changed = true;
+      }
+      if (clean(item.varietyName) !== clean(variety.name)) {
+        item.varietyName = variety.name;
+        changed = true;
+      }
       const varietyPhotos = new Set(varietyImages(variety));
-      if (clean(item.photoUrl) && varietyPhotos.has(clean(item.photoUrl))) item.photoUrl = "";
+      const itemPhoto = clean(item.photoUrl);
+      if (itemPhoto && !varietyPhotos.size) {
+        variety.photoUrl = itemPhoto;
+        variety.gallery = [];
+        varietyPhotos.add(itemPhoto);
+        changed = true;
+      }
+      if (itemPhoto && varietyPhotos.has(itemPhoto)) {
+        item.photoUrl = "";
+        changed = true;
+      }
     });
     sortOfferItemsInPlace(offer);
   });
+  return changed;
 }
 
 function refreshOfferItemVarietyHelper(autofillPrice = false) {
