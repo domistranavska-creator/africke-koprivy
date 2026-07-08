@@ -9066,6 +9066,15 @@ function setMobileOriginalsStatusText(text) {
   if (node) node.textContent = text;
 }
 
+function setMobileOriginalsStatusParts(appText, folderText) {
+  const node = document.querySelector("#mobileOriginalsStatus");
+  if (!node) return;
+  node.innerHTML = [
+    `<span class="mobile-originals-status-pill">${escapeHtml(appText)}</span>`,
+    `<span class="mobile-originals-status-pill">${escapeHtml(folderText)}</span>`,
+  ].join("");
+}
+
 function setMobileOriginalsFolderStatusText(text) {
   const node = document.querySelector("#mobileOriginalsFolderStatus");
   if (node) node.textContent = text;
@@ -9076,33 +9085,33 @@ async function refreshMobileOriginalsStatus(options = {}) {
   if (!node) return 0;
   const token = state.mobileOriginalsStatusToken + 1;
   state.mobileOriginalsStatusToken = token;
-  if (!options.quiet) setMobileOriginalsStatusText("Fotky v mobilu: počítám...");
+  if (!options.quiet) setMobileOriginalsStatusParts("V appce: počítám...", "Ve složce: počítám...");
   const counts = await mobileOriginalsStatusCounts().catch(() => null);
   if (!counts) {
-    if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusText("Fotky v mobilu: nejdou teď spočítat");
+    if (state.mobileOriginalsStatusToken === token) setMobileOriginalsStatusParts("V appce: nejde spočítat", "Ve složce: nejde spočítat");
     return 0;
   }
   if (state.mobileOriginalsStatusToken === token) {
-    const baseText = `Appka: ${counts.stored}/${counts.total} velkých fotek`;
+    const appText = `V appce: ${counts.stored}/${counts.total}`;
     const cachedFolder = await getMobileOriginalsFolderCountCache(counts.total).catch(() => null);
     const folderName = await getMobileOriginalsFolderName().catch(() => "");
-    setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: kontroluji...`);
+    setMobileOriginalsStatusParts(appText, cachedFolder ? `Ve složce: ${cachedFolder.count}/${counts.total}` : "Ve složce: kontroluji...");
     countMobileOriginalFolderFiles(counts.plan, { timeoutMs: 8000 })
       .then((folder) => {
         if (state.mobileOriginalsStatusToken !== token) return;
         if (folder === null) {
           const fallbackText = folderName
-            ? `${baseText} · Složka: vybraná, počet ověř tlačítkem`
-            : `${baseText} · Složka: nevybraná`;
-          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : fallbackText);
+            ? "Ve složce: ověř tlačítkem"
+            : "Ve složce: nevybraná";
+          setMobileOriginalsStatusParts(appText, cachedFolder ? `Ve složce: ${cachedFolder.count}/${counts.total}` : fallbackText);
           return;
         }
         rememberMobileOriginalsFolderCount(folder, counts.total).catch(() => {});
-        setMobileOriginalsStatusText(`${baseText} · Složka: ${folder}/${counts.total} souborů`);
+        setMobileOriginalsStatusParts(appText, `Ve složce: ${folder}/${counts.total}`);
       })
       .catch(() => {
         if (state.mobileOriginalsStatusToken === token) {
-          setMobileOriginalsStatusText(cachedFolder ? `${baseText} · Složka: ${cachedFolder.count}/${counts.total} souborů` : `${baseText} · Složka: kontrola trvá, zkuste obnovit`);
+          setMobileOriginalsStatusParts(appText, cachedFolder ? `Ve složce: ${cachedFolder.count}/${counts.total}` : "Ve složce: kontrola trvá");
         }
       });
   }
@@ -9331,6 +9340,7 @@ async function exportMobileOriginalsToFolder() {
       failed += 1;
     }
   }
+  await rememberMobileOriginalsFolderCount(copied, plan.length).catch(() => {});
   if (copied || failed) toast(failed ? `Do složky se uložilo ${copied}, chyba ${failed}.` : `Do složky uloženo ${copied} originálů.`);
   return { copied, failed, skipped };
 }
@@ -12701,7 +12711,7 @@ function openOfferDetailSheet(id, options = {}) {
     </div>
     ${loggedIn ? `<button class="button secondary" type="button" id="downloadMobileOriginals">Doplnit chybějící velké fotky</button>` : ""}
     ${loggedIn ? `<button class="button secondary" type="button" id="pickMobileOriginalsFolder">Vybrat / ověřit složku fotek</button>` : ""}
-    ${loggedIn ? `<strong class="mobile-originals-status" id="mobileOriginalsStatus">Fotky v mobilu: počítám...</strong>` : ""}
+    ${loggedIn ? `<div class="mobile-originals-status" id="mobileOriginalsStatus"><span class="mobile-originals-status-pill">V appce: počítám...</span><span class="mobile-originals-status-pill">Ve složce: počítám...</span></div>` : ""}
     ${loggedIn ? `<small class="sub" id="mobileOriginalsFolderStatus">Složka: kontroluji...</small>` : ""}
     ${loggedIn ? `<small class="sub">V appce = velké fotky uložené uvnitř aplikace. Ve složce = kopie fotek jako normální soubory v telefonu.</small>` : ""}
     ${loggedIn ? `<small class="sub">Před mazáním originálů v cloudu musí být hotovo hlavně: Fotky v appce i ve složce. Pokud složka nejde ověřit, zkontroluj ji ručně v telefonu.</small>` : ""}
