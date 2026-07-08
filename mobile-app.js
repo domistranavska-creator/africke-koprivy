@@ -8908,6 +8908,17 @@ async function resolvePhotos(root) {
     const load = async () => {
       image.dataset.photoQueued = "";
       image.onerror = async () => {
+        const ownerThumbRef = clean(image.dataset.photoOwnerThumbRef);
+        if (ownerThumbRef && image.dataset.photoOwnerFallbackLoaded !== "1") {
+          image.dataset.photoOwnerFallbackLoaded = "1";
+          const ownerThumbUrl = await resolvePhotoUrl(ownerThumbRef);
+          if (ownerThumbUrl) {
+            image.src = ownerThumbUrl;
+            image.dataset.photoLoaded = "1";
+            clearPhotoMissing(image);
+            return;
+          }
+        }
         if (!fallbackAllowed || !image.dataset.photoFullRef || image.dataset.photoFallbackLoaded === "1") return;
         image.dataset.photoFallbackLoaded = "1";
         const fallbackUrl = await resolvePhotoUrl(image.dataset.photoFullRef);
@@ -8917,6 +8928,7 @@ async function resolvePhotos(root) {
         clearPhotoMissing(image);
       };
       let url = await resolvePhotoUrl(ref);
+      if (!url && clean(image.dataset.photoOwnerThumbRef)) url = await resolvePhotoUrl(image.dataset.photoOwnerThumbRef);
       if (!url && fallbackAllowed && image.dataset.photoFullRef) url = await resolvePhotoUrl(image.dataset.photoFullRef);
       if (url) {
         image.src = url;
@@ -8993,6 +9005,7 @@ function clearPhotoMissing(image) {
   image.hidden = false;
   image.classList.remove("photo-missing");
   image.parentElement?.querySelector(".photo-missing-label")?.remove();
+  image.parentElement?.querySelector(".catalog-mobile-placeholder")?.remove();
 }
 
 async function resolvePhotoUrl(ref) {
@@ -12156,9 +12169,24 @@ function openOfferDetailSheet(id, options = {}) {
     const safeImage = clean(image);
     const safeFallback = ak93DisplayText(fallbackText, "AK");
     if (safeImage) {
-      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-allow-fallback="1" alt="${escapeHtml(alt || safeFallback)}">`;
+      const ownerThumbRef = ak93OwnerThumbnailFallbackRef(safeImage, safeFallback);
+      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-owner-thumb-ref="${escapeHtml(ownerThumbRef)}" data-photo-allow-fallback="1" alt="${escapeHtml(alt || safeFallback)}">`;
     }
     return `<div class="catalog-mobile-placeholder"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
+  }
+
+  function ak93OwnerThumbnailFallbackRef(ref = "", ownerName = "") {
+    const value = clean(ref);
+    if (!value.startsWith(SUPABASE_PHOTO_PREFIX)) return "";
+    const path = parseSupabasePhotoRef(value);
+    const parts = path.split("/");
+    if (parts.length < 3) return "";
+    const fileName = parts[parts.length - 1];
+    const userId = parts[0];
+    const ownerFolder = safeFileName(ownerName, "");
+    if (!userId || !ownerFolder || !fileName) return "";
+    const fallbackPath = `${userId}/${ownerFolder}/${SUPABASE_THUMB_DIR}/${fileName.replace(/\.[a-z0-9]+$/i, ".jpg")}`;
+    return `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(fallbackPath)}`;
   }
 
   function ak93CatalogActionButtons(id, actions = []) {
