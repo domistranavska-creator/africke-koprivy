@@ -1535,6 +1535,7 @@ textarea {
   gap: 8px;
   width: 100%;
   max-width: 100%;
+  cursor: pointer;
 }
 
 .mobile-originals-status-pill {

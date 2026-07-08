@@ -6376,15 +6376,36 @@ async function downloadSupabaseOriginalsToMobile() {
     }
     updateSyncIndicator("working");
     const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: true });
+    const currentCounts = await mobileOriginalsStatusCounts().catch(() => null);
+    const folderSnapshot = directoryHandle ? await mobileOriginalFolderSnapshot(plan, { requestPermission: true, timeoutMs: 20000 }).catch(() => null) : null;
+    if (currentCounts?.stored === plan.length && folderSnapshot?.count === plan.length) {
+      await rememberMobileOriginalsFolderCount(folderSnapshot.count, plan.length).catch(() => {});
+      setMobileOriginalsStatusParts(`V appce: ${currentCounts.stored}/${plan.length}`, `Ve složce: ${folderSnapshot.count}/${plan.length}`);
+      updateSyncIndicator();
+      toast("Všechno už je uložené. Není potřeba nic doplňovat.");
+      return true;
+    }
+    const missingInApp = [];
+    if (currentCounts?.plan) {
+      for (const entry of currentCounts.plan) {
+        const existing = await getLocalSupabaseOriginalRecord(entry.ref);
+        if (!existing?.blob) missingInApp.push(entry);
+      }
+    }
+    const entriesToProcess = missingInApp.length
+      ? missingInApp
+      : folderSnapshot?.missing?.length
+        ? folderSnapshot.missing
+        : plan;
     let downloaded = 0;
     let alreadyStored = 0;
     let copiedToFolder = 0;
     let alreadyInFolder = 0;
     let folderFailed = 0;
     let failed = 0;
-    for (let index = 0; index < plan.length; index += 1) {
-      const entry = plan[index];
-      setMobileOriginalsStatusText(`Doplňuji fotky: ${index + 1} / ${plan.length}`);
+    for (let index = 0; index < entriesToProcess.length; index += 1) {
+      const entry = entriesToProcess[index];
+      setMobileOriginalsStatusParts(`V appce: ověřuji ${index + 1}/${entriesToProcess.length}`, directoryHandle ? `Ve složce: ověřuji ${index + 1}/${entriesToProcess.length}` : "Ve složce: nevybraná");
       let file = null;
       const existing = await getLocalSupabaseOriginalRecord(entry.ref);
       if (existing?.blob) {
@@ -6396,6 +6417,7 @@ async function downloadSupabaseOriginalsToMobile() {
           failed += 1;
           continue;
         }
+        setMobileOriginalsStatusParts(`V appce: doplňuji ${index + 1}/${entriesToProcess.length}`, directoryHandle ? `Ve složce: ověřuji ${index + 1}/${entriesToProcess.length}` : "Ve složce: nevybraná");
         await saveLocalSupabaseOriginal(entry.ref, file, {
           fileName: entry.fileName,
           ownerName: entry.ownerName,
@@ -6407,14 +6429,18 @@ async function downloadSupabaseOriginalsToMobile() {
         try {
           const folderResult = await writeMobileOriginalToFolder(directoryHandle, entry, file, { skipExisting: true });
           if (folderResult === "exists") alreadyInFolder += 1;
-          else if (folderResult) copiedToFolder += 1;
+          else if (folderResult) {
+            copiedToFolder += 1;
+            setMobileOriginalsStatusParts(`V appce: ${currentCounts?.stored || alreadyStored + downloaded}/${plan.length}`, `Ve složce: doplňuji ${index + 1}/${entriesToProcess.length}`);
+          }
         } catch {
           folderFailed += 1;
         }
       }
     }
     if (directoryHandle) {
-      await rememberMobileOriginalsFolderCount(copiedToFolder + alreadyInFolder, plan.length).catch(() => {});
+      const refreshedFolder = await countMobileOriginalFolderFiles(plan, { requestPermission: true, timeoutMs: 20000 }).catch(() => null);
+      await rememberMobileOriginalsFolderCount(refreshedFolder ?? copiedToFolder + alreadyInFolder, plan.length).catch(() => {});
     }
     updateSyncIndicator();
     if (!downloaded && !failed) {
@@ -9225,26 +9251,32 @@ function mobileOriginalFolderFileName(entry = {}) {
 }
 
 async function countMobileOriginalFolderFiles(plan = buildSupabaseOriginalDownloadPlan(state.data), options = {}) {
+  const snapshot = await mobileOriginalFolderSnapshot(plan, options);
+  return snapshot ? snapshot.count : null;
+}
+
+async function mobileOriginalFolderSnapshot(plan = buildSupabaseOriginalDownloadPlan(state.data), options = {}) {
   const timeoutMs = wholeNumber(options.timeoutMs, 0);
   if (timeoutMs > 0) {
     return Promise.race([
-      countMobileOriginalFolderFiles(plan, { ...options, timeoutMs: 0 }),
+      mobileOriginalFolderSnapshot(plan, { ...options, timeoutMs: 0 }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("folder-count-timeout")), timeoutMs)),
     ]);
   }
-  const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: false });
+  const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: !!options.requestPermission });
   if (!directoryHandle) return null;
   let count = 0;
+  const missing = [];
   for (const entry of plan) {
     try {
       const fileHandle = await directoryHandle.getFileHandle(mobileOriginalFolderFileName(entry));
       const file = await fileHandle.getFile();
       if (file && Number(file.size) >= 0) count += 1;
     } catch {
-      // Soubor ve zvolené složce zatím není.
+      missing.push(entry);
     }
   }
-  return count;
+  return { count, missing };
 }
 
 async function createMobileOriginalFolderFile(file, entry = {}) {
@@ -9257,7 +9289,7 @@ async function createMobileOriginalFolderFile(file, entry = {}) {
     const sourceWidth = image.naturalWidth || image.width;
     const sourceHeight = image.naturalHeight || image.height;
     if (!sourceWidth || !sourceHeight) return file;
-    const maxEdge = 2400;
+    const maxEdge = 4096;
     const scale = Math.min(1, maxEdge / Math.max(sourceWidth, sourceHeight));
     const width = Math.max(1, Math.round(sourceWidth * scale));
     const height = Math.max(1, Math.round(sourceHeight * scale));
@@ -9296,7 +9328,7 @@ async function createMobileOriginalFolderFile(file, entry = {}) {
       context.fillText(line, width / 2, height + padding * 0.75 + fontSize + index * lineHeight);
     });
 
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
     if (!blob) return file;
     return new File([blob], clean(entry.fileName).replace(/\.[a-z0-9]+$/i, ".jpg") || `${safeFileName(label, "fotka")}.jpg`, { type: "image/jpeg" });
   } catch {
@@ -9310,10 +9342,19 @@ async function exportMobileOriginalsToFolder() {
   const directoryHandle = await getMobileOriginalsFolderHandle({ requestPermission: true });
   if (!directoryHandle) return { copied: 0, failed: 0, skipped: 0 };
   const plan = buildSupabaseOriginalDownloadPlan(state.data);
+  const snapshot = await mobileOriginalFolderSnapshot(plan, { requestPermission: true, timeoutMs: 20000 }).catch(() => null);
+  const entriesToProcess = snapshot?.missing?.length ? snapshot.missing : [];
+  if (snapshot && !entriesToProcess.length) {
+    await rememberMobileOriginalsFolderCount(snapshot.count, plan.length).catch(() => {});
+    await refreshMobileOriginalsStatus({ quiet: true }).catch(() => {});
+    toast(`Složka ověřená. Už tam je ${snapshot.count}/${plan.length} fotek.`);
+    return { copied: 0, failed: 0, skipped: 0, alreadyInFolder: snapshot.count };
+  }
   let copied = 0;
   let failed = 0;
   let skipped = 0;
-  for (const entry of plan) {
+  let alreadyInFolder = snapshot?.count || 0;
+  for (const entry of entriesToProcess) {
     let file = await getLocalSupabaseOriginalFile(entry.ref, entry.ownerName);
     if (!file) {
       file = await supabasePhotoRefToFile(entry.ref, entry.ownerName);
@@ -9334,15 +9375,18 @@ async function exportMobileOriginalsToFolder() {
       continue;
     }
     try {
-      await writeMobileOriginalToFolder(directoryHandle, entry, file);
-      copied += 1;
+      const result = await writeMobileOriginalToFolder(directoryHandle, entry, file, { skipExisting: true });
+      if (result === "exists") alreadyInFolder += 1;
+      else if (result) copied += 1;
     } catch {
       failed += 1;
     }
   }
-  await rememberMobileOriginalsFolderCount(copied, plan.length).catch(() => {});
-  if (copied || failed) toast(failed ? `Do složky se uložilo ${copied}, chyba ${failed}.` : `Do složky uloženo ${copied} originálů.`);
-  return { copied, failed, skipped };
+  await rememberMobileOriginalsFolderCount(copied + alreadyInFolder, plan.length).catch(() => {});
+  await refreshMobileOriginalsStatus({ quiet: true }).catch(() => {});
+  if (copied || failed) toast(failed ? `Do složky se uložilo ${copied}, chyba ${failed}.` : `Do složky doplněno ${copied}, už tam bylo ${alreadyInFolder}.`);
+  else toast(`Složka ověřená. Už tam je ${alreadyInFolder}/${plan.length} fotek.`);
+  return { copied, failed, skipped, alreadyInFolder };
 }
 
 async function saveLocalSupabaseOriginal(ref, file, options = {}) {
@@ -12112,7 +12156,7 @@ function openOfferDetailSheet(id, options = {}) {
     const safeImage = clean(image);
     const safeFallback = ak93DisplayText(fallbackText, "AK");
     if (safeImage) {
-      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" alt="${escapeHtml(alt || safeFallback)}">`;
+      return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-allow-fallback="1" alt="${escapeHtml(alt || safeFallback)}">`;
     }
     return `<div class="catalog-mobile-placeholder"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
   }
@@ -12974,6 +13018,7 @@ function openOfferDetailSheet(id, options = {}) {
     bindClick("#syncAuto", toggleAutoSync);
     bindClick("#downloadMobileOriginals", () => downloadSupabaseOriginalsToMobile());
     bindClick("#pickMobileOriginalsFolder", () => pickMobileOriginalsFolder());
+    bindClick("#mobileOriginalsStatus", () => exportMobileOriginalsToFolder());
     ["syncUrl", "syncAnon", "syncEmail", "syncPassword"].forEach((id) => {
       const node = document.querySelector(`#${id}`);
       if (node) node.oninput = saveSyncConfigFromInputs;
