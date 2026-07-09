@@ -94,6 +94,7 @@ function init() {
   if (els.todayLine) els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
   if (reconcileOfferItemVarietyLinks(state.data)) saveData();
+  if (hasLocalOnlyPhotoRefs(state.data)) markSyncDirty();
   document.addEventListener("click", handleGlobalClick, true);
   document.addEventListener("change", handleGlobalChange, true);
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => openView(button.dataset.view)));
@@ -8791,6 +8792,21 @@ function varietyImages(variety = {}) {
 
 function crossSeedlingImages(cross = {}) {
   return unique([cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery)].map(clean).filter(Boolean));
+}
+
+function hasLocalOnlyPhotoRefs(data = state.data) {
+  let found = false;
+  const check = (ref) => {
+    const value = clean(ref);
+    if (!value || value.startsWith(SUPABASE_PHOTO_PREFIX)) return;
+    if (value.startsWith(INDEXED_PHOTO_PREFIX) || value.startsWith("data:image/") || value.startsWith("blob:")) found = true;
+  };
+  for (const variety of data?.varieties || []) varietyImages(variety).forEach(check);
+  for (const cross of data?.crosses || []) crossSeedlingImages(cross).forEach(check);
+  for (const offer of data?.offers || []) {
+    for (const item of offer?.items || []) check(item?.photoUrl);
+  }
+  return found;
 }
 
 function varietyUsageCount(name) {
