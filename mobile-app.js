@@ -6318,7 +6318,7 @@ function collectSupabaseOriginalPhotoEntries(data = state.data) {
     const value = clean(ref);
     if (!value.startsWith(SUPABASE_PHOTO_PREFIX)) return;
     const path = parseSupabasePhotoRef(value);
-    if (!path || isSupabaseThumbnailPath(path)) return;
+    if (!path) return;
     entries.push({ ref: value, path, ownerName: clean(ownerName) || "fotka" });
   };
   for (const variety of data?.varieties || []) {
@@ -9053,15 +9053,13 @@ async function resolvePhotoUrl(ref) {
   }
   if (value.startsWith(SUPABASE_PHOTO_PREFIX)) {
     const path = parseSupabasePhotoRef(value);
-    if (!isSupabaseThumbnailPath(path)) {
-      const localRecord = await getLocalSupabaseOriginalRecord(value);
-      if (localRecord?.blob) {
-        const currentUrl = state.photoUrls.get(value);
-        if (currentUrl?.startsWith("blob:")) return currentUrl;
-        const localUrl = URL.createObjectURL(localRecord.blob);
-        state.photoUrls.set(value, localUrl);
-        return localUrl;
-      }
+    const localRecord = await getLocalSupabaseOriginalRecord(value);
+    if (localRecord?.blob) {
+      const currentUrl = state.photoUrls.get(value);
+      if (currentUrl?.startsWith("blob:")) return currentUrl;
+      const localUrl = URL.createObjectURL(localRecord.blob);
+      state.photoUrls.set(value, localUrl);
+      return localUrl;
     }
     if (state.photoUrls.has(value)) return state.photoUrls.get(value);
     const cached = await getCachedSupabasePhotoBlob(value);
@@ -10204,11 +10202,9 @@ async function uploadPhotoList(userId, ownerName, refs) {
     else {
       const file = await photoToFile(ref, ownerName);
       if (!file) throw new Error(`Fotku u â€ž${ownerName}â€ś se nepodaĹ™ilo pĹ™eÄŤĂ­st pro cloud.`);
-      const uploadFile = await preparePhotoFileForStorage(file);
-      const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${await fileHash(uploadFile)}${photoExtension(uploadFile)}`;
-      await uploadStorage(path, uploadFile);
-      const thumb = await createPhotoThumbnail(uploadFile);
-      if (thumb) await uploadStorage(supabaseThumbnailPath(path), thumb);
+      const cloudFile = await createPhotoThumbnail(file) || await preparePhotoFileForStorage(file);
+      const path = `${encodeURIComponent(userId)}/${safeFileName(ownerName)}/${SUPABASE_THUMB_DIR}/${await fileHash(cloudFile)}.jpg`;
+      await uploadStorage(path, cloudFile);
       const uploadedRef = `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(path)}`;
       uploadedLocalCount += 1;
       const localEntry = {
@@ -10220,7 +10216,7 @@ async function uploadPhotoList(userId, ownerName, refs) {
       try {
         await saveLocalSupabaseOriginal(uploadedRef, file, localEntry);
       } catch {
-        await saveLocalSupabaseOriginal(uploadedRef, uploadFile, localEntry);
+        await saveLocalSupabaseOriginal(uploadedRef, cloudFile, localEntry);
       }
       getMobileOriginalsFolderHandle({ requestPermission: false })
         .then((directoryHandle) => directoryHandle ? writeMobileOriginalToFolder(directoryHandle, localEntry, file) : false)
