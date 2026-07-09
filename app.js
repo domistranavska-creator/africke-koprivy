@@ -3033,7 +3033,8 @@ function crossActorThumb(image, label) {
 }
 
 function crossSeedlingImages(cross) {
-  return unique([cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery || cross?.gallery)].map(clean).filter(Boolean));
+  const linkedImages = varietyImages(findCrossLinkedVariety(cross));
+  return unique([...linkedImages, cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery || cross?.gallery)].map(clean).filter(Boolean));
 }
 
 function crossSeedlingMainPhoto(cross) {

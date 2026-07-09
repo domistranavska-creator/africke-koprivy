@@ -42,6 +42,7 @@ const BRAND_LOGO_IMAGE_DATA_URI = clean(window.AFRICKE_KOPRIVY_BRAND_LOGO_DATA_U
 const photoRuntime = {
   observer: null,
   deferredLoads: new WeakMap(),
+  repairingRefs: new Set(),
 };
 
 const stageLabels = { opyleno: "Opyleno", vyseto: "Vyseto", roste: "Roste", hotovo: "Hotovo" };
@@ -8790,8 +8791,14 @@ function varietyImages(variety = {}) {
   return unique([variety?.photoUrl, ...normalizeGallery(variety?.gallery)].map(clean).filter(Boolean));
 }
 
+function linkedCrossVariety(cross = {}) {
+  return findById("varieties", clean(cross.linkedVarietyId))
+    || (clean(cross.seedlingName || cross.name) ? findVarietyByName(clean(cross.seedlingName || cross.name)) : null);
+}
+
 function crossSeedlingImages(cross = {}) {
-  return unique([cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery)].map(clean).filter(Boolean));
+  const linkedImages = varietyImages(linkedCrossVariety(cross));
+  return unique([...linkedImages, cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery)].map(clean).filter(Boolean));
 }
 
 function hasLocalOnlyPhotoRefs(data = state.data) {
@@ -9038,6 +9045,7 @@ function runDeferredPhotoLoad(image) {
 function markPhotoMissing(image) {
   if (!image) return;
   image.classList.add("photo-missing");
+  repairMissingSupabaseThumbnail(image).catch(() => {});
   image.hidden = true;
   const parent = image.parentElement;
   if (!parent || parent.querySelector(".photo-missing-label")) return;
@@ -9053,6 +9061,36 @@ function clearPhotoMissing(image) {
   image.classList.remove("photo-missing");
   image.parentElement?.querySelector(".photo-missing-label")?.remove();
   image.parentElement?.querySelector(".catalog-mobile-placeholder")?.remove();
+}
+
+async function repairMissingSupabaseThumbnail(image) {
+  const fullRef = clean(image?.dataset?.photoFullRef || image?.dataset?.photoRef);
+  if (!fullRef.startsWith(SUPABASE_PHOTO_PREFIX)) return false;
+  const sourceFile = await getLocalSupabaseOriginalFile(fullRef);
+  if (!sourceFile) return false;
+  const sourcePath = parseSupabasePhotoRef(fullRef);
+  const targetPath = isSupabaseThumbnailPath(sourcePath) ? sourcePath : supabaseThumbnailPath(sourcePath);
+  if (!targetPath) return false;
+  const repairKey = `${fullRef}=>${targetPath}`;
+  if (photoRuntime.repairingRefs.has(repairKey)) return false;
+  photoRuntime.repairingRefs.add(repairKey);
+  try {
+    const thumb = await createPhotoThumbnail(sourceFile);
+    if (!thumb) return false;
+    await uploadStorage(targetPath, thumb);
+    const repairedRef = `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(targetPath)}`;
+    state.photoUrls.delete(repairedRef);
+    const repairedUrl = await resolvePhotoUrl(repairedRef);
+    if (repairedUrl && image?.isConnected) {
+      image.src = repairedUrl;
+      image.dataset.photoLoaded = "1";
+      clearPhotoMissing(image);
+    }
+    toast("Chybějící náhled fotky jsem doplnila do cloudu.");
+    return true;
+  } finally {
+    photoRuntime.repairingRefs.delete(repairKey);
+  }
 }
 
 async function resolvePhotoUrl(ref) {
