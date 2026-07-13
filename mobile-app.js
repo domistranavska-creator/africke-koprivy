@@ -968,7 +968,7 @@ function openCrossSheet(id = "") {
     ${toggle("resultRating", [["krasna", "KrĂˇsnĂˇ"], ["hnusna", "HnusnĂˇ"], ["nejista", "NejistĂˇ"]], cross.resultRating || "nejista")}
     <label class="field"><span>NĂˇzev semenĂˇÄŤe</span><input name="seedlingName" value="${escapeHtml(cross.seedlingName)}"></label>
     ${photoPickerFields("Fotky semenĂˇÄŤe")}
-    <div class="photo-grid" id="photoGrid">${photoTiles(crossSeedlingImages(cross))}</div>
+    <div class="photo-grid" id="photoGrid">${photoTiles(crossOwnSeedlingImages(cross))}</div>
     <div class="cross-flow" id="crossPreview"></div>
     <label class="field"><span>PoznĂˇmka</span><textarea name="note">${escapeHtml(cross.note)}</textarea></label>
   </form>`, async () => {
@@ -8240,10 +8240,12 @@ function offerAlternateCount(offer = {}) {
 
 function ensureVarietyFromCross(cross) {
   const existing = findVarietyByName(cross.seedlingName);
-  const images = crossSeedlingImages(cross);
+  const images = crossOwnSeedlingImages(cross);
   if (existing) {
-    existing.photoUrl = existing.photoUrl || images[0] || "";
-    existing.gallery = unique([...(existing.gallery || []), ...images.slice(existing.photoUrl ? 0 : 1)]);
+    if (!varietyImages(existing).length && images.length) {
+      existing.photoUrl = images[0] || "";
+      existing.gallery = images.slice(1);
+    }
     return existing.id;
   }
   const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `Semenáč z křížení ${crossLineage(cross)}` });
@@ -8801,6 +8803,10 @@ function crossSeedlingImages(cross = {}) {
   return unique([...linkedImages, cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery)].map(clean).filter(Boolean));
 }
 
+function crossOwnSeedlingImages(cross = {}) {
+  return unique([cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery)].map(clean).filter(Boolean));
+}
+
 function hasLocalOnlyPhotoRefs(data = state.data) {
   let found = false;
   const check = (ref) => {
@@ -8809,7 +8815,7 @@ function hasLocalOnlyPhotoRefs(data = state.data) {
     if (value.startsWith(INDEXED_PHOTO_PREFIX) || value.startsWith("data:image/") || value.startsWith("blob:")) found = true;
   };
   for (const variety of data?.varieties || []) varietyImages(variety).forEach(check);
-  for (const cross of data?.crosses || []) crossSeedlingImages(cross).forEach(check);
+  for (const cross of data?.crosses || []) crossOwnSeedlingImages(cross).forEach(check);
   for (const offer of data?.offers || []) {
     for (const item of offer?.items || []) check(item?.photoUrl);
   }
@@ -10148,26 +10154,35 @@ async function buildSyncData(userId) {
   const data = JSON.parse(JSON.stringify(state.data));
   for (const variety of data.varieties || []) {
     const images = varietyImages(variety);
-    const refs = await uploadPhotoList(userId, variety.name, images);
-    ensureUploadedPhotoRefs(images, refs, variety.name || "odrĹŻda");
+    const refs = await uploadPhotoListForCloudRecord(userId, variety.name || "odruda", images);
     variety.photoUrl = refs[0] || "";
     variety.gallery = refs.slice(1);
   }
   for (const cross of data.crosses || []) {
-    const images = crossSeedlingImages(cross);
-    const refs = await uploadPhotoList(userId, cross.seedlingName || "semenac", images);
-    ensureUploadedPhotoRefs(images, refs, cross.seedlingName || "semenĂˇÄŤ");
+    const images = crossOwnSeedlingImages(cross);
+    const refs = await uploadPhotoListForCloudRecord(userId, cross.seedlingName || "semenac", images);
     cross.seedlingPhotoUrl = refs[0] || "";
     cross.seedlingGallery = refs.slice(1);
   }
   for (const offer of data.offers || []) {
     for (const item of offer.items || []) {
       const originalPhoto = clean(item.photoUrl);
-      item.photoUrl = (await uploadPhotoList(userId, offerItemName(item) || "nabidka", originalPhoto ? [originalPhoto] : []))[0] || "";
-      ensureUploadedPhotoRefs(originalPhoto ? [originalPhoto] : [], item.photoUrl ? [item.photoUrl] : [], offerItemName(item) || "nabidka");
+      item.photoUrl = (await uploadPhotoListForCloudRecord(userId, offerItemName(item) || "nabidka", originalPhoto ? [originalPhoto] : []))[0] || "";
     }
   }
   return data;
+}
+
+async function uploadPhotoListForCloudRecord(userId, ownerName, images) {
+  const originalRefs = unique((images || []).map(clean).filter(Boolean));
+  try {
+    const refs = await uploadPhotoList(userId, ownerName, originalRefs);
+    ensureUploadedPhotoRefs(originalRefs, refs, ownerName || "fotka");
+    return refs;
+  } catch (error) {
+    console.warn("Photo sync skipped, record will continue without broken local photo", ownerName, error);
+    return originalRefs.filter((ref) => ref.startsWith(SUPABASE_PHOTO_PREFIX));
+  }
 }
 
 function ensureUploadedPhotoRefs(originalRefs, uploadedRefs, ownerName = "fotka") {

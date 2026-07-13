@@ -4372,6 +4372,25 @@ fieldset {
   overflow-wrap: anywhere;
 }
 
+.cross-catalog-card-visual:has(.photo-missing-label),
+.variety-thumb:has(.photo-missing-label),
+.gallery-main:has(.photo-missing-label),
+.gallery-thumb-button:has(.photo-missing-label) {
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.88) 0 20%, transparent 21%),
+    linear-gradient(180deg, #ecd7cf 0%, #c8b38d 100%);
+}
+
+.cross-catalog-card-visual .photo-missing-label,
+.variety-thumb .photo-missing-label,
+.gallery-main .photo-missing-label,
+.gallery-thumb-button .photo-missing-label {
+  min-height: 100%;
+  font-family: var(--font-display);
+  font-size: clamp(1.45rem, 4vw, 3rem);
+  color: var(--accent-dark);
+}
+
 .gallery-empty,
 .empty-state {
   padding: 14px;

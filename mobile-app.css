@@ -685,6 +685,25 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.catalog-mobile-photo-wrap:has(.photo-missing-label),
+.thumb:has(.photo-missing-label),
+.photo-tile:has(.photo-missing-label),
+.variety-detail-photo:has(.photo-missing-label) {
+  background:
+    radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.88) 0 20%, transparent 21%),
+    linear-gradient(180deg, #ecd7cf 0%, #c8b38d 100%);
+}
+
+.catalog-mobile-photo-wrap .photo-missing-label,
+.thumb .photo-missing-label,
+.photo-tile .photo-missing-label,
+.variety-detail-photo .photo-missing-label {
+  min-height: 100%;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.35rem, 9vw, 2.8rem);
+  color: var(--ink);
+}
+
 .card-actions {
   display: flex;
   gap: 8px;
