@@ -6713,14 +6713,18 @@ function rememberPendingPhotoFiles(input) {
   if (!form) return;
   const entries = pendingPhotoEntries(form);
   const seen = new Set(entries.map((entry) => photoFileSignature(entry.file)));
+  let newestPhotoId = "";
   [...(input.files || [])]
     .filter(isPhotoFile)
     .forEach((file) => {
       const signature = photoFileSignature(file);
       if (seen.has(signature)) return;
       seen.add(signature);
-      entries.push({ id: uid(), file });
+      const id = uid();
+      entries.push({ id, file });
+      newestPhotoId = id;
     });
+  if (newestPhotoId && form.elements.mainPhoto) form.elements.mainPhoto.value = `pending:${newestPhotoId}`;
   input.value = "";
 }
 

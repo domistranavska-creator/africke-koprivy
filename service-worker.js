@@ -1,4 +1,4 @@
-const CACHE_NAME = "africke-koprivy-pwa-v20260630-180";
+const CACHE_NAME = "africke-koprivy-pwa-v20260630-181";
 const APP_SHELL = [
   "./",
   "./index.html",
