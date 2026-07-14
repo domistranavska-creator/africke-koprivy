@@ -58,6 +58,7 @@ const photoRuntime = {
   supabaseSignedUrls: new Map(),
   supabaseObserver: null,
   deferredSupabaseLoads: new WeakMap(),
+  promotedFallbacks: new Set(),
 };
 
 const paymentLabels = {
@@ -839,6 +840,7 @@ function normalizeLoadedData(parsed) {
     crosses: Array.isArray(source.crosses) ? source.crosses : [],
     offers: Array.isArray(source.offers) ? source.offers : [],
     trash: Array.isArray(source.trash) ? source.trash : [],
+    syncTombstones: Array.isArray(source.syncTombstones) ? source.syncTombstones : [],
     exchangeRates: Array.isArray(source.exchangeRates) ? source.exchangeRates : [],
     settings: normalizeFeeSettings(source.settings),
   };
@@ -857,8 +859,7 @@ function normalizeLoadedData(parsed) {
   data.trash = data.trash.map(normalizeTrashEntry);
   reconcileOfferItemVarietyLinks(data);
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
-
-  return data;
+  return globalThis.AKSyncPhotoCore?.canonicalizePhotoLinks(data) || data;
 }
 
 const loadedTextRepairMaps = new Map();
@@ -1326,9 +1327,11 @@ function normalizeVarietySnapshot(variety = {}) {
 function restoreTrashEntry(entryId) {
   const entry = findTrashEntry(entryId);
   if (!entry) return;
+  const restoredAt = new Date().toISOString();
 
   if (entry.type === "customer-bundle") {
     const customer = sanitizeCustomer(cloneTrashPayload(entry?.payload?.customer || {}));
+    customer.updatedAt = restoredAt;
     if (!clean(customer.id)) {
       toast("Zákazníka se nepodařilo obnovit.");
       return;
@@ -1336,6 +1339,7 @@ function restoreTrashEntry(entryId) {
     upsertRestoredRecord("customers", customer);
     (entry?.payload?.orders || []).forEach((order) => {
       const restoredOrder = normalizeOrder(cloneTrashPayload(order));
+      restoredOrder.updatedAt = restoredAt;
       upsertRestoredRecord("orders", restoredOrder);
       state.selectedOrderIds.delete(restoredOrder.id);
     });
@@ -1343,17 +1347,21 @@ function restoreTrashEntry(entryId) {
     state.selectedCustomerId = findCustomer(customer.id)?.id || state.data.customers[0]?.id || null;
   } else if (entry.type === "order") {
     const order = normalizeOrder(cloneTrashPayload(entry?.payload?.order || {}));
+    order.updatedAt = restoredAt;
     upsertRestoredRecord("orders", order);
     state.selectedOrderIds.delete(order.id);
   } else if (entry.type === "variety") {
     const variety = normalizeVarietySnapshot(cloneTrashPayload(entry?.payload?.variety || {}));
+    variety.updatedAt = restoredAt;
     upsertRestoredRecord("varieties", variety);
   } else if (entry.type === "cross") {
     const cross = normalizeCross(cloneTrashPayload(entry?.payload?.cross || {}));
+    cross.updatedAt = restoredAt;
     upsertRestoredRecord("crosses", cross);
     state.selectedCrossId = cross.id;
   } else if (entry.type === "offer") {
     const offer = normalizeOffer(cloneTrashPayload(entry?.payload?.offer || {}));
+    offer.updatedAt = restoredAt;
     upsertRestoredRecord("offers", offer);
     state.selectedOfferId = offer.id;
   } else if (entry.type === "offer-item") {
@@ -1363,6 +1371,7 @@ function restoreTrashEntry(entryId) {
       return;
     }
     const item = normalizeOfferItem(cloneTrashPayload(entry?.payload?.item || {}));
+    item.updatedAt = restoredAt;
     offer.items = (offer.items || []).filter((current) => clean(current.id) !== clean(item.id));
     offer.items.push(item);
     sortOfferItemsInPlace(offer);
@@ -1403,6 +1412,7 @@ async function permanentlyDeleteTrashEntry(entryId) {
     toast(`Fotky v cloudu se nepodařilo smazat: ${message}. Záznam zůstává v koši.`);
     return;
   }
+  globalThis.AKSyncPhotoCore?.addTrashTombstones(state.data, [entry]);
   removeTrashEntry(entryId);
   saveData();
   renderAll();
@@ -1424,6 +1434,7 @@ async function emptyTrash() {
     toast(`Fotky v cloudu se nepodařilo smazat: ${message}. Koš zůstává beze změny.`);
     return;
   }
+  globalThis.AKSyncPhotoCore?.addTrashTombstones(state.data, entries);
   state.data.trash = [];
   saveData();
   renderAll();
@@ -2886,7 +2897,7 @@ function varietyCatalogCardMarkup(variety) {
   const winterStatus = varietyWinteringStatus(variety, winterSeason);
   const mainImage = images[0];
   const visual = mainImage
-    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", 'loading="lazy"')
+    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(variety, images)}`)
     : `<div class="variety-catalog-card-placeholder">
         <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
       </div>`;
@@ -2932,7 +2943,7 @@ function varietyCatalogCardMarkup(variety) {
   const winterStatus = varietyWinteringStatus(variety, winterSeason);
   const mainImage = images[0];
   const visual = mainImage
-    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", 'loading="lazy"')
+    ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(variety, images)}`)
     : `<div class="variety-catalog-card-placeholder">
         <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
       </div>`;
@@ -2994,8 +3005,8 @@ function crossLineageLabel(cross) {
   return `${mother?.name || "Bez matky"} x ${pollen?.name || "Bez pylu"}`;
 }
 
-function crossSeedlingVariety(cross) {
-  return findVariety(clean(cross.linkedVarietyId)) || (clean(cross.seedlingName) ? findVarietyByName(cross.seedlingName) : null);
+function crossSeedlingVariety(cross = {}) {
+  return findVariety(clean(cross?.linkedVarietyId)) || (clean(cross?.seedlingName) ? findVarietyByName(cross.seedlingName) : null);
 }
 
 function crossCatalogPreviewNote(cross) {
@@ -3027,22 +3038,22 @@ function crossRowToneClass(cross) {
   return "cross-tone-active";
 }
 
-function crossActorThumb(image, label) {
-  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", 'loading="lazy"')}</span>`;
+function crossActorThumb(image, label, extraAttrs = "") {
+  if (image) return `<span class="cross-actor-thumb">${photoImageMarkup(image, label, "", `loading="lazy" ${extraAttrs}`)}</span>`;
   return `<span class="cross-actor-thumb empty">${escapeHtml(varietyInitials(label || "K"))}</span>`;
 }
 
-function crossSeedlingImages(cross) {
+function crossSeedlingImages(cross = {}) {
   const linkedImages = varietyImages(crossSeedlingVariety(cross));
   return unique([...linkedImages, cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery || cross?.gallery)].map(clean).filter(Boolean));
 }
 
-function crossOwnSeedlingImages(cross) {
+function crossOwnSeedlingImages(cross = {}) {
   return unique([cross?.seedlingPhotoUrl, ...normalizeGallery(cross?.seedlingGallery || cross?.gallery)].map(clean).filter(Boolean));
 }
 
-function crossSeedlingMainPhoto(cross) {
-  return clean(cross?.seedlingPhotoUrl) || crossSeedlingImages(cross)[0] || "";
+function crossSeedlingMainPhoto(cross = {}) {
+  return clean(globalThis.AKSyncPhotoCore?.crossPhoto(cross || {}, state.data)) || crossSeedlingImages(cross)[0] || "";
 }
 
 function buildCrossPreviewMarkup(cross, options = {}) {
@@ -3050,6 +3061,8 @@ function buildCrossPreviewMarkup(cross, options = {}) {
   const pollen = options.pollen || findVariety(cross?.pollenVarietyId);
   const seedlingName = clean(options.seedlingName ?? cross?.seedlingName) || "Semenáč";
   const seedlingPhotoUrl = clean(options.seedlingPhotoUrl ?? crossSeedlingMainPhoto(cross));
+  const seedlingVariety = crossSeedlingVariety(cross);
+  const seedlingImages = crossSeedlingImages(cross);
   return `
     <div class="cross-preview-flow">
       <article class="cross-actor">
@@ -3065,7 +3078,7 @@ function buildCrossPreviewMarkup(cross, options = {}) {
       </article>
       <span class="cross-preview-symbol">=</span>
       <article class="cross-actor accent">
-        ${crossActorThumb(seedlingPhotoUrl, seedlingName)}
+        ${crossActorThumb(seedlingPhotoUrl, seedlingName, photoFallbackAttributes(seedlingVariety, seedlingImages))}
         <small>Semenáč</small>
         <strong>${escapeHtml(seedlingName)}</strong>
       </article>
@@ -3146,9 +3159,11 @@ function crossCatalogCardMarkup(cross) {
   const seedlingName = clean(cross.seedlingName);
   const title = seedlingName || lineage;
   const seedlingPhoto = crossSeedlingMainPhoto(cross);
+  const seedlingVariety = crossSeedlingVariety(cross);
+  const seedlingImages = crossSeedlingImages(cross);
   const note = crossCatalogPreviewNote(cross);
   const visual = seedlingPhoto
-    ? photoImageMarkup(seedlingPhoto, title, "cross-catalog-card-photo", 'loading="lazy"')
+    ? photoImageMarkup(seedlingPhoto, title, "cross-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(seedlingVariety, seedlingImages)}`)
     : `<div class="cross-catalog-card-placeholder">
         <span class="cross-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(title))}</span>
       </div>`;
@@ -7403,7 +7418,7 @@ async function saveVarietyFromForm() {
   const explicitPhotoUrl = removedPhotos.has(clean(form.get("photoUrl"))) ? "" : clean(form.get("photoUrl"));
   const chosenMainPhoto = clean(form.get("mainPhoto"));
   const allImages = unique([...existingImages, ...normalizeGallery(form.get("gallery")), ...uploadedImages]).filter((image) => !removedPhotos.has(image));
-  const photoUrl = explicitPhotoUrl || (allImages.includes(chosenMainPhoto) ? chosenMainPhoto : "") || uploadedImages[0] || allImages[0] || "";
+  const photoUrl = uploadedImages[0] || (allImages.includes(chosenMainPhoto) ? chosenMainPhoto : "") || explicitPhotoUrl || allImages[0] || "";
   const gallery = unique(allImages.filter((image) => image !== photoUrl));
   const salePrice = normalizeAmount(form.get("salePrice"));
   const saleCurrency = "CZK";
@@ -7604,9 +7619,11 @@ function openCrossDialog(id = null) {
   els.crossForm.elements.pollinatedAt.value = cross?.pollinatedAt || toDateInput(new Date());
   els.crossForm.elements.stage.value = normalizeCrossStage(cross?.stage);
   els.crossForm.elements.seedlingName.value = cross?.seedlingName || "";
-  els.crossForm.elements.seedlingPhotoUrl.value = cross?.seedlingPhotoUrl || "";
-  els.crossForm.elements.seedlingGallery.value = crossOwnSeedlingImages(cross).filter((image) => image !== clean(cross?.seedlingPhotoUrl)).join("\n");
-  els.crossForm.elements.seedlingMainPhoto.value = cross?.seedlingPhotoUrl || "";
+  const seedlingImages = crossSeedlingImages(cross);
+  const seedlingMainPhoto = crossSeedlingMainPhoto(cross) || seedlingImages[0] || "";
+  els.crossForm.elements.seedlingPhotoUrl.value = seedlingMainPhoto;
+  els.crossForm.elements.seedlingGallery.value = seedlingImages.filter((image) => image !== seedlingMainPhoto).join("\n");
+  els.crossForm.elements.seedlingMainPhoto.value = seedlingMainPhoto;
   els.crossForm.elements.seedlingRemovedPhotos.value = "";
   els.crossForm.elements.resultRating.value = normalizeCrossResult(cross?.resultRating);
   els.crossForm.elements.note.value = cross?.note || "";
@@ -7643,7 +7660,7 @@ async function saveCrossFromForm() {
   const mainToken = clean(form.get("seedlingMainPhoto"));
   const uploadMainMatch = mainToken.match(/^upload:(\d+)$/);
   const uploadedMain = uploadMainMatch ? uploaded[Number(uploadMainMatch[1])] : "";
-  const seedlingPhotoUrl = uploadedMain || (allSeedlingImages.includes(mainToken) ? mainToken : "") || uploaded[0] || allSeedlingImages[0] || "";
+  const seedlingPhotoUrl = uploadedMain || uploaded[0] || (allSeedlingImages.includes(mainToken) ? mainToken : "") || allSeedlingImages[0] || "";
   const seedlingGallery = unique(allSeedlingImages.filter((image) => image && image !== seedlingPhotoUrl));
   const cross = normalizeCross({
     ...(existing || {}),
@@ -7691,14 +7708,14 @@ function ensureVarietyFromCross(cross) {
   const now = new Date().toISOString();
   const seedlingNote = `Semenáč z křížení ${mother?.name || "matka"} x ${pollen?.name || "pyl"}`;
   const seedlingImages = crossOwnSeedlingImages(cross);
-  const mainPhoto = crossSeedlingMainPhoto(cross);
+  const mainPhoto = seedlingImages[0] || "";
   const existing = findVariety(clean(cross.linkedVarietyId)) || findVarietyByName(name);
   if (existing) {
+    const previousName = existing.name || "";
+    const previousImages = varietyImages(existing);
     existing.name = existing.name || name;
-    if (mainPhoto && !varietyImages(existing).length) {
-      existing.photoUrl = mainPhoto;
-      existing.gallery = unique(seedlingImages.filter((image) => image && image !== mainPhoto));
-    }
+    existing.photoUrl = mainPhoto;
+    existing.gallery = unique(seedlingImages.filter((image) => image && image !== mainPhoto));
     if (!noteAlreadyContainsCrossLineage(existing.note, mother?.name || "matka", pollen?.name || "pyl")) {
       existing.note = cleanBusinessNote([existing.note, seedlingNote].filter(Boolean).join("\n"));
     }
@@ -7706,6 +7723,7 @@ function ensureVarietyFromCross(cross) {
     existing.active = existing.active !== false;
     existing.updatedAt = now;
     state.data.varieties = mergeVarieties(state.data.varieties);
+    syncOfferItemsForVariety(existing, { previousName, previousImages });
     return existing.id;
   }
 
@@ -7939,6 +7957,7 @@ function syncOfferItemsForVariety(variety, options = {}) {
   const previousKeys = new Set([options.previousName, varietyName].map(varietyNameMatchKey).filter(Boolean));
   const previousImages = new Set((options.previousImages || []).map(clean).filter(Boolean));
   state.data.offers.forEach((offer) => {
+    let changed = false;
     (offer.items || []).forEach((item) => {
       const linkedById = clean(item.varietyId) === varietyId;
       const linkedByOldName = previousKeys.has(varietyNameMatchKey(item.varietyName || item.name));
@@ -7947,7 +7966,9 @@ function syncOfferItemsForVariety(variety, options = {}) {
       item.varietyName = varietyName;
       if (clean(item.photoUrl) && previousImages.has(clean(item.photoUrl))) item.photoUrl = "";
       item.updatedAt = new Date().toISOString();
+      changed = true;
     });
+    if (changed) offer.updatedAt = new Date().toISOString();
     sortOfferItemsInPlace(offer);
   });
 }
@@ -8082,6 +8103,13 @@ async function saveOfferItemFromForm() {
   const variety = exactVariety
     || findVariety(clean(form.get("varietyId")))
     || (shouldCreateVariety ? ensureVarietyFromOfferItem(varietyName, form.get("price"), form.get("currency")) : null);
+  const now = new Date().toISOString();
+  if (variety && uploaded[0]) {
+    const previousImages = varietyImages(variety);
+    variety.photoUrl = uploaded[0];
+    variety.gallery = unique(previousImages.filter((image) => image !== uploaded[0]));
+    variety.updatedAt = now;
+  }
   const item = normalizeOfferItem({
     id,
     varietyId: variety?.id || existing?.varietyId || "",
@@ -8089,9 +8117,11 @@ async function saveOfferItemFromForm() {
     quantity: form.get("quantity"),
     price: form.get("price"),
     currency: form.get("currency"),
-    photoUrl: uploaded[0] || existing?.photoUrl || "",
+    photoUrl: variety ? "" : (uploaded[0] || existing?.photoUrl || ""),
     note: form.get("note"),
     reservations: existing?.reservations || [],
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
   });
 
   if (existing) Object.assign(existing, item);
@@ -10145,6 +10175,28 @@ function logoutSupabaseSync() {
   toast("Odhlášeno.");
 }
 
+async function writeSupabaseSyncSafely(session, encryptedData, expectedUpdatedAt, updatedAt) {
+  const userId = clean(session.user?.id);
+  if (expectedUpdatedAt) {
+    const rows = await supabaseRequest(`/rest/v1/app_sync?user_id=eq.${encodeURIComponent(userId)}&updated_at=eq.${encodeURIComponent(expectedUpdatedAt)}`, {
+      method: "PATCH",
+      body: { encrypted_data: encryptedData, updated_at: updatedAt },
+      headers: { Prefer: "return=representation" },
+    });
+    if (!Array.isArray(rows) || !rows.length) {
+      const conflict = new Error("Cloud se mezitím změnil. Změny bezpečně spojím při dalším syncu.");
+      conflict.code = "AK_SYNC_CONFLICT";
+      throw conflict;
+    }
+    return;
+  }
+  await supabaseRequest("/rest/v1/app_sync?on_conflict=user_id", {
+    method: "POST",
+    body: { user_id: userId, encrypted_data: encryptedData, updated_at: updatedAt },
+    headers: { Prefer: "resolution=merge-duplicates" },
+  });
+}
+
 async function pushSupabaseSync(options = {}) {
   const startedDirtyAt = currentSupabaseSyncDirtyAt();
   try {
@@ -10167,9 +10219,12 @@ async function pushSupabaseSync(options = {}) {
     }
     const configBeforePush = loadSupabaseSyncConfig();
     let cloudState = { updatedAt: "", data: null, summary: normalizeSupabaseSyncSummary() };
-    if (!options.force) {
-      cloudState = await readSupabaseCloudState(session, encryptionPassword);
-      if (cloudState.data) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-before-push", cloudState.data, cloudState.updatedAt);
+    cloudState = await readSupabaseCloudState(session, encryptionPassword);
+    if (cloudState.data) {
+      rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-before-push", cloudState.data, cloudState.updatedAt);
+      rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-merge", state.data);
+      state.data = normalizeLoadedData(globalThis.AKSyncPhotoCore?.mergeData(state.data, cloudState.data) || state.data);
+      saveData({ skipAutoSync: true });
     }
     const localSummary = summarizeSupabaseSyncData(state.data);
     const blockMessage = options.force ? "" : getSupabaseSyncPushBlockMessage(
@@ -10191,17 +10246,8 @@ async function pushSupabaseSync(options = {}) {
     const pushedSummary = summarizeSupabaseSyncData(syncData);
     const encrypted = await encryptSyncPayload(syncData, encryptionPassword);
     const updatedAt = new Date().toISOString();
-    await supabaseRequest("/rest/v1/app_sync?on_conflict=user_id", {
-      method: "POST",
-      body: {
-        user_id: session.user?.id,
-        encrypted_data: encrypted,
-        updated_at: updatedAt,
-      },
-      headers: { Prefer: "resolution=merge-duplicates" },
-    });
+    await writeSupabaseSyncSafely(session, encrypted, cloudState.updatedAt, updatedAt);
     state.syncEncryptionVerifiedPassword = encryptionPassword;
-    cleanupSupabaseStorage(session.user?.id || "user", collectSupabasePhotoPaths(syncData)).catch((error) => console.warn("Supabase storage cleanup skipped", error));
     updateSupabaseSyncConfig({ lastPushedAt: updatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: updatedAt, lastKnownCloudSummary: pushedSummary });
     rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-push", syncData, updatedAt);
     const cleanAfterPush = clearSupabaseSyncDirtyIfUnchanged(startedDirtyAt);
@@ -10267,7 +10313,10 @@ async function pullSupabaseSync(options = {}) {
     const hadLocalData = hasLocalSyncData();
     if (hadLocalData) rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY, "local-before-pull", state.data);
     state.syncEncryptionVerifiedPassword = encryptionPassword;
-    state.data = normalizeLoadedData(decrypted);
+    const cloudData = normalizeLoadedData(decrypted);
+    const mergedData = globalThis.AKSyncPhotoCore?.mergeData(state.data, cloudData) || cloudData;
+    const needsMergePush = JSON.stringify(mergedData) !== JSON.stringify(cloudData);
+    state.data = normalizeLoadedData(mergedData);
     syncFinishedCrossVarieties();
     saveData({ skipAutoSync: true });
     if (!hadLocalData && state.view === "settings" && hasLocalSyncData()) setView("offers");
@@ -10275,6 +10324,10 @@ async function pullSupabaseSync(options = {}) {
     rememberSupabaseSyncSnapshot(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY, "cloud-after-pull", state.data, cloudUpdatedAt);
     renderAll();
     updateSupabaseSyncConfig({ lastPulledAt: cloudUpdatedAt, lastSyncedAt: syncedAt, lastKnownCloudAt: cloudUpdatedAt, lastKnownCloudSummary: pulledSummary });
+    if (needsMergePush) {
+      markSupabaseSyncDirty();
+      scheduleAutoSupabaseSync("save");
+    }
     updateSupabaseSyncStatus(options.auto ? `Cloud stažen: ${formatTime(new Date())}.` : `Staženo z cloudu: ${formatCloudDateTime(cloudUpdatedAt)}.`);
     if (!options.silent) toast("Sync stažen z cloudu.");
     return true;
@@ -10409,7 +10462,6 @@ async function uploadPhotoListForCloudRecordSync(userId, ownerName, images) {
 }
 
 function ensureSupabasePhotoRefsForSync(originalRefs, uploadedRefs, ownerName = "fotka") {
-  return true;
   const originals = unique((originalRefs || []).map(clean).filter(Boolean));
   const uploaded = unique((uploadedRefs || []).map(clean).filter(Boolean));
   const allUploaded = originals.every((ref) => isSupabasePhotoRef(ref))
@@ -10619,7 +10671,12 @@ async function photoToOriginalFile(image, ownerName = "fotka") {
   try {
     if (isLocalPhotoRef(value)) return await resolveLocalPhotoFile(value, true);
     if (isIndexedPhotoRef(value)) return await resolveIndexedPhotoFile(value);
-    if (isSupabasePhotoRef(value)) return await resolveSupabasePhotoFile(value);
+    if (isSupabasePhotoRef(value)) {
+      const original = await resolveSupabasePhotoFile(value);
+      if (original) return original;
+      const thumbnailRef = supabaseThumbnailRef(value);
+      return thumbnailRef !== value ? await resolveSupabasePhotoFile(thumbnailRef) : null;
+    }
     if (isDataImage(value)) return dataUrlToFile(value, `${safeFileName(ownerName, "fotka")}${photoExtension(value)}`);
   } catch {
     return null;
@@ -11768,6 +11825,81 @@ function photoImageMarkup(image, alt, extraClass = "", extraAttrs = "") {
   return `<img${classAttr} src="${escapeHtml(image)}" alt="${escapeHtml(alt)}"${attrs} />`;
 }
 
+function photoFallbackAttributes(variety, images = []) {
+  const varietyId = clean(variety?.id);
+  const ordered = unique((images || []).map(clean).filter(Boolean));
+  if (!varietyId || ordered.length < 2) return "";
+  return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0])}" data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"`;
+}
+
+function photoFallbackRefs(image) {
+  try {
+    const parsed = JSON.parse(image?.dataset?.photoFallbackRefs || "[]");
+    return Array.isArray(parsed) ? unique(parsed.map(clean).filter(Boolean)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function resolvePhotoPreviewUrl(ref) {
+  const value = clean(ref);
+  if (!value) return "";
+  if (isLocalPhotoRef(value)) return resolveLocalPhotoUrl(value);
+  if (isIndexedPhotoRef(value)) return resolveIndexedPhotoUrl(value);
+  if (isSupabasePhotoRef(value)) return resolveSupabasePhotoUrl(supabaseThumbnailRef(value));
+  return value;
+}
+
+function promoteWorkingPhoto(image, ref) {
+  const varietyId = clean(image?.dataset?.photoVarietyId);
+  const variety = varietyId ? findVariety(varietyId) : null;
+  const workingRef = clean(ref);
+  if (!variety || !workingRef || clean(variety.photoUrl) === workingRef) return;
+  const guardKey = `${varietyId}:${workingRef}`;
+  if (photoRuntime.promotedFallbacks.has(guardKey)) return;
+  photoRuntime.promotedFallbacks.add(guardKey);
+  const previousName = variety.name || "";
+  const previousImages = varietyImages(variety);
+  variety.photoUrl = workingRef;
+  variety.gallery = unique(previousImages.filter((item) => clean(item) !== workingRef));
+  variety.updatedAt = new Date().toISOString();
+  state.data.crosses.forEach((cross) => {
+    const linked = clean(cross.linkedVarietyId) === varietyId
+      || varietyNameMatchKey(cross.seedlingName) === varietyNameMatchKey(variety.name);
+    if (!linked) return;
+    const crossImages = crossOwnSeedlingImages(cross);
+    cross.seedlingPhotoUrl = workingRef;
+    cross.seedlingGallery = unique(crossImages.filter((item) => clean(item) !== workingRef));
+    cross.updatedAt = variety.updatedAt;
+  });
+  syncOfferItemsForVariety(variety, { previousName, previousImages });
+  saveData();
+}
+
+async function tryNextPhotoFallback(image) {
+  const refs = photoFallbackRefs(image);
+  if (!refs.length) return false;
+  const [nextRef, ...remaining] = refs;
+  image.dataset.photoFallbackRefs = JSON.stringify(remaining);
+  const url = await resolvePhotoPreviewUrl(nextRef);
+  if (!url) return tryNextPhotoFallback(image);
+  image.dataset.photoLoaded = "";
+  image.onerror = async () => {
+    if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+  };
+  image.onload = () => {
+    image.dataset.photoLoaded = "1";
+    clearPhotoMissing(image);
+    promoteWorkingPhoto(image, nextRef);
+  };
+  image.src = url;
+  return true;
+}
+
+async function markPhotoMissingOrTryNext(image) {
+  if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+}
+
 function varietyThumb(variety) {
   const image = varietyImages(variety)[0];
   if (image) {
@@ -12076,9 +12208,10 @@ function selectGalleryImage(images, varietyName, index) {
 
 function galleryMainContent(images, varietyName, index) {
   const arrows = images.length > 1;
+  const variety = findVarietyByName(varietyName);
   return `
     ${arrows ? '<button class="gallery-arrow gallery-arrow-prev" type="button" data-gallery-step="-1" aria-label="Předchozí fotka">‹</button>' : ""}
-    ${photoImageMarkup(images[index], varietyName, "", 'loading="eager"')}
+    ${photoImageMarkup(images[index], varietyName, "", `loading="eager" ${index === 0 ? photoFallbackAttributes(variety, images) : ""}`)}
     ${arrows ? '<button class="gallery-arrow gallery-arrow-next" type="button" data-gallery-step="1" aria-label="Další fotka">›</button>' : ""}
   `;
 }
@@ -12123,8 +12256,13 @@ async function downloadPhoto(image, varietyName, index = 0) {
       if (file) href = URL.createObjectURL(file);
     } else if (isSupabasePhotoRef(image)) {
       file = await resolveSupabasePhotoFile(image);
+      if (!file) {
+        const thumbnailRef = supabaseThumbnailRef(image);
+        if (thumbnailRef !== image) file = await resolveSupabasePhotoFile(thumbnailRef);
+      }
       if (file) href = URL.createObjectURL(file);
     }
+    if (isSupabasePhotoRef(image) && !file) throw new Error("Photo is not available.");
     triggerDownload(href, photoDownloadName(varietyName, image, index, file));
     if (file) window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   } catch {
@@ -12881,8 +13019,10 @@ function normalizeOfferItem(item = {}) {
 }
 
 function offerItemImage(item = {}) {
+  const canonical = globalThis.AKSyncPhotoCore?.offerItemPhoto(item, state.data);
+  if (clean(canonical)) return clean(canonical);
   const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
-  return clean(item.photoUrl) || varietyImages(variety)[0] || "";
+  return varietyImages(variety)[0] || clean(item.photoUrl) || "";
 }
 
 function normalizeReservation(reservation = {}) {
@@ -14865,20 +15005,30 @@ function runDeferredSupabasePhotoLoad(image) {
   if (!load) return;
   photoRuntime.deferredSupabaseLoads.delete(image);
   Promise.resolve(load()).catch(() => {
-    markPhotoMissing(image);
+    markPhotoMissingOrTryNext(image);
   });
 }
 
 function hydrateLocalPhotoImages(root = document) {
   if (!root?.querySelectorAll) return;
+  root.querySelectorAll("[data-photo-fallback-refs]").forEach((image) => {
+    if (image.dataset.localPhotoRef || image.dataset.indexedPhotoRef || image.dataset.supabasePhotoRef) return;
+    image.onerror = async () => {
+      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+    };
+    if (image.complete && image.naturalWidth === 0) markPhotoMissingOrTryNext(image);
+  });
   root.querySelectorAll("[data-local-photo-ref]").forEach(async (image) => {
     if (image.dataset.photoLoaded === "1") return;
     const ref = image.dataset.localPhotoRef;
     const url = await resolveLocalPhotoUrl(ref);
     if (!url) {
-      markPhotoMissing(image);
+      await markPhotoMissingOrTryNext(image);
       return;
     }
+    image.onerror = async () => {
+      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+    };
     image.src = url;
     image.dataset.photoLoaded = "1";
     clearPhotoMissing(image);
@@ -14888,9 +15038,12 @@ function hydrateLocalPhotoImages(root = document) {
     const ref = image.dataset.indexedPhotoRef;
     const url = await resolveIndexedPhotoUrl(ref);
     if (!url) {
-      markPhotoMissing(image);
+      await markPhotoMissingOrTryNext(image);
       return;
     }
+    image.onerror = async () => {
+      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+    };
     image.src = url;
     image.dataset.photoLoaded = "1";
     clearPhotoMissing(image);
@@ -14904,7 +15057,7 @@ function hydrateLocalPhotoImages(root = document) {
       image.dataset.photoQueued = "";
       image.onerror = async () => {
         if (!fallbackAllowed || !fallbackRef || image.dataset.photoFallbackLoaded === "1") {
-          markPhotoMissing(image);
+          await markPhotoMissingOrTryNext(image);
           return;
         }
         image.dataset.photoFallbackLoaded = "1";
@@ -14914,7 +15067,7 @@ function hydrateLocalPhotoImages(root = document) {
           image.dataset.photoLoaded = "1";
           clearPhotoMissing(image);
         } else {
-          markPhotoMissing(image);
+          await markPhotoMissingOrTryNext(image);
         }
       };
       try {
@@ -14923,14 +15076,14 @@ function hydrateLocalPhotoImages(root = document) {
           url = await resolveSupabasePhotoUrl(fallbackRef);
         }
         if (!url) {
-          markPhotoMissing(image);
+          await markPhotoMissingOrTryNext(image);
           return;
         }
         image.src = url;
         image.dataset.photoLoaded = "1";
         clearPhotoMissing(image);
       } catch {
-        markPhotoMissing(image);
+        await markPhotoMissingOrTryNext(image);
       }
     };
     const lazyEligible = clean(ref).startsWith(SUPABASE_PHOTO_PREFIX)
