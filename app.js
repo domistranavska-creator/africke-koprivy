@@ -35,6 +35,28 @@ const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0
 const LEGACY_MANAGED_SUPABASE_URLS = ["https://nexthiehxcksrnydepnv.supabase.co"];
 const SEED_SIGNATURE = typeof window !== "undefined" ? String(window.AFRICKE_KOPRIVY_SEED_SIGNATURE || "").trim() : "";
 const SEED_SIGNATURE_KEY = `${STORE_KEY}:seed-signature`;
+const loadedTextRepairMaps = new Map();
+const BROKEN_TEXT_PAIR_REPLACEMENTS = [
+  ["\u0102\u02c7", "\u00e1"],
+  ["\u0102\u00a9", "\u00e9"],
+  ["\u0102\u00ad", "\u00ed"],
+  ["\u0102\u00b3", "\u00f3"],
+  ["\u0102\u00ba", "\u00fa"],
+  ["\u0102\u02dd", "\u00fd"],
+  ["\u00c4\u0164", "\u010d"],
+  ["\u00c4\u0179", "\u010f"],
+  ["\u00c4\u203a", "\u011b"],
+  ["\u00c4\u013e", "\u013e"],
+  ["\u0139\u02c6", "\u0148"],
+  ["\u0139\u2122", "\u0159"],
+  ["\u0139\u02c7", "\u0161"],
+  ["\u0139\u00a4", "\u0165"],
+  ["\u0139\u017b", "\u016f"],
+  ["\u0139\u013e", "\u017e"],
+  ["\u0102\u2014", "\u00d7"],
+  ["\u00c3\u2014", "\u00d7"],
+  ["\u00c2\u00b7", "\u00b7"],
+];
 const ORDER_PAYMENT_QR_SIZE = 240;
 const ORDER_CUSTOMER_IMAGE_WIDTH = 1120;
 const ORDER_CUSTOMER_IMAGE_QR_SIZE = 320;
@@ -408,6 +430,9 @@ init();
 
 function init() {
   migrateSupabaseSyncClientConfig();
+  if (isSupabaseSyncLoggedIn() && !loadSupabaseSyncConfig().autoSync) {
+    updateSupabaseSyncConfig({ autoSync: true });
+  }
   if (els.todayLine) els.todayLine.textContent = desktopTodayLineText();
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
   if (reconcileOfferItemVarietyLinks(state.data)) saveData();
@@ -524,7 +549,7 @@ function init() {
   els.syncEncryptionKey?.addEventListener("input", () => {
     state.syncEncryptionPassword = clean(els.syncEncryptionKey.value);
     state.syncEncryptionVerifiedPassword = "";
-    if (state.syncEncryptionPassword) localStorage.setItem(SUPABASE_SYNC_PASSWORD_KEY, state.syncEncryptionPassword);
+    if (state.syncEncryptionPassword) safeLocalStorageSet(SUPABASE_SYNC_PASSWORD_KEY, state.syncEncryptionPassword);
     else localStorage.removeItem(SUPABASE_SYNC_PASSWORD_KEY);
     updateSupabaseSyncStatus();
     maybeAutoPullSupabaseSync();
@@ -808,14 +833,43 @@ function clearStoredSyncSnapshots() {
   }
 }
 
+function clearObsoleteLocalDataCopies() {
+  clearStoredSyncSnapshots();
+  LEGACY_STORE_KEYS.forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Old copies are optional; the current data record remains authoritative.
+    }
+  });
+  try {
+    localStorage.removeItem(`${STORE_KEY}:order-drafts`);
+  } catch {
+    // Drafts are optional and must not block the main data record.
+  }
+}
+
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    clearObsoleteLocalDataCopies();
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (error) {
+      console.warn(`Local storage write skipped for ${key}.`, error);
+      return false;
+    }
+  }
+}
+
 function persistDataLocally(data) {
   const serialized = JSON.stringify(data);
-  try {
-    localStorage.setItem(STORE_KEY, serialized);
-  } catch {
-    clearStoredSyncSnapshots();
-    localStorage.setItem(STORE_KEY, serialized);
-  }
+  const saved = safeLocalStorageSet(STORE_KEY, serialized);
+  if (saved) clearObsoleteLocalDataCopies();
+  return saved;
 }
 
 function loadData() {
@@ -824,11 +878,11 @@ function loadData() {
     const storedSeedSignature = localStorage.getItem(SEED_SIGNATURE_KEY);
     if (storedSeedSignature !== SEED_SIGNATURE) {
       if (storedKey) {
-        localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+        safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       } else {
         const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
         persistDataLocally(seeded);
-        localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+        safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
         return seeded;
       }
     }
@@ -848,14 +902,14 @@ function loadData() {
       } catch {
         // Keep the correctly parsed data in memory even if storage is temporarily full.
       }
-      if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      if (SEED_SIGNATURE) safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       return normalized;
     }
   }
 
   const initial = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || fallbackData());
   persistDataLocally(initial);
-  if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+  if (SEED_SIGNATURE) safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
   return initial;
 }
 
@@ -889,29 +943,6 @@ function normalizeLoadedData(parsed) {
   data.exchangeRates = mergeExchangeRates(data.exchangeRates);
   return globalThis.AKSyncPhotoCore?.canonicalizePhotoLinks(data) || data;
 }
-
-const loadedTextRepairMaps = new Map();
-const BROKEN_TEXT_PAIR_REPLACEMENTS = [
-  ["\u0102\u02c7", "\u00e1"],
-  ["\u0102\u00a9", "\u00e9"],
-  ["\u0102\u00ad", "\u00ed"],
-  ["\u0102\u00b3", "\u00f3"],
-  ["\u0102\u00ba", "\u00fa"],
-  ["\u0102\u02dd", "\u00fd"],
-  ["\u00c4\u0164", "\u010d"],
-  ["\u00c4\u0179", "\u010f"],
-  ["\u00c4\u203a", "\u011b"],
-  ["\u00c4\u013e", "\u013e"],
-  ["\u0139\u02c6", "\u0148"],
-  ["\u0139\u2122", "\u0159"],
-  ["\u0139\u02c7", "\u0161"],
-  ["\u0139\u00a4", "\u0165"],
-  ["\u0139\u017b", "\u016f"],
-  ["\u0139\u013e", "\u017e"],
-  ["\u0102\u2014", "\u00d7"],
-  ["\u00c3\u2014", "\u00d7"],
-  ["\u00c2\u00b7", "\u00b7"],
-];
 
 function repairLoadedDataStrings(value) {
   if (typeof value === "string") return repairLoadedString(value);
@@ -9454,12 +9485,12 @@ function migrateSupabaseSyncClientConfig() {
       || clean(parsed.lastKnownCloudAt) !== normalized.lastKnownCloudAt
       || JSON.stringify(normalizeSupabaseSyncSummary(parsed.lastKnownCloudSummary)) !== JSON.stringify(normalized.lastKnownCloudSummary);
     if (!changed) return;
-    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
+    safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
     if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
       localStorage.removeItem(SUPABASE_SYNC_SESSION_KEY);
     }
   } catch {
-    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSupabaseSyncConfig()));
+    safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSupabaseSyncConfig()));
   }
 }
 
@@ -9492,7 +9523,7 @@ function saveSupabaseSyncSession(session) {
   if (!session?.access_token) return;
   const expiresIn = Number(session.expires_in) || 3600;
   updateSupabaseSyncConfig({ autoSync: true });
-  localStorage.setItem(
+  safeLocalStorageSet(
     SUPABASE_SYNC_SESSION_KEY,
     JSON.stringify({
       accessToken: session.access_token,
@@ -9528,7 +9559,7 @@ function saveSupabaseSyncConfigFromPanel(options = {}) {
     lastKnownCloudAt: previous.lastKnownCloudAt || "",
     lastKnownCloudSummary: previous.lastKnownCloudSummary || normalizeSupabaseSyncSummary(),
   });
-  localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
+  safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = true;
   updateSupabaseSyncStatus("Nastavení syncu uložené.");
   if (!options.quiet) toast("Nastavení syncu uložené.");
@@ -9797,7 +9828,7 @@ function updateSupabaseSyncPanelMode() {
 
 function updateSupabaseSyncConfig(patch) {
   const config = normalizeSupabaseSyncConfig({ ...loadSupabaseSyncConfig(), ...(patch || {}) });
-  localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
+  safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(config));
   if (els.syncAutoEnabled) els.syncAutoEnabled.checked = Boolean(config.autoSync);
 }
 
@@ -10083,7 +10114,7 @@ function currentSupabaseEncryptionPassword() {
   const value = clean(els.syncEncryptionKey?.value);
   if (value) {
     state.syncEncryptionPassword = value;
-    localStorage.setItem(SUPABASE_SYNC_PASSWORD_KEY, value);
+    safeLocalStorageSet(SUPABASE_SYNC_PASSWORD_KEY, value);
     return value;
   }
   const stored = clean(state.syncEncryptionPassword || localStorage.getItem(SUPABASE_SYNC_PASSWORD_KEY));
@@ -11877,7 +11908,7 @@ function missingVarietyPhotoMarkup(variety, alt, imageClass, placeholderClass, m
 function photoOwnerFolderCandidates(ownerName) {
   const raw = safeFileName(ownerName, "");
   const slug = normalize(ownerName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return unique([raw, raw.toLowerCase(), slug].map(clean).filter(Boolean));
+  return unique([slug, raw.toLowerCase(), raw].map(clean).filter(Boolean));
 }
 
 function knownSupabasePhotoOwnerIds(currentUserId = "") {
@@ -15146,7 +15177,13 @@ function runDeferredSupabasePhotoLoad(image) {
 
 function hydrateLocalPhotoImages(root = document) {
   if (!root?.querySelectorAll) return;
-  root.querySelectorAll("[data-photo-folder-variety-id]").forEach((placeholder) => {
+  const canRepairUnlinkedPhotos = !state.supabaseSyncRunning
+    && !state.supabasePullRunning
+    && !hasPendingSupabaseSync();
+  const folderPlaceholders = canRepairUnlinkedPhotos
+    ? [...root.querySelectorAll("[data-photo-folder-variety-id]")].slice(0, 2)
+    : [];
+  folderPlaceholders.forEach((placeholder) => {
     if (placeholder.dataset.photoFolderChecked === "1") return;
     const load = async () => {
       placeholder.dataset.photoQueued = "";

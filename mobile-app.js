@@ -1,5 +1,5 @@
 ﻿const STORE_KEY = "africke-koprivy-data-v11";
-const LEGACY_STORE_KEYS = ["africke-koprivy-data-v10", "africke-koprivy-data-v9", "africke-koprivy-data-v8", "africke-koprivy-data-v7"];
+const LEGACY_STORE_KEYS = ["africke-koprivy-data-v10", "africke-koprivy-data-v9", "africke-koprivy-data-v8", "africke-koprivy-data-v7", "africke-koprivy-data-v6", "africke-koprivy-data-v5", "africke-koprivy-data-v4"];
 const SEED_SIGNATURE = window.AFRICKE_KOPRIVY_SEED_SIGNATURE || "";
 const SEED_SIGNATURE_KEY = `${STORE_KEY}:seed-signature`;
 const PHOTO_DB_NAME = "africke-koprivy-photos";
@@ -14,6 +14,28 @@ const SUPABASE_SYNC_BUCKET = "africke-koprivy-fotky";
 const DEFAULT_SUPABASE_URL = "https://gqlpdvdrlcsibmyttmwt.supabase.co";
 const DEFAULT_SUPABASE_ANON_KEY = "sb_publishable_40A8Vvi-vd3IPimbEZlDiQ_Uo_5Cp0n";
 const LEGACY_MANAGED_SUPABASE_URLS = ["https://nexthiehxcksrnydepnv.supabase.co"];
+const loadedTextRepairMaps = new Map();
+const BROKEN_TEXT_PAIR_REPLACEMENTS = [
+  ["\u0102\u02c7", "\u00e1"],
+  ["\u0102\u00a9", "\u00e9"],
+  ["\u0102\u00ad", "\u00ed"],
+  ["\u0102\u00b3", "\u00f3"],
+  ["\u0102\u00ba", "\u00fa"],
+  ["\u0102\u02dd", "\u00fd"],
+  ["\u00c4\u0164", "\u010d"],
+  ["\u00c4\u0179", "\u010f"],
+  ["\u00c4\u203a", "\u011b"],
+  ["\u00c4\u013e", "\u013e"],
+  ["\u0139\u02c6", "\u0148"],
+  ["\u0139\u2122", "\u0159"],
+  ["\u0139\u02c7", "\u0161"],
+  ["\u0139\u00a4", "\u0165"],
+  ["\u0139\u017b", "\u016f"],
+  ["\u0139\u013e", "\u017e"],
+  ["\u0102\u2014", "\u00d7"],
+  ["\u00c3\u2014", "\u00d7"],
+  ["\u00c2\u00b7", "\u00b7"],
+];
 const SUPABASE_PHOTO_PREFIX = "supabase-photo:";
 const SUPABASE_THUMB_DIR = "_nahledy_v2";
 const SUPABASE_THUMB_MAX_SIZE = 520;
@@ -94,6 +116,9 @@ init();
 
 function init() {
   migrateSyncConfig();
+  if (isSyncLoggedIn() && !loadSyncConfig().autoSync) {
+    saveSyncConfig({ autoSync: true });
+  }
   window.__akPrepareFacebookOffer = (id) => prepareFacebookOffer(id || state.activeOfferId);
   if (els.todayLine) els.todayLine.textContent = new Intl.DateTimeFormat("cs-CZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(new Date());
   if (syncFinishedCrossVarieties()) saveData({ skipAutoSync: true });
@@ -7577,11 +7602,11 @@ function loadData() {
   const key = [STORE_KEY, ...LEGACY_STORE_KEYS].find((item) => localStorage.getItem(item));
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED && localStorage.getItem(SEED_SIGNATURE_KEY) !== SEED_SIGNATURE) {
     if (key) {
-      localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
     } else {
       const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
       persistDataLocally(seeded);
-      localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       return seeded;
     }
   }
@@ -7604,7 +7629,7 @@ function loadData() {
   }
   const data = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || { customers: [], orders: [], varieties: [], crosses: [], offers: [], trash: [], exchangeRates: [], settings: {} });
   persistDataLocally(data);
-  if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+  if (SEED_SIGNATURE) safeLocalStorageSet(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
   return data;
 }
 
@@ -7617,14 +7642,38 @@ function clearStoredSyncSnapshots() {
   }
 }
 
+function clearObsoleteLocalDataCopies() {
+  clearStoredSyncSnapshots();
+  LEGACY_STORE_KEYS.forEach((key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Old copies are optional; the current data record remains authoritative.
+    }
+  });
+}
+
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    clearObsoleteLocalDataCopies();
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (error) {
+      console.warn(`Local storage write skipped for ${key}.`, error);
+      return false;
+    }
+  }
+}
+
 function persistDataLocally(data) {
   const serialized = JSON.stringify(data);
-  try {
-    localStorage.setItem(STORE_KEY, serialized);
-  } catch {
-    clearStoredSyncSnapshots();
-    localStorage.setItem(STORE_KEY, serialized);
-  }
+  const saved = safeLocalStorageSet(STORE_KEY, serialized);
+  if (saved) clearObsoleteLocalDataCopies();
+  return saved;
 }
 
 function saveData(options = {}) {
@@ -7652,29 +7701,6 @@ function normalizeLoadedData(data = {}) {
   reconcileOfferItemVarietyLinks(result);
   return globalThis.AKSyncPhotoCore?.canonicalizePhotoLinks(result) || result;
 }
-
-const loadedTextRepairMaps = new Map();
-const BROKEN_TEXT_PAIR_REPLACEMENTS = [
-  ["\u0102\u02c7", "\u00e1"],
-  ["\u0102\u00a9", "\u00e9"],
-  ["\u0102\u00ad", "\u00ed"],
-  ["\u0102\u00b3", "\u00f3"],
-  ["\u0102\u00ba", "\u00fa"],
-  ["\u0102\u02dd", "\u00fd"],
-  ["\u00c4\u0164", "\u010d"],
-  ["\u00c4\u0179", "\u010f"],
-  ["\u00c4\u203a", "\u011b"],
-  ["\u00c4\u013e", "\u013e"],
-  ["\u0139\u02c6", "\u0148"],
-  ["\u0139\u2122", "\u0159"],
-  ["\u0139\u02c7", "\u0161"],
-  ["\u0139\u00a4", "\u0165"],
-  ["\u0139\u017b", "\u016f"],
-  ["\u0139\u013e", "\u017e"],
-  ["\u0102\u2014", "\u00d7"],
-  ["\u00c3\u2014", "\u00d7"],
-  ["\u00c2\u00b7", "\u00b7"],
-];
 
 function repairLoadedDataStrings(value) {
   if (typeof value === "string") return repairLoadedString(value);
@@ -8929,7 +8955,7 @@ function photoFallbackAttributes(variety, images = []) {
 function photoOwnerFolderCandidates(ownerName) {
   const raw = clean(ownerName);
   const slug = safeFileName(ownerName, "");
-  return unique([raw, raw.toLowerCase(), slug].map(clean).filter(Boolean));
+  return unique([slug, raw.toLowerCase(), raw].map(clean).filter(Boolean));
 }
 
 function knownSupabasePhotoOwnerIds(currentUserId = "") {
@@ -9056,6 +9082,7 @@ async function tryFolderThumbnailRecovery(image) {
   const varietyId = clean(image?.dataset?.photoVarietyId);
   const variety = varietyId ? findById("varieties", varietyId) : null;
   if (!variety || image.dataset.photoFolderRecoveryTried === "1") return false;
+  if (state.syncRunning || needsSyncRecovery() || hasPendingSync()) return false;
   image.dataset.photoFolderRecoveryTried = "1";
   const ref = await findSupabaseFolderThumbnailRef(variety.name);
   if (!ref) return false;
@@ -9230,7 +9257,27 @@ function idbDelete(db, storeName, key) {
 }
 
 async function resolvePhotos(root) {
-  const folderPlaceholders = [...root.querySelectorAll("[data-photo-folder-variety-id]")];
+  const unlinkedPlaceholders = [...root.querySelectorAll("[data-photo-folder-variety-id]")];
+  const canRepairUnlinkedPhotos = state.view === "varieties"
+    && !state.syncRunning
+    && !needsSyncRecovery()
+    && !hasPendingSync();
+  const folderPlaceholders = canRepairUnlinkedPhotos
+    ? unlinkedPlaceholders.slice(0, 1)
+    : [];
+  if (canRepairUnlinkedPhotos) {
+    root.dataset.photoFolderRetryCount = "0";
+  } else if (state.view === "varieties" && unlinkedPlaceholders.length) {
+    const retryCount = Number(root.dataset.photoFolderRetryCount || 0);
+    if (retryCount < 4 && root.dataset.photoFolderRetryScheduled !== "1") {
+      root.dataset.photoFolderRetryScheduled = "1";
+      root.dataset.photoFolderRetryCount = String(retryCount + 1);
+      window.setTimeout(() => {
+        root.dataset.photoFolderRetryScheduled = "";
+        if (root.isConnected) resolvePhotos(root).catch(() => {});
+      }, 1500);
+    }
+  }
   await Promise.all(folderPlaceholders.map(async (placeholder) => {
     if (placeholder.dataset.photoFolderChecked === "1") return;
     const load = async () => {
@@ -9952,7 +9999,7 @@ function loadSyncConfig() {
 }
 
 function saveSyncConfig(config) {
-  localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig({ ...loadSyncConfig(), ...config })));
+  safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig({ ...loadSyncConfig(), ...config })));
 }
 
 function normalizeSyncConfig(parsed = {}) {
@@ -9988,12 +10035,12 @@ function migrateSyncConfig() {
       || clean(parsed.lastKnownCloudAt) !== normalized.lastKnownCloudAt
       || JSON.stringify(normalizeSyncSummary(parsed.lastKnownCloudSummary)) !== JSON.stringify(normalized.lastKnownCloudSummary);
     if (!changed) return;
-    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
+    safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalized));
     if (storedUrl && (storedUrl !== normalized.url || storedAnonKey !== normalized.anonKey)) {
       localStorage.removeItem(SUPABASE_SYNC_SESSION_KEY);
     }
   } catch {
-    localStorage.setItem(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig()));
+    safeLocalStorageSet(SUPABASE_SYNC_CONFIG_KEY, JSON.stringify(normalizeSyncConfig()));
   }
 }
 
@@ -10007,8 +10054,12 @@ function saveSyncConfigFromInputs() {
   };
   state.syncPassword = passwordInput ? clean(passwordInput.value) : clean(state.syncPassword || localStorage.getItem(SUPABASE_SYNC_PASSWORD_KEY));
   if (passwordInput) state.syncVerifiedPassword = "";
-  sessionStorage.setItem(`${STORE_KEY}:sync-password`, state.syncPassword);
-  if (state.syncPassword) localStorage.setItem(SUPABASE_SYNC_PASSWORD_KEY, state.syncPassword);
+  try {
+    sessionStorage.setItem(`${STORE_KEY}:sync-password`, state.syncPassword);
+  } catch {
+    // Sync can continue with the in-memory password.
+  }
+  if (state.syncPassword) safeLocalStorageSet(SUPABASE_SYNC_PASSWORD_KEY, state.syncPassword);
   else localStorage.removeItem(SUPABASE_SYNC_PASSWORD_KEY);
   saveSyncConfig(config);
 }
@@ -10028,7 +10079,7 @@ function isSyncLoggedIn() {
 }
 
 function saveSyncSession(session) {
-  localStorage.setItem(SUPABASE_SYNC_SESSION_KEY, JSON.stringify({ accessToken: session.access_token, refreshToken: session.refresh_token || "", expiresAt: Date.now() + (Number(session.expires_in) || 3600) * 1000 - 30000, user: session.user || null }));
+  safeLocalStorageSet(SUPABASE_SYNC_SESSION_KEY, JSON.stringify({ accessToken: session.access_token, refreshToken: session.refresh_token || "", expiresAt: Date.now() + (Number(session.expires_in) || 3600) * 1000 - 30000, user: session.user || null }));
   saveSyncConfig({ autoSync: true });
 }
 
