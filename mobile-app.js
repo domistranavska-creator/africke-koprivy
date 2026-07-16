@@ -44,6 +44,8 @@ const photoRuntime = {
   deferredLoads: new WeakMap(),
   repairingRefs: new Set(),
   promotedFallbacks: new Set(),
+  folderThumbnailRefs: new Map(),
+  storageOwnerIds: null,
 };
 
 const stageLabels = { opyleno: "Opyleno", vyseto: "Vyseto", roste: "Roste", hotovo: "Hotovo" };
@@ -7578,28 +7580,55 @@ function loadData() {
       localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
     } else {
       const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
-      localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
+      persistDataLocally(seeded);
       localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       return seeded;
     }
   }
   if (key) {
+    let parsed = null;
     try {
-      const data = normalizeLoadedData(JSON.parse(localStorage.getItem(key)));
-      localStorage.setItem(STORE_KEY, JSON.stringify(data));
-      return data;
+      parsed = JSON.parse(localStorage.getItem(key));
     } catch {
       localStorage.removeItem(key);
     }
+    if (parsed) {
+      const data = normalizeLoadedData(parsed);
+      try {
+        persistDataLocally(data);
+      } catch {
+        // Keep the correctly parsed data in memory even if storage is temporarily full.
+      }
+      return data;
+    }
   }
   const data = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || { customers: [], orders: [], varieties: [], crosses: [], offers: [], trash: [], exchangeRates: [], settings: {} });
-  localStorage.setItem(STORE_KEY, JSON.stringify(data));
+  persistDataLocally(data);
   if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
   return data;
 }
 
+function clearStoredSyncSnapshots() {
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY);
+    localStorage.removeItem(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY);
+  } catch {
+    // The main data record is more important than optional snapshots.
+  }
+}
+
+function persistDataLocally(data) {
+  const serialized = JSON.stringify(data);
+  try {
+    localStorage.setItem(STORE_KEY, serialized);
+  } catch {
+    clearStoredSyncSnapshots();
+    localStorage.setItem(STORE_KEY, serialized);
+  }
+}
+
 function saveData(options = {}) {
-  localStorage.setItem(STORE_KEY, JSON.stringify(state.data));
+  persistDataLocally(state.data);
   if (!options.skipAutoSync) {
     markSyncDirty();
     state.syncRevision += 1;
@@ -8892,8 +8921,80 @@ function varietyImages(variety = {}) {
 function photoFallbackAttributes(variety, images = []) {
   const varietyId = clean(variety?.id);
   const ordered = unique((images || []).map(clean).filter(Boolean));
-  if (!varietyId || ordered.length < 2) return "";
-  return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0])}" data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"`;
+  if (!varietyId) return "";
+  const fallbackAttr = ordered.length > 1 ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"` : "";
+  return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0] || "")}"${fallbackAttr}`;
+}
+
+function photoOwnerFolderCandidates(ownerName) {
+  const raw = clean(ownerName);
+  const slug = safeFileName(ownerName, "");
+  return unique([raw, raw.toLowerCase(), slug].map(clean).filter(Boolean));
+}
+
+function knownSupabasePhotoOwnerIds(currentUserId = "") {
+  const refs = [];
+  (state.data.varieties || []).forEach((variety) => refs.push(...varietyImages(variety)));
+  (state.data.crosses || []).forEach((cross) => refs.push(...crossSeedlingImages(cross)));
+  (state.data.offers || []).forEach((offer) => (offer.items || []).forEach((item) => refs.push(clean(item.photoUrl))));
+  const storedOwnerIds = refs
+    .filter((ref) => clean(ref).startsWith(SUPABASE_PHOTO_PREFIX))
+    .map((ref) => clean(parseSupabasePhotoRef(ref).split("/")[0]));
+  return unique([clean(currentUserId), ...storedOwnerIds].filter(Boolean));
+}
+
+async function availableSupabasePhotoOwnerIds(currentUserId = "") {
+  if (!photoRuntime.storageOwnerIds) {
+    photoRuntime.storageOwnerIds = (async () => {
+      try {
+        const entries = await supabaseRequest(`/storage/v1/object/list/${SUPABASE_SYNC_BUCKET}`, {
+          method: "POST",
+          body: { prefix: "", limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } },
+        });
+        return (entries || []).map((entry) => clean(entry?.name)).filter((name) => name && !name.includes("/"));
+      } catch {
+        return [];
+      }
+    })();
+  }
+  return unique([...knownSupabasePhotoOwnerIds(currentUserId), ...await photoRuntime.storageOwnerIds]);
+}
+
+async function findSupabaseFolderThumbnailRef(ownerName) {
+  const key = normalize(ownerName);
+  if (!key) return "";
+  if (photoRuntime.folderThumbnailRefs.has(key)) return photoRuntime.folderThumbnailRefs.get(key);
+  const lookup = (async () => {
+    try {
+      const session = await ensureSession();
+      const userId = clean(session.user?.id);
+      if (!userId) return "";
+      const folders = photoOwnerFolderCandidates(ownerName);
+      const thumbDirs = [SUPABASE_THUMB_DIR, "_nahledy"];
+      const ownerIds = await availableSupabasePhotoOwnerIds(userId);
+      const prefixes = unique([
+        ...folders.flatMap((folder) => thumbDirs.map((thumbDir) => `${folder}/${thumbDir}/`)),
+        ...ownerIds.flatMap((ownerId) => folders.flatMap((folder) => thumbDirs.map((thumbDir) => `${ownerId}/${folder}/${thumbDir}/`))),
+      ]);
+      for (const prefix of prefixes) {
+        try {
+            const entries = await supabaseRequest(`/storage/v1/object/list/${SUPABASE_SYNC_BUCKET}`, {
+              method: "POST",
+              body: { prefix, limit: 20, offset: 0, sortBy: { column: "created_at", order: "desc" } },
+            });
+            const fileName = (entries || []).map((entry) => clean(entry?.name)).find((name) => /\.(jpe?g|png|webp)$/i.test(name));
+            if (fileName) return `${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(`${prefix}${fileName}`)}`;
+        } catch {
+          // A legacy folder can be inaccessible while the current user's folder still works.
+        }
+      }
+    } catch {
+      return "";
+    }
+    return "";
+  })();
+  photoRuntime.folderThumbnailRefs.set(key, lookup);
+  return lookup;
 }
 
 function photoFallbackRefs(image) {
@@ -8940,7 +9041,7 @@ async function tryNextPhotoFallback(image) {
   if (!url) return tryNextPhotoFallback(image);
   image.dataset.photoLoaded = "";
   image.onerror = async () => {
-    if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+    await markPhotoMissingOrTryNext(image);
   };
   image.onload = () => {
     image.dataset.photoLoaded = "1";
@@ -8951,8 +9052,30 @@ async function tryNextPhotoFallback(image) {
   return true;
 }
 
+async function tryFolderThumbnailRecovery(image) {
+  const varietyId = clean(image?.dataset?.photoVarietyId);
+  const variety = varietyId ? findById("varieties", varietyId) : null;
+  if (!variety || image.dataset.photoFolderRecoveryTried === "1") return false;
+  image.dataset.photoFolderRecoveryTried = "1";
+  const ref = await findSupabaseFolderThumbnailRef(variety.name);
+  if (!ref) return false;
+  const url = await resolvePhotoUrl(ref);
+  if (!url) return false;
+  image.dataset.photoLoaded = "";
+  image.onerror = () => markPhotoMissing(image);
+  image.onload = () => {
+    image.dataset.photoLoaded = "1";
+    clearPhotoMissing(image);
+    promoteWorkingPhoto(image, ref);
+  };
+  image.src = url;
+  return true;
+}
+
 async function markPhotoMissingOrTryNext(image) {
-  if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+  if (await tryNextPhotoFallback(image)) return;
+  if (await tryFolderThumbnailRecovery(image)) return;
+  markPhotoMissing(image);
 }
 
 function linkedCrossVariety(cross = {}) {
@@ -9107,6 +9230,33 @@ function idbDelete(db, storeName, key) {
 }
 
 async function resolvePhotos(root) {
+  const folderPlaceholders = [...root.querySelectorAll("[data-photo-folder-variety-id]")];
+  await Promise.all(folderPlaceholders.map(async (placeholder) => {
+    if (placeholder.dataset.photoFolderChecked === "1") return;
+    const load = async () => {
+      placeholder.dataset.photoQueued = "";
+      placeholder.dataset.photoFolderChecked = "1";
+      const variety = findById("varieties", clean(placeholder.dataset.photoFolderVarietyId));
+      if (!variety || varietyImages(variety).length) return;
+      const ref = await findSupabaseFolderThumbnailRef(placeholder.dataset.photoFolderOwnerName || variety.name);
+      if (!ref) return;
+      const url = await resolvePhotoUrl(ref);
+      if (!url) return;
+      const image = document.createElement("img");
+      image.className = clean(placeholder.dataset.photoFolderImageClass);
+      image.alt = clean(placeholder.dataset.photoFolderAlt || variety.name);
+      image.dataset.photoVarietyId = variety.id;
+      image.onload = () => {
+        image.dataset.photoLoaded = "1";
+        placeholder.replaceWith(image);
+        promoteWorkingPhoto(image, ref);
+      };
+      image.onerror = () => {};
+      image.src = url;
+    };
+    if (!isPhotoNearViewport(placeholder) && queueDeferredPhotoLoad(placeholder, load)) return;
+    await load();
+  }));
   const images = [...root.querySelectorAll("[data-photo-ref]")];
   await Promise.all(images.map(async (image) => {
     if (image.dataset.photoLoaded === "1") return;
@@ -10199,11 +10349,21 @@ function rememberSyncSnapshot(storageKey, kind, data, updatedAt = "") {
       savedAt: new Date().toISOString(),
       updatedAt: clean(updatedAt),
       summary: summarizeSyncData(normalized),
-      data: normalized,
+      fingerprint: syncSnapshotFingerprint(normalized),
     }));
   } catch {
     // Když se snapshot nevejde, samotný sync musí běžet dál.
   }
+}
+
+function syncSnapshotFingerprint(data) {
+  const value = JSON.stringify(data || {});
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${hash >>> 0}`;
 }
 
 async function readCloudState(session, encryptionPassword) {
@@ -10266,8 +10426,9 @@ function lastCloudSnapshotMatchesLocalData() {
     if (!raw) return false;
     const parsed = JSON.parse(raw);
     const emptyData = { customers: [], orders: [], varieties: [], crosses: [], offers: [], exchangeRates: [], settings: {} };
-    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || emptyData)));
     const current = normalizeLoadedData(JSON.parse(JSON.stringify(state.data || emptyData)));
+    if (clean(parsed?.fingerprint)) return clean(parsed.fingerprint) === syncSnapshotFingerprint(current);
+    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || emptyData)));
     return JSON.stringify(snapshot) === JSON.stringify(current);
   } catch {
     return false;
@@ -12493,6 +12654,9 @@ function openOfferDetailSheet(id, options = {}) {
       const ownerThumbRef = ak93OwnerThumbnailFallbackRef(safeImage, safeFallback);
       const ownerFolderRef = ak93OwnerThumbnailFolderFallbackRef(safeImage, safeFallback);
       return `<img class="catalog-mobile-photo" data-photo-ref="${escapeHtml(thumbPreviewRef(safeImage))}" data-photo-full-ref="${escapeHtml(safeImage)}" data-photo-owner-thumb-ref="${escapeHtml(ownerThumbRef)}" data-photo-owner-folder-ref="${escapeHtml(ownerFolderRef)}" ${photoFallbackAttributes(variety, images)} alt="${escapeHtml(alt || safeFallback)}">`;
+    }
+    if (clean(variety?.id)) {
+      return `<div class="catalog-mobile-placeholder" data-photo-folder-variety-id="${escapeHtml(variety.id)}" data-photo-folder-owner-name="${escapeHtml(variety.name || safeFallback)}" data-photo-folder-image-class="catalog-mobile-photo" data-photo-folder-alt="${escapeHtml(alt || safeFallback)}"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
     }
     return `<div class="catalog-mobile-placeholder"><span class="catalog-mobile-placeholder-mark">${escapeHtml(initials(safeFallback))}</span></div>`;
   }

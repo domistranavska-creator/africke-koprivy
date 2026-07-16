@@ -59,6 +59,8 @@ const photoRuntime = {
   supabaseObserver: null,
   deferredSupabaseLoads: new WeakMap(),
   promotedFallbacks: new Set(),
+  folderThumbnailRefs: new Map(),
+  storageOwnerIds: null,
 };
 
 const paymentLabels = {
@@ -797,6 +799,25 @@ function scheduleRender(key, renderFn) {
   });
 }
 
+function clearStoredSyncSnapshots() {
+  try {
+    localStorage.removeItem(SUPABASE_SYNC_LAST_LOCAL_SNAPSHOT_KEY);
+    localStorage.removeItem(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY);
+  } catch {
+    // The main data record is more important than optional snapshots.
+  }
+}
+
+function persistDataLocally(data) {
+  const serialized = JSON.stringify(data);
+  try {
+    localStorage.setItem(STORE_KEY, serialized);
+  } catch {
+    clearStoredSyncSnapshots();
+    localStorage.setItem(STORE_KEY, serialized);
+  }
+}
+
 function loadData() {
   const storedKey = [STORE_KEY, ...LEGACY_STORE_KEYS].find((key) => localStorage.getItem(key));
   if (SEED_SIGNATURE && window.AFRICKE_KOPRIVY_SEED) {
@@ -806,7 +827,7 @@ function loadData() {
         localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
       } else {
         const seeded = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED);
-        localStorage.setItem(STORE_KEY, JSON.stringify(seeded));
+        persistDataLocally(seeded);
         localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
         return seeded;
       }
@@ -814,19 +835,26 @@ function loadData() {
   }
 
   if (storedKey) {
+    let parsed = null;
     try {
-      const parsed = JSON.parse(localStorage.getItem(storedKey));
-      const normalized = normalizeLoadedData(parsed);
-      localStorage.setItem(STORE_KEY, JSON.stringify(normalized));
-      if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
-      return normalized;
+      parsed = JSON.parse(localStorage.getItem(storedKey));
     } catch {
       localStorage.removeItem(storedKey);
+    }
+    if (parsed) {
+      const normalized = normalizeLoadedData(parsed);
+      try {
+        persistDataLocally(normalized);
+      } catch {
+        // Keep the correctly parsed data in memory even if storage is temporarily full.
+      }
+      if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
+      return normalized;
     }
   }
 
   const initial = normalizeLoadedData(window.AFRICKE_KOPRIVY_SEED || fallbackData());
-  localStorage.setItem(STORE_KEY, JSON.stringify(initial));
+  persistDataLocally(initial);
   if (SEED_SIGNATURE) localStorage.setItem(SEED_SIGNATURE_KEY, SEED_SIGNATURE);
   return initial;
 }
@@ -1136,7 +1164,7 @@ function fallbackData() {
 
 function saveData(options = {}) {
   invalidateDerivedCache();
-  localStorage.setItem(STORE_KEY, JSON.stringify(state.data));
+  persistDataLocally(state.data);
   if (!options.skipAutoSync) {
     markSupabaseSyncDirty();
     scheduleAutoSupabaseSync("save");
@@ -2898,9 +2926,7 @@ function varietyCatalogCardMarkup(variety) {
   const mainImage = images[0];
   const visual = mainImage
     ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(variety, images)}`)
-    : `<div class="variety-catalog-card-placeholder">
-        <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
-      </div>`;
+    : missingVarietyPhotoMarkup(variety, variety.name, "variety-catalog-card-photo", "variety-catalog-card-placeholder", "variety-catalog-card-placeholder-mark");
   const stateChip = variety.active === false
     ? '<span class="variety-catalog-card-chip variety-catalog-card-chip-state">Neaktivní</span>'
     : "";
@@ -2944,9 +2970,7 @@ function varietyCatalogCardMarkup(variety) {
   const mainImage = images[0];
   const visual = mainImage
     ? photoImageMarkup(mainImage, variety.name, "variety-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(variety, images)}`)
-    : `<div class="variety-catalog-card-placeholder">
-        <span class="variety-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(variety.name))}</span>
-      </div>`;
+    : missingVarietyPhotoMarkup(variety, variety.name, "variety-catalog-card-photo", "variety-catalog-card-placeholder", "variety-catalog-card-placeholder-mark");
   const winterBadgeTitle = winteringStatusLabel(winterStatus);
   const winterBadge = `<span class="variety-catalog-card-winter-badge ${winteringStatusClassName(winterStatus)}" title="${escapeHtml(winterBadgeTitle)}" aria-label="${escapeHtml(winterBadgeTitle)}">❄</span>`;
 
@@ -3164,9 +3188,7 @@ function crossCatalogCardMarkup(cross) {
   const note = crossCatalogPreviewNote(cross);
   const visual = seedlingPhoto
     ? photoImageMarkup(seedlingPhoto, title, "cross-catalog-card-photo", `loading="lazy" ${photoFallbackAttributes(seedlingVariety, seedlingImages)}`)
-    : `<div class="cross-catalog-card-placeholder">
-        <span class="cross-catalog-card-placeholder-mark">${escapeHtml(varietyInitials(title))}</span>
-      </div>`;
+    : missingVarietyPhotoMarkup(seedlingVariety, title, "cross-catalog-card-photo", "cross-catalog-card-placeholder", "cross-catalog-card-placeholder-mark");
 
   return `<article class="cross-catalog-card ${crossRowToneClass(cross)}${cross.id === state.selectedCrossId ? " is-selected" : ""}" data-cross-row="${safeId}" tabindex="0" title="Otevřít křížení">
     <div class="cross-catalog-card-visual">
@@ -9632,11 +9654,21 @@ function rememberSupabaseSyncSnapshot(storageKey, kind, data, updatedAt = "") {
       savedAt: new Date().toISOString(),
       updatedAt: clean(updatedAt),
       summary: summarizeSupabaseSyncData(normalized),
-      data: normalized,
+      fingerprint: syncSnapshotFingerprint(normalized),
     }));
   } catch {
     // Snapshot is only a safety extra. Sync must keep working even without storage room.
   }
+}
+
+function syncSnapshotFingerprint(data) {
+  const value = JSON.stringify(data || {});
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${hash >>> 0}`;
 }
 
 async function readSupabaseCloudState(session, encryptionPassword) {
@@ -9688,8 +9720,9 @@ function lastSupabaseCloudSnapshotMatchesLocalData() {
     const raw = clean(localStorage.getItem(SUPABASE_SYNC_LAST_CLOUD_SNAPSHOT_KEY));
     if (!raw) return false;
     const parsed = JSON.parse(raw);
-    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || fallbackData())));
     const current = normalizeLoadedData(JSON.parse(JSON.stringify(state.data || fallbackData())));
+    if (clean(parsed?.fingerprint)) return clean(parsed.fingerprint) === syncSnapshotFingerprint(current);
+    const snapshot = normalizeLoadedData(JSON.parse(JSON.stringify(parsed?.data || fallbackData())));
     return JSON.stringify(snapshot) === JSON.stringify(current);
   } catch {
     return false;
@@ -11828,8 +11861,88 @@ function photoImageMarkup(image, alt, extraClass = "", extraAttrs = "") {
 function photoFallbackAttributes(variety, images = []) {
   const varietyId = clean(variety?.id);
   const ordered = unique((images || []).map(clean).filter(Boolean));
-  if (!varietyId || ordered.length < 2) return "";
-  return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0])}" data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"`;
+  if (!varietyId) return "";
+  const fallbackAttr = ordered.length > 1 ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"` : "";
+  return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0] || "")}"${fallbackAttr}`;
+}
+
+function missingVarietyPhotoMarkup(variety, alt, imageClass, placeholderClass, markClass) {
+  const varietyId = clean(variety?.id);
+  if (!varietyId) {
+    return `<div class="${placeholderClass}"><span class="${markClass}">${escapeHtml(varietyInitials(alt))}</span></div>`;
+  }
+  return `<div class="${placeholderClass}" data-photo-folder-variety-id="${escapeHtml(varietyId)}" data-photo-folder-owner-name="${escapeHtml(variety?.name || alt)}" data-photo-folder-image-class="${escapeHtml(imageClass)}" data-photo-folder-alt="${escapeHtml(alt)}"><span class="${markClass}">${escapeHtml(varietyInitials(alt))}</span></div>`;
+}
+
+function photoOwnerFolderCandidates(ownerName) {
+  const raw = safeFileName(ownerName, "");
+  const slug = normalize(ownerName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return unique([raw, raw.toLowerCase(), slug].map(clean).filter(Boolean));
+}
+
+function knownSupabasePhotoOwnerIds(currentUserId = "") {
+  const refs = [];
+  (state.data.varieties || []).forEach((variety) => refs.push(...varietyImages(variety)));
+  (state.data.crosses || []).forEach((cross) => refs.push(...crossSeedlingImages(cross)));
+  (state.data.offers || []).forEach((offer) => (offer.items || []).forEach((item) => refs.push(clean(item.photoUrl))));
+  const storedOwnerIds = refs
+    .filter((ref) => isSupabasePhotoRef(ref))
+    .map((ref) => clean(parseSupabasePhotoRef(ref).split("/")[0]));
+  return unique([clean(currentUserId), ...storedOwnerIds].filter(Boolean));
+}
+
+async function availableSupabasePhotoOwnerIds(currentUserId = "") {
+  if (!photoRuntime.storageOwnerIds) {
+    photoRuntime.storageOwnerIds = (async () => {
+      try {
+        const entries = await supabaseRequest(`/storage/v1/object/list/${SUPABASE_SYNC_BUCKET}`, {
+          method: "POST",
+          body: { prefix: "", limit: 100, offset: 0, sortBy: { column: "name", order: "asc" } },
+        });
+        return (entries || []).map((entry) => clean(entry?.name)).filter((name) => name && !name.includes("/"));
+      } catch {
+        return [];
+      }
+    })();
+  }
+  return unique([...knownSupabasePhotoOwnerIds(currentUserId), ...await photoRuntime.storageOwnerIds]);
+}
+
+async function findSupabaseFolderThumbnailRef(ownerName) {
+  const key = normalize(ownerName);
+  if (!key) return "";
+  if (photoRuntime.folderThumbnailRefs.has(key)) return photoRuntime.folderThumbnailRefs.get(key);
+  const lookup = (async () => {
+    try {
+      const session = await ensureSupabaseSession();
+      const userId = clean(session.user?.id);
+      if (!userId) return "";
+      const folders = photoOwnerFolderCandidates(ownerName);
+      const thumbDirs = [SUPABASE_THUMB_DIR, "_nahledy"];
+      const ownerIds = await availableSupabasePhotoOwnerIds(userId);
+      const prefixes = unique([
+        ...folders.flatMap((folder) => thumbDirs.map((thumbDir) => `${folder}/${thumbDir}/`)),
+        ...ownerIds.flatMap((ownerId) => folders.flatMap((folder) => thumbDirs.map((thumbDir) => `${ownerId}/${folder}/${thumbDir}/`))),
+      ]);
+      for (const prefix of prefixes) {
+        try {
+            const entries = await supabaseRequest(`/storage/v1/object/list/${SUPABASE_SYNC_BUCKET}`, {
+              method: "POST",
+              body: { prefix, limit: 20, offset: 0, sortBy: { column: "created_at", order: "desc" } },
+            });
+            const fileName = (entries || []).map((entry) => clean(entry?.name)).find((name) => /\.(jpe?g|png|webp)$/i.test(name));
+            if (fileName) return supabasePhotoRef(`${prefix}${fileName}`);
+        } catch {
+          // A legacy folder can be inaccessible while the current user's folder still works.
+        }
+      }
+    } catch {
+      return "";
+    }
+    return "";
+  })();
+  photoRuntime.folderThumbnailRefs.set(key, lookup);
+  return lookup;
 }
 
 function photoFallbackRefs(image) {
@@ -11885,7 +11998,7 @@ async function tryNextPhotoFallback(image) {
   if (!url) return tryNextPhotoFallback(image);
   image.dataset.photoLoaded = "";
   image.onerror = async () => {
-    if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+    await markPhotoMissingOrTryNext(image);
   };
   image.onload = () => {
     image.dataset.photoLoaded = "1";
@@ -11896,8 +12009,30 @@ async function tryNextPhotoFallback(image) {
   return true;
 }
 
+async function tryFolderThumbnailRecovery(image) {
+  const varietyId = clean(image?.dataset?.photoVarietyId);
+  const variety = varietyId ? findVariety(varietyId) : null;
+  if (!variety || image.dataset.photoFolderRecoveryTried === "1") return false;
+  image.dataset.photoFolderRecoveryTried = "1";
+  const ref = await findSupabaseFolderThumbnailRef(variety.name);
+  if (!ref) return false;
+  const url = await resolveSupabasePhotoUrl(ref);
+  if (!url) return false;
+  image.dataset.photoLoaded = "";
+  image.onerror = () => markPhotoMissing(image);
+  image.onload = () => {
+    image.dataset.photoLoaded = "1";
+    clearPhotoMissing(image);
+    promoteWorkingPhoto(image, ref);
+  };
+  image.src = url;
+  return true;
+}
+
 async function markPhotoMissingOrTryNext(image) {
-  if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+  if (await tryNextPhotoFallback(image)) return;
+  if (await tryFolderThumbnailRecovery(image)) return;
+  markPhotoMissing(image);
 }
 
 function varietyThumb(variety) {
@@ -15011,10 +15146,36 @@ function runDeferredSupabasePhotoLoad(image) {
 
 function hydrateLocalPhotoImages(root = document) {
   if (!root?.querySelectorAll) return;
+  root.querySelectorAll("[data-photo-folder-variety-id]").forEach((placeholder) => {
+    if (placeholder.dataset.photoFolderChecked === "1") return;
+    const load = async () => {
+      placeholder.dataset.photoQueued = "";
+      placeholder.dataset.photoFolderChecked = "1";
+      const variety = findVariety(clean(placeholder.dataset.photoFolderVarietyId));
+      if (!variety || varietyImages(variety).length) return;
+      const ref = await findSupabaseFolderThumbnailRef(placeholder.dataset.photoFolderOwnerName || variety.name);
+      if (!ref) return;
+      const url = await resolveSupabasePhotoUrl(ref);
+      if (!url) return;
+      const image = document.createElement("img");
+      image.className = clean(placeholder.dataset.photoFolderImageClass);
+      image.alt = clean(placeholder.dataset.photoFolderAlt || variety.name);
+      image.dataset.photoVarietyId = variety.id;
+      image.onload = () => {
+        image.dataset.photoLoaded = "1";
+        placeholder.replaceWith(image);
+        promoteWorkingPhoto(image, ref);
+      };
+      image.onerror = () => {};
+      image.src = url;
+    };
+    if (!isSupabasePhotoNearViewport(placeholder) && queueDeferredSupabasePhotoLoad(placeholder, load)) return;
+    load().catch(() => {});
+  });
   root.querySelectorAll("[data-photo-fallback-refs]").forEach((image) => {
     if (image.dataset.localPhotoRef || image.dataset.indexedPhotoRef || image.dataset.supabasePhotoRef) return;
     image.onerror = async () => {
-      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+      await markPhotoMissingOrTryNext(image);
     };
     if (image.complete && image.naturalWidth === 0) markPhotoMissingOrTryNext(image);
   });
@@ -15027,7 +15188,7 @@ function hydrateLocalPhotoImages(root = document) {
       return;
     }
     image.onerror = async () => {
-      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+      await markPhotoMissingOrTryNext(image);
     };
     image.src = url;
     image.dataset.photoLoaded = "1";
@@ -15042,7 +15203,7 @@ function hydrateLocalPhotoImages(root = document) {
       return;
     }
     image.onerror = async () => {
-      if (!await tryNextPhotoFallback(image)) markPhotoMissing(image);
+      await markPhotoMissingOrTryNext(image);
     };
     image.src = url;
     image.dataset.photoLoaded = "1";
