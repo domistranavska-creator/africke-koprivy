@@ -2304,6 +2304,14 @@ body[data-mobile-view="crosses"] .view-summary p {
   box-shadow: 0 18px 28px rgba(81, 55, 28, 0.18);
 }
 
+.offer-item.offer-item-catalog .offer-thumb-wrap > .catalog-mobile-placeholder {
+  display: grid;
+  width: 108px;
+  height: 110px;
+  place-items: center;
+  border-radius: 24px;
+}
+
 .offer-item.offer-item-catalog .offer-order-flag {
   left: 4px;
   right: 4px;

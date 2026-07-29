@@ -1059,7 +1059,11 @@ function syncFinishedCrossVarieties(data = state.data) {
   if (data && data !== state.data) state.data = data;
   try {
     (data.crosses || []).forEach((cross) => {
-      if (clean(cross.seedlingName) && !findVariety(clean(cross.linkedVarietyId))) {
+      const seedlingName = clean(cross.seedlingName);
+      const linked = findVariety(clean(cross.linkedVarietyId));
+      const linkedMatchesName = linked
+        && varietyNameMatchKey(linked.name) === varietyNameMatchKey(seedlingName);
+      if (seedlingName && !linkedMatchesName) {
         cross.linkedVarietyId = ensureVarietyFromCross(cross);
         changed = true;
       }
@@ -3061,7 +3065,7 @@ function crossLineageLabel(cross) {
 }
 
 function crossSeedlingVariety(cross = {}) {
-  return findVariety(clean(cross?.linkedVarietyId)) || (clean(cross?.seedlingName) ? findVarietyByName(cross.seedlingName) : null);
+  return linkedVarietyForName(cross?.linkedVarietyId, cross?.seedlingName || cross?.name);
 }
 
 function crossCatalogPreviewNote(cross) {
@@ -4439,8 +4443,13 @@ function renderOfferItem(offer, item) {
   const available = Math.max(0, total - confirmed);
   const soldOut = total > 0 && available === 0;
   const reservations = sortedReservationsForItem(item);
-  const image = offerItemImage(item);
+  const linkedVariety = offerItemVariety(item);
+  const itemImages = offerItemImages(item);
+  const image = itemImages[0] || "";
   const displayName = offerItemNameSafe(item);
+  const thumbMarkup = image
+    ? photoImageMarkup(image, displayName, "", `loading="lazy" ${photoFallbackAttributes(linkedVariety, itemImages)}`)
+    : missingVarietyPhotoMarkup(linkedVariety, displayName, "", "offer-thumb-folder-placeholder", "offer-thumb-folder-placeholder-mark");
   const note = clean(item.note);
   const orderProgress = offerItemOrderProgress(offer, item);
   const orderFlag = orderProgress.label
@@ -4451,7 +4460,7 @@ function renderOfferItem(offer, item) {
   return `<article class="offer-item offer-item-catalog ${soldOut ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
     <div class="offer-item-main offer-item-main-catalog">
       <div class="offer-thumb-wrap">
-        <div class="offer-thumb">${image ? photoImageMarkup(image, displayName, "", 'loading="lazy"') : varietyInitials(displayName)}</div>
+        <div class="offer-thumb">${thumbMarkup}</div>
       </div>
       <div class="offer-item-copy">
         <div class="offer-item-copy-top">
@@ -7762,13 +7771,17 @@ function ensureVarietyFromCross(cross) {
   const seedlingNote = `Semenáč z křížení ${mother?.name || "matka"} x ${pollen?.name || "pyl"}`;
   const seedlingImages = crossOwnSeedlingImages(cross);
   const mainPhoto = seedlingImages[0] || "";
-  const existing = findVariety(clean(cross.linkedVarietyId)) || findVarietyByName(name);
+  const linkedById = findVariety(clean(cross.linkedVarietyId));
+  const linkedMatchesName = linkedById && varietyNameMatchKey(linkedById.name) === varietyNameMatchKey(name);
+  const existing = linkedMatchesName ? linkedById : findVarietyByName(name);
   if (existing) {
     const previousName = existing.name || "";
     const previousImages = varietyImages(existing);
     existing.name = existing.name || name;
-    existing.photoUrl = mainPhoto;
-    existing.gallery = unique(seedlingImages.filter((image) => image && image !== mainPhoto));
+    if (seedlingImages.length) {
+      existing.photoUrl = mainPhoto;
+      existing.gallery = unique(seedlingImages.filter((image) => image && image !== mainPhoto));
+    }
     if (!noteAlreadyContainsCrossLineage(existing.note, mother?.name || "matka", pollen?.name || "pyl")) {
       existing.note = cleanBusinessNote([existing.note, seedlingNote].filter(Boolean).join("\n"));
     }
@@ -7777,6 +7790,8 @@ function ensureVarietyFromCross(cross) {
     existing.updatedAt = now;
     state.data.varieties = mergeVarieties(state.data.varieties);
     syncOfferItemsForVariety(existing, { previousName, previousImages });
+    cross.linkedVarietyId = existing.id;
+    cross.photoSource = "variety";
     return existing.id;
   }
 
@@ -7797,7 +7812,10 @@ function ensureVarietyFromCross(cross) {
   };
   state.data.varieties.push(variety);
   state.data.varieties = mergeVarieties(state.data.varieties);
-  return findVarietyByName(name)?.id || variety.id;
+  const varietyId = findVarietyByName(name)?.id || variety.id;
+  cross.linkedVarietyId = varietyId;
+  cross.photoSource = "variety";
+  return varietyId;
 }
 
 function deleteCross(id) {
@@ -7925,7 +7943,7 @@ function openOfferItemDialog(offerId, itemId = null) {
   els.offerItemForm.reset();
   els.offerItemForm.elements.offerId.value = offerId;
   els.offerItemForm.elements.itemId.value = item?.id || "";
-  const matchedVariety = findVariety(clean(item?.varietyId)) || findExactVarietyByName(item?.varietyName);
+  const matchedVariety = linkedVarietyForName(item?.varietyId, item?.varietyName);
   els.offerItemForm.elements.varietyName.value = matchedVariety?.name || item?.varietyName || "";
   els.offerItemForm.elements.varietyId.value = matchedVariety?.id || item?.varietyId || "";
   els.offerItemForm.elements.quantity.value = item?.quantity || "1";
@@ -8017,12 +8035,21 @@ function syncOfferItemsForVariety(variety, options = {}) {
       if (!linkedById && !linkedByOldName) return;
       item.varietyId = varietyId;
       item.varietyName = varietyName;
-      if (clean(item.photoUrl) && previousImages.has(clean(item.photoUrl))) item.photoUrl = "";
       item.updatedAt = new Date().toISOString();
       changed = true;
     });
     if (changed) offer.updatedAt = new Date().toISOString();
     sortOfferItemsInPlace(offer);
+  });
+  const linkedNameKeys = new Set([options.previousName, varietyName].map(varietyNameMatchKey).filter(Boolean));
+  state.data.crosses.forEach((cross) => {
+    const linkedById = clean(cross.linkedVarietyId) === varietyId;
+    const linkedByName = linkedNameKeys.has(varietyNameMatchKey(cross.seedlingName || cross.name));
+    if (!linkedById && !linkedByName) return;
+    cross.linkedVarietyId = varietyId;
+    cross.seedlingName = varietyName;
+    cross.photoSource = "variety";
+    cross.updatedAt = clean(variety.updatedAt) || new Date().toISOString();
   });
 }
 
@@ -8037,7 +8064,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
       const linkedById = byId.get(clean(item.varietyId));
       const exactByName = byName.get(itemNameKey);
       const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
-      const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
+      const variety = linkedMatchesName ? linkedById : (exactByName || (!itemNameKey ? linkedById : null));
       if (!variety) return;
       if (clean(item.varietyId) !== clean(variety.id)) {
         item.varietyId = variety.id;
@@ -8047,7 +8074,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
         item.varietyName = variety.name;
         changed = true;
       }
-      const varietyPhotos = new Set(varietyImages(variety));
+      const varietyPhotos = new Set(varietyImages(variety, data));
       const itemPhoto = clean(item.photoUrl);
       if (itemPhoto && !varietyPhotos.size) {
         variety.photoUrl = itemPhoto;
@@ -8055,10 +8082,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
         varietyPhotos.add(itemPhoto);
         changed = true;
       }
-      if (itemPhoto && varietyPhotos.has(itemPhoto)) {
-        item.photoUrl = "";
-        changed = true;
-      }
+      if (itemPhoto && varietyPhotos.has(itemPhoto)) item.photoSource = "variety";
     });
     sortOfferItemsInPlace(offer);
   });
@@ -11801,8 +11825,22 @@ function applyDefaultShippingFeeForSelectedCustomer() {
   updateOrderAdvancedSummary();
 }
 
-function varietyImages(variety) {
+function varietyOwnImages(variety = {}) {
   return unique([variety?.photoUrl, ...(Array.isArray(variety?.gallery) ? variety.gallery : normalizeGallery(variety?.gallery))].map(clean).filter(Boolean));
+}
+
+function relatedCrossOwnImagesForVariety(variety = {}, data = state.data) {
+  const varietyId = clean(variety?.id);
+  const nameKey = varietyNameMatchKey(variety?.name);
+  if (!varietyId && !nameKey) return [];
+  return (data?.crosses || [])
+    .filter((cross) => clean(cross.linkedVarietyId) === varietyId || (nameKey && varietyNameMatchKey(cross.seedlingName || cross.name) === nameKey))
+    .sort((a, b) => String(b.updatedAt || b.pollinatedAt || "").localeCompare(String(a.updatedAt || a.pollinatedAt || "")))
+    .flatMap((cross) => crossOwnSeedlingImages(cross));
+}
+
+function varietyImages(variety = {}, data = state.data) {
+  return unique([...varietyOwnImages(variety), ...relatedCrossOwnImagesForVariety(variety, data)]);
 }
 
 function varietyPriceText(variety) {
@@ -11893,7 +11931,19 @@ function photoFallbackAttributes(variety, images = []) {
   const varietyId = clean(variety?.id);
   const ordered = unique((images || []).map(clean).filter(Boolean));
   if (!varietyId) return "";
-  const fallbackAttr = ordered.length > 1 ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"` : "";
+  const ownerFolder = photoOwnerFolderCandidates(variety?.name)[0] || "";
+  const correctedOwnerRefs = ownerFolder ? ordered.flatMap((ref) => {
+    if (!isSupabasePhotoRef(ref)) return [];
+    const path = parseSupabasePhotoRef(ref);
+    const parts = path.split("/").filter(Boolean);
+    const userId = clean(parts[0]);
+    const fileName = clean(parts[parts.length - 1]).replace(/\.[a-z0-9]+$/i, ".jpg");
+    if (!userId || !fileName) return [];
+    return [supabasePhotoRef(`${userId}/${ownerFolder}/${SUPABASE_THUMB_DIR}/${fileName}`)];
+  }) : [];
+  const fallbackRefs = unique([...ordered.slice(1), ...correctedOwnerRefs])
+    .filter((ref) => ref !== ordered[0]);
+  const fallbackAttr = fallbackRefs.length ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(fallbackRefs))}"` : "";
   return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0] || "")}"${fallbackAttr}`;
 }
 
@@ -11973,6 +12023,22 @@ async function findSupabaseFolderThumbnailRef(ownerName) {
     return "";
   })();
   photoRuntime.folderThumbnailRefs.set(key, lookup);
+  lookup.then((ref) => {
+    if (photoRuntime.folderThumbnailRefs.get(key) !== lookup) return;
+    if (!ref) {
+      photoRuntime.folderThumbnailRefs.delete(key);
+      return;
+    }
+    window.setTimeout(() => {
+      if (photoRuntime.folderThumbnailRefs.get(key) === lookup) {
+        photoRuntime.folderThumbnailRefs.delete(key);
+      }
+    }, 30000);
+  }, () => {
+    if (photoRuntime.folderThumbnailRefs.get(key) === lookup) {
+      photoRuntime.folderThumbnailRefs.delete(key);
+    }
+  });
   return lookup;
 }
 
@@ -12040,19 +12106,39 @@ async function tryNextPhotoFallback(image) {
   return true;
 }
 
+function schedulePhotoFolderRecoveryRetry(image) {
+  if (!image?.isConnected || image.dataset.photoFolderRetryScheduled === "1") return false;
+  const retryCount = Number(image.dataset.photoFolderRetryCount || 0);
+  if (retryCount >= 3) return false;
+  image.dataset.photoFolderRetryCount = String(retryCount + 1);
+  image.dataset.photoFolderRetryScheduled = "1";
+  window.setTimeout(() => {
+    image.dataset.photoFolderRetryScheduled = "";
+    image.dataset.photoFolderRecoveryTried = "";
+    if (!image.isConnected || (image.dataset.photoLoaded === "1" && image.naturalWidth > 0)) return;
+    markPhotoMissingOrTryNext(image).catch(() => markPhotoMissing(image));
+  }, 1800 + (retryCount * 900));
+  return true;
+}
+
 async function tryFolderThumbnailRecovery(image) {
   const varietyId = clean(image?.dataset?.photoVarietyId);
   const variety = varietyId ? findVariety(varietyId) : null;
   if (!variety || image.dataset.photoFolderRecoveryTried === "1") return false;
   image.dataset.photoFolderRecoveryTried = "1";
   const ref = await findSupabaseFolderThumbnailRef(variety.name);
-  if (!ref) return false;
+  if (!ref) return schedulePhotoFolderRecoveryRetry(image);
   const url = await resolveSupabasePhotoUrl(ref);
-  if (!url) return false;
+  if (!url) return schedulePhotoFolderRecoveryRetry(image);
   image.dataset.photoLoaded = "";
-  image.onerror = () => markPhotoMissing(image);
+  image.onerror = () => {
+    photoRuntime.folderThumbnailRefs.delete(normalize(variety.name));
+    image.dataset.photoFolderRecoveryTried = "";
+    if (!schedulePhotoFolderRecoveryRetry(image)) markPhotoMissing(image);
+  };
   image.onload = () => {
     image.dataset.photoLoaded = "1";
+    image.dataset.photoFolderRetryCount = "0";
     clearPhotoMissing(image);
     promoteWorkingPhoto(image, ref);
   };
@@ -12582,6 +12668,14 @@ function varietyNameMatchKey(name) {
 function findExactVarietyByName(name) {
   const key = varietyNameMatchKey(name);
   return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
+}
+
+function linkedVarietyForName(linkedId, linkedName) {
+  const nameKey = varietyNameMatchKey(linkedName);
+  const linkedById = findVariety(clean(linkedId));
+  if (!nameKey) return linkedById || null;
+  if (linkedById && varietyNameMatchKey(linkedById.name) === nameKey) return linkedById;
+  return findExactVarietyByName(linkedName);
 }
 
 function findVarietyNameConflict(name, currentId = "") {
@@ -13185,10 +13279,15 @@ function normalizeOfferItem(item = {}) {
 }
 
 function offerItemImage(item = {}) {
-  const canonical = globalThis.AKSyncPhotoCore?.offerItemPhoto(item, state.data);
-  if (clean(canonical)) return clean(canonical);
-  const variety = findVariety(clean(item.varietyId)) || findVarietyByName(item.varietyName);
-  return varietyImages(variety)[0] || clean(item.photoUrl) || "";
+  return offerItemImages(item)[0] || "";
+}
+
+function offerItemVariety(item = {}) {
+  return linkedVarietyForName(item.varietyId, item.varietyName || item.name);
+}
+
+function offerItemImages(item = {}) {
+  return unique([...varietyImages(offerItemVariety(item)), item.photoUrl].map(clean).filter(Boolean));
 }
 
 function normalizeReservation(reservation = {}) {
@@ -15181,7 +15280,7 @@ function hydrateLocalPhotoImages(root = document) {
     && !state.supabasePullRunning
     && !hasPendingSupabaseSync();
   const folderPlaceholders = canRepairUnlinkedPhotos
-    ? [...root.querySelectorAll("[data-photo-folder-variety-id]")].slice(0, 2)
+    ? [...root.querySelectorAll("[data-photo-folder-variety-id]")]
     : [];
   folderPlaceholders.forEach((placeholder) => {
     if (placeholder.dataset.photoFolderChecked === "1") return;

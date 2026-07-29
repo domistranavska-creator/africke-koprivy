@@ -947,12 +947,21 @@ function syncOfferItemsForVariety(variety, options = {}) {
       if (!linkedById && !linkedByOldName) return;
       item.varietyId = varietyId;
       item.varietyName = varietyName;
-      if (clean(item.photoUrl) && previousImages.has(clean(item.photoUrl))) item.photoUrl = "";
       item.updatedAt = new Date().toISOString();
       changed = true;
     });
     if (changed) offer.updatedAt = new Date().toISOString();
     sortOfferItemsInPlace(offer);
+  });
+  const linkedNameKeys = new Set([options.previousName, varietyName].map(varietyNameMatchKey).filter(Boolean));
+  state.data.crosses.forEach((cross) => {
+    const linkedById = clean(cross.linkedVarietyId) === varietyId;
+    const linkedByName = linkedNameKeys.has(varietyNameMatchKey(cross.seedlingName || cross.name));
+    if (!linkedById && !linkedByName) return;
+    cross.linkedVarietyId = varietyId;
+    cross.seedlingName = varietyName;
+    cross.photoSource = "variety";
+    cross.updatedAt = clean(variety.updatedAt) || new Date().toISOString();
   });
 }
 
@@ -5265,8 +5274,9 @@ function openOfferItemSheet(offerId, itemId = "") {
   const offer = findById("offers", offerId);
   if (!offer) return;
   const item = itemId ? offer.items.find((entry) => entry.id === itemId) : null;
-  const matchedVariety = findById("varieties", item?.varietyId) || findVarietyByName(item?.varietyName);
+  const matchedVariety = linkedVarietyForName(item?.varietyId, item?.varietyName);
   const currentPhotos = matchedVariety ? varietyImages(matchedVariety) : (clean(item?.photoUrl) ? [item.photoUrl] : []);
+  const initialPhotoRefs = [...currentPhotos];
   const visibleVarietyName = matchedVariety?.name || item?.varietyName || "";
   const selectedCurrency = clean(item?.currency || matchedVariety?.saleCurrency || "CZK");
   openSheet(item ? "Upravit odĹ™ezek" : "PĹ™idat odĹ™ezek", `<form class="form-grid" id="sheetForm">
@@ -5293,7 +5303,16 @@ function openOfferItemSheet(offerId, itemId = "") {
     const form = document.querySelector("#sheetForm");
     const data = new FormData(form);
     const varietyName = clean(data.get("varietyName"));
-    const conflict = findOfferItemNameConflict(offer, varietyName, item?.id || "");
+    const files = selectedPhotoFiles(form);
+    const uploaded = await saveIndexedPhotos(files);
+    const existingPhotos = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
+    const liveOffer = findById("offers", offerId);
+    const liveItem = itemId ? liveOffer?.items?.find((entry) => entry.id === itemId) : null;
+    if (!liveOffer || (itemId && !liveItem)) {
+      toast("Nabídka se mezitím změnila. Otevři ji prosím znovu.");
+      return false;
+    }
+    const conflict = findOfferItemNameConflict(liveOffer, varietyName, liveItem?.id || "");
     if (conflict) {
       toast(`Pozor: polozka "${offerItemName(conflict)}" uz v teto nabidce je. Pokud jde o jinou velikost nebo cenu, muzes ji ulozit.`);
     }
@@ -5302,12 +5321,11 @@ function openOfferItemSheet(offerId, itemId = "") {
     const variety = exactVariety
       || findById("varieties", data.get("varietyId"))
       || (shouldCreateVariety ? ensureVarietyFromOfferItem(varietyName, data.get("price"), data.get("currency")) : null);
-    const files = selectedPhotoFiles(form);
-    const uploaded = await saveIndexedPhotos(files);
-    const existingPhotos = [...form.querySelectorAll("[data-photo-tile]")].map((node) => node.dataset.photoTile);
     const now = new Date().toISOString();
     const nextPhotos = unique([...uploaded, ...existingPhotos]);
-    if (variety) {
+    const photosChanged = uploaded.length > 0
+      || JSON.stringify(existingPhotos) !== JSON.stringify(initialPhotoRefs);
+    if (variety && photosChanged) {
       const previousName = variety.name || "";
       const previousImages = varietyImages(variety);
       variety.photoUrl = nextPhotos[0] || "";
@@ -5316,8 +5334,8 @@ function openOfferItemSheet(offerId, itemId = "") {
       syncOfferItemsForVariety(variety, { previousName, previousImages });
     }
     const nextItem = normalizeOfferItem({
-      ...item,
-      id: item?.id || uid(),
+      ...liveItem,
+      id: liveItem?.id || uid(),
       varietyId: variety?.id || "",
       varietyName,
       quantity: quantityText(data.get("quantity")),
@@ -5325,16 +5343,16 @@ function openOfferItemSheet(offerId, itemId = "") {
       currency: clean(data.get("currency")) || variety?.saleCurrency || "CZK",
       photoUrl: variety ? "" : (nextPhotos[0] || ""),
       note: clean(data.get("note")),
-      reservations: item?.reservations || [],
-      createdAt: item?.createdAt || now,
+      reservations: liveItem?.reservations || [],
+      createdAt: liveItem?.createdAt || now,
       updatedAt: now,
     });
-    if (item) Object.assign(item, nextItem);
-    else offer.items.push(nextItem);
-    sortOfferItemsInPlace(offer);
-    offer.updatedAt = now;
+    if (liveItem) Object.assign(liveItem, nextItem);
+    else liveOffer.items.push(nextItem);
+    sortOfferItemsInPlace(liveOffer);
+    liveOffer.updatedAt = now;
     saveData();
-    setTimeout(() => openOfferDetailSheet(offer.id, { replace: true }), 0);
+    setTimeout(() => openOfferDetailSheet(liveOffer.id, { replace: true }), 0);
   });
   bindOfferItemVarietyPicker(offer, item);
   bindPhotoGrid();
@@ -8096,7 +8114,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
       const linkedById = byId.get(clean(item.varietyId));
       const exactByName = byName.get(itemNameKey);
       const linkedMatchesName = linkedById && (!itemNameKey || varietyNameMatchKey(linkedById.name) === itemNameKey);
-      const variety = linkedMatchesName ? linkedById : (exactByName || linkedById);
+      const variety = linkedMatchesName ? linkedById : (exactByName || (!itemNameKey ? linkedById : null));
       if (!variety) return;
       if (clean(item.varietyId) !== clean(variety.id)) {
         item.varietyId = clean(variety.id);
@@ -8106,7 +8124,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
         item.varietyName = clean(variety.name);
         changed = true;
       }
-      const varietyPhotos = new Set(varietyImages(variety));
+      const varietyPhotos = new Set(varietyImages(variety, data));
       const itemPhoto = clean(item.photoUrl);
       if (itemPhoto && !varietyPhotos.size) {
         variety.photoUrl = itemPhoto;
@@ -8114,10 +8132,7 @@ function reconcileOfferItemVarietyLinks(data = state.data) {
         varietyPhotos.add(itemPhoto);
         changed = true;
       }
-      if (itemPhoto && varietyPhotos.has(itemPhoto)) {
-        item.photoUrl = "";
-        changed = true;
-      }
+      if (itemPhoto && varietyPhotos.has(itemPhoto)) item.photoSource = "variety";
     });
     sortOfferItemsInPlace(offer);
   });
@@ -8135,6 +8150,14 @@ function findCustomer(id) {
 function findVarietyByName(name) {
   const key = varietyNameMatchKey(name);
   return key ? state.data.varieties.find((variety) => varietyNameMatchKey(variety.name) === key) || null : null;
+}
+
+function linkedVarietyForName(linkedId, linkedName) {
+  const nameKey = varietyNameMatchKey(linkedName);
+  const linkedById = findById("varieties", clean(linkedId));
+  if (!nameKey) return linkedById || null;
+  if (linkedById && varietyNameMatchKey(linkedById.name) === nameKey) return linkedById;
+  return findVarietyByName(linkedName);
 }
 
 function findVarietyNameConflict(name, currentId = "") {
@@ -8159,9 +8182,16 @@ function offerItemName(item = {}) {
   return clean(findById("varieties", item.varietyId)?.name || item.varietyName || item.name || "OdĹ™ezek");
 }
 
+function offerItemVariety(item = {}) {
+  return linkedVarietyForName(item.varietyId, item.varietyName || item.name);
+}
+
+function offerItemImages(item = {}) {
+  return unique([...varietyImages(offerItemVariety(item)), item.photoUrl].map(clean).filter(Boolean));
+}
+
 function offerItemImage(item = {}) {
-  const canonical = globalThis.AKSyncPhotoCore?.offerItemPhoto(item, state.data);
-  return clean(canonical) || varietyImages(findById("varieties", item.varietyId) || findVarietyByName(item.varietyName))[0] || clean(item.photoUrl) || "";
+  return offerItemImages(item)[0] || "";
 }
 
 function reservationStatusValue(value) {
@@ -8388,26 +8418,39 @@ function offerAlternateCount(offer = {}) {
 }
 
 function ensureVarietyFromCross(cross) {
-  const existing = findById("varieties", clean(cross.linkedVarietyId)) || findVarietyByName(cross.seedlingName);
+  const linkedById = findById("varieties", clean(cross.linkedVarietyId));
+  const linkedMatchesName = linkedById
+    && varietyNameMatchKey(linkedById.name) === varietyNameMatchKey(cross.seedlingName);
+  const existing = linkedMatchesName ? linkedById : findVarietyByName(cross.seedlingName);
   const images = crossOwnSeedlingImages(cross);
   if (existing) {
     const previousName = existing.name || "";
     const previousImages = varietyImages(existing);
-    existing.photoUrl = images[0] || "";
-    existing.gallery = images.slice(1);
+    if (images.length) {
+      existing.photoUrl = images[0];
+      existing.gallery = images.slice(1);
+    }
     existing.updatedAt = new Date().toISOString();
     syncOfferItemsForVariety(existing, { previousName, previousImages });
+    cross.linkedVarietyId = existing.id;
+    cross.photoSource = "variety";
     return existing.id;
   }
   const variety = normalizeVariety({ id: uid(), name: cross.seedlingName, photoUrl: images[0] || "", gallery: images.slice(1), saleCurrency: "CZK", active: true, note: `Semenáč z křížení ${crossLineage(cross)}` });
   state.data.varieties.push(variety);
+  cross.linkedVarietyId = variety.id;
+  cross.photoSource = "variety";
   return variety.id;
 }
 
 function syncFinishedCrossVarieties() {
   let changed = false;
   (state.data.crosses || []).forEach((cross) => {
-    if (clean(cross.seedlingName) && !findById("varieties", clean(cross.linkedVarietyId))) {
+    const seedlingName = clean(cross.seedlingName);
+    const linked = findById("varieties", clean(cross.linkedVarietyId));
+    const linkedMatchesName = linked
+      && varietyNameMatchKey(linked.name) === varietyNameMatchKey(seedlingName);
+    if (seedlingName && !linkedMatchesName) {
       cross.linkedVarietyId = ensureVarietyFromCross(cross);
       changed = true;
     }
@@ -8940,15 +8983,41 @@ function crossLineage(cross) {
   return `${findById("varieties", cross.motherVarietyId)?.name || "Matka"} x ${findById("varieties", cross.pollenVarietyId)?.name || "Pyl"}`;
 }
 
-function varietyImages(variety = {}) {
+function varietyOwnImages(variety = {}) {
   return unique([variety?.photoUrl, ...normalizeGallery(variety?.gallery)].map(clean).filter(Boolean));
+}
+
+function relatedCrossOwnImagesForVariety(variety = {}, data = state.data) {
+  const varietyId = clean(variety?.id);
+  const nameKey = varietyNameMatchKey(variety?.name);
+  if (!varietyId && !nameKey) return [];
+  return (data?.crosses || [])
+    .filter((cross) => clean(cross.linkedVarietyId) === varietyId || (nameKey && varietyNameMatchKey(cross.seedlingName || cross.name) === nameKey))
+    .sort((a, b) => String(b.updatedAt || b.pollinatedAt || "").localeCompare(String(a.updatedAt || a.pollinatedAt || "")))
+    .flatMap((cross) => crossOwnSeedlingImages(cross));
+}
+
+function varietyImages(variety = {}, data = state.data) {
+  return unique([...varietyOwnImages(variety), ...relatedCrossOwnImagesForVariety(variety, data)]);
 }
 
 function photoFallbackAttributes(variety, images = []) {
   const varietyId = clean(variety?.id);
   const ordered = unique((images || []).map(clean).filter(Boolean));
   if (!varietyId) return "";
-  const fallbackAttr = ordered.length > 1 ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(ordered.slice(1)))}"` : "";
+  const ownerFolder = safeFileName(variety?.name, "");
+  const correctedOwnerRefs = ownerFolder ? ordered.flatMap((ref) => {
+    if (!clean(ref).startsWith(SUPABASE_PHOTO_PREFIX)) return [];
+    const path = parseSupabasePhotoRef(ref);
+    const parts = path.split("/").filter(Boolean);
+    const userId = clean(parts[0]);
+    const fileName = clean(parts[parts.length - 1]).replace(/\.[a-z0-9]+$/i, ".jpg");
+    if (!userId || !fileName) return [];
+    return [`${SUPABASE_PHOTO_PREFIX}${encodeURIComponent(`${userId}/${ownerFolder}/${SUPABASE_THUMB_DIR}/${fileName}`)}`];
+  }) : [];
+  const fallbackRefs = unique([...ordered.slice(1), ...correctedOwnerRefs])
+    .filter((ref) => ref !== ordered[0]);
+  const fallbackAttr = fallbackRefs.length ? ` data-photo-fallback-refs="${escapeHtml(JSON.stringify(fallbackRefs))}"` : "";
   return `data-photo-variety-id="${escapeHtml(varietyId)}" data-photo-primary-ref="${escapeHtml(ordered[0] || "")}"${fallbackAttr}`;
 }
 
@@ -9020,6 +9089,22 @@ async function findSupabaseFolderThumbnailRef(ownerName) {
     return "";
   })();
   photoRuntime.folderThumbnailRefs.set(key, lookup);
+  lookup.then((ref) => {
+    if (photoRuntime.folderThumbnailRefs.get(key) !== lookup) return;
+    if (!ref) {
+      photoRuntime.folderThumbnailRefs.delete(key);
+      return;
+    }
+    window.setTimeout(() => {
+      if (photoRuntime.folderThumbnailRefs.get(key) === lookup) {
+        photoRuntime.folderThumbnailRefs.delete(key);
+      }
+    }, 30000);
+  }, () => {
+    if (photoRuntime.folderThumbnailRefs.get(key) === lookup) {
+      photoRuntime.folderThumbnailRefs.delete(key);
+    }
+  });
   return lookup;
 }
 
@@ -9078,20 +9163,46 @@ async function tryNextPhotoFallback(image) {
   return true;
 }
 
+function schedulePhotoFolderRecoveryRetry(image, waitingForSync = false) {
+  if (!image?.isConnected || image.dataset.photoFolderRetryScheduled === "1") return false;
+  const countKey = waitingForSync ? "photoFolderSyncWaitCount" : "photoFolderRetryCount";
+  const retryCount = Number(image.dataset[countKey] || 0);
+  const maxRetries = waitingForSync ? 12 : 3;
+  if (retryCount >= maxRetries) return false;
+  image.dataset[countKey] = String(retryCount + 1);
+  image.dataset.photoFolderRetryScheduled = "1";
+  window.setTimeout(() => {
+    image.dataset.photoFolderRetryScheduled = "";
+    image.dataset.photoFolderRecoveryTried = "";
+    if (!image.isConnected || (image.dataset.photoLoaded === "1" && image.naturalWidth > 0)) return;
+    markPhotoMissingOrTryNext(image).catch(() => markPhotoMissing(image));
+  }, waitingForSync ? 1500 : 1800 + (retryCount * 900));
+  return true;
+}
+
 async function tryFolderThumbnailRecovery(image) {
   const varietyId = clean(image?.dataset?.photoVarietyId);
   const variety = varietyId ? findById("varieties", varietyId) : null;
   if (!variety || image.dataset.photoFolderRecoveryTried === "1") return false;
-  if (state.syncRunning || needsSyncRecovery() || hasPendingSync()) return false;
+  if (state.syncRunning || needsSyncRecovery() || hasPendingSync()) {
+    const syncWaitCount = Number(image.dataset.photoFolderSyncWaitCount || 0);
+    if (syncWaitCount < 12) return schedulePhotoFolderRecoveryRetry(image, true);
+  }
   image.dataset.photoFolderRecoveryTried = "1";
   const ref = await findSupabaseFolderThumbnailRef(variety.name);
-  if (!ref) return false;
+  if (!ref) return schedulePhotoFolderRecoveryRetry(image);
   const url = await resolvePhotoUrl(ref);
-  if (!url) return false;
+  if (!url) return schedulePhotoFolderRecoveryRetry(image);
   image.dataset.photoLoaded = "";
-  image.onerror = () => markPhotoMissing(image);
+  image.onerror = () => {
+    photoRuntime.folderThumbnailRefs.delete(normalize(variety.name));
+    image.dataset.photoFolderRecoveryTried = "";
+    if (!schedulePhotoFolderRecoveryRetry(image)) markPhotoMissing(image);
+  };
   image.onload = () => {
     image.dataset.photoLoaded = "1";
+    image.dataset.photoFolderRetryCount = "0";
+    image.dataset.photoFolderSyncWaitCount = "0";
     clearPhotoMissing(image);
     promoteWorkingPhoto(image, ref);
   };
@@ -9106,8 +9217,7 @@ async function markPhotoMissingOrTryNext(image) {
 }
 
 function linkedCrossVariety(cross = {}) {
-  return findById("varieties", clean(cross.linkedVarietyId))
-    || (clean(cross.seedlingName || cross.name) ? findVarietyByName(clean(cross.seedlingName || cross.name)) : null);
+  return linkedVarietyForName(cross.linkedVarietyId, cross.seedlingName || cross.name);
 }
 
 function crossSeedlingImages(cross = {}) {
@@ -9258,16 +9368,16 @@ function idbDelete(db, storeName, key) {
 
 async function resolvePhotos(root) {
   const unlinkedPlaceholders = [...root.querySelectorAll("[data-photo-folder-variety-id]")];
-  const canRepairUnlinkedPhotos = state.view === "varieties"
+  const canRepairUnlinkedPhotos = ["varieties", "crosses", "offers"].includes(state.view)
     && !state.syncRunning
     && !needsSyncRecovery()
     && !hasPendingSync();
   const folderPlaceholders = canRepairUnlinkedPhotos
-    ? unlinkedPlaceholders.slice(0, 1)
+    ? unlinkedPlaceholders
     : [];
   if (canRepairUnlinkedPhotos) {
     root.dataset.photoFolderRetryCount = "0";
-  } else if (state.view === "varieties" && unlinkedPlaceholders.length) {
+  } else if (["varieties", "crosses", "offers"].includes(state.view) && unlinkedPlaceholders.length) {
     const retryCount = Number(root.dataset.photoFolderRetryCount || 0);
     if (retryCount < 4 && root.dataset.photoFolderRetryScheduled !== "1") {
       root.dataset.photoFolderRetryScheduled = "1";
@@ -12848,7 +12958,9 @@ function openOfferDetailSheet(id, options = {}) {
     const confirmed = offerItemConfirmedCount(item);
     const total = number(item.quantity);
     const available = Math.max(0, total - confirmed);
-    const image = offerItemImageSafe(item);
+    const linkedVariety = offerItemVariety(item);
+    const itemImages = offerItemImages(item);
+    const image = itemImages[0] || "";
     const offerId = escapeHtml(offer.id);
     const itemId = escapeHtml(item.id);
     const orderProgress = offerItemOrderProgress(offer, item);
@@ -12867,7 +12979,7 @@ function openOfferDetailSheet(id, options = {}) {
     const emptyReservationsText = "Zatím bez rezervací.";
     return `<article class="offer-item offer-item-catalog ${available <= 0 ? "sold-out" : ""} ${orderProgress.state ? `is-order-${orderProgress.state}` : ""}">
       <div class="offer-item-head offer-item-head-catalog">
-        <span class="thumb offer-thumb-wrap">${image ? `<img data-photo-ref="${escapeHtml(image)}" alt="">` : escapeHtml(initials(itemName || "O"))}${orderFlag}</span>
+        <span class="thumb offer-thumb-wrap">${ak93CatalogThumbMarkup(image, itemName, itemName, linkedVariety, itemImages)}${orderFlag}</span>
         <div class="offer-item-copy">
           <strong>${escapeHtml(itemName)}</strong>
           ${note ? `<p class="offer-item-note">${escapeHtml(note)}</p>` : ""}

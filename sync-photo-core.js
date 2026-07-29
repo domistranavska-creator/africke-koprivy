@@ -24,6 +24,10 @@
       .replace(/\s+/g, " ");
   }
 
+  function photoNameKey(value) {
+    return normalizedName(value).replace(/[^a-z0-9]+/g, "");
+  }
+
   function timestamp(value) {
     const parsed = Date.parse(clean(value));
     return Number.isFinite(parsed) ? parsed : 0;
@@ -64,6 +68,14 @@
     const next = unique(photos);
     owner[mainKey] = next[0] || "";
     owner[galleryKey] = next.slice(1);
+  }
+
+  function findLinkedPhotoVariety(byId, byName, linkedId, linkedName) {
+    const nameKey = photoNameKey(linkedName);
+    const linkedById = byId.get(clean(linkedId));
+    if (!nameKey) return linkedById || null;
+    const idMatchesName = linkedById && (!nameKey || photoNameKey(linkedById.name) === nameKey);
+    return idMatchesName ? linkedById : (byName.get(nameKey) || null);
   }
 
   function trashTarget(entry = {}) {
@@ -117,10 +129,10 @@
     const crosses = Array.isArray(data.crosses) ? data.crosses : (data.crosses = []);
     const offers = Array.isArray(data.offers) ? data.offers : (data.offers = []);
     const byId = new Map(varieties.map((item) => [clean(item.id), item]).filter(([id]) => id));
-    const byName = new Map(varieties.map((item) => [normalizedName(item.name), item]).filter(([name]) => name));
+    const byName = new Map(varieties.map((item) => [photoNameKey(item.name), item]).filter(([name]) => name));
 
     for (const cross of crosses) {
-      const linked = byId.get(clean(cross.linkedVarietyId)) || byName.get(normalizedName(cross.seedlingName || cross.name));
+      const linked = findLinkedPhotoVariety(byId, byName, cross.linkedVarietyId, cross.seedlingName || cross.name);
       if (!linked) {
         cross.photoSource = "cross";
         continue;
@@ -128,20 +140,18 @@
       cross.linkedVarietyId = clean(linked.id);
       const varietyPhotos = photoList(linked.photoUrl, linked.gallery);
       const crossPhotos = photoList(cross.seedlingPhotoUrl || cross.photoUrl, cross.seedlingGallery || cross.gallery);
-      // Older app versions kept a second copy of the same photos on the cross.
-      // Only let that copy replace the variety when it is genuinely newer.
+      // Keep the cross references as a fallback. They are only small strings
+      // and may be the last usable path when an older variety path is stale.
       if (crossPhotos.length && (!varietyPhotos.length || recordTimestamp(cross) > recordTimestamp(linked))) {
         setPhotoList(linked, "photoUrl", "gallery", crossPhotos);
         linked.updatedAt = clean(cross.updatedAt) || clean(linked.updatedAt);
       }
-      cross.seedlingPhotoUrl = "";
-      cross.seedlingGallery = [];
       cross.photoSource = "variety";
     }
 
     for (const offer of offers) {
       for (const item of Array.isArray(offer.items) ? offer.items : []) {
-        const linked = byId.get(clean(item.varietyId)) || byName.get(normalizedName(item.varietyName || item.name));
+        const linked = findLinkedPhotoVariety(byId, byName, item.varietyId, item.varietyName || item.name);
         if (!linked) {
           item.photoSource = "offer";
           continue;
@@ -154,7 +164,7 @@
           setPhotoList(linked, "photoUrl", "gallery", [ownPhoto]);
           linked.updatedAt = clean(item.updatedAt) || clean(offer.updatedAt) || clean(linked.updatedAt);
         }
-        item.photoUrl = "";
+        // Keep the offer reference as a fallback for old and custom items.
         item.photoSource = "variety";
       }
     }
@@ -247,15 +257,17 @@
 
   function offerItemPhoto(item = {}, data = {}) {
     const varieties = Array.isArray(data.varieties) ? data.varieties : [];
-    const linked = varieties.find((variety) => clean(variety.id) === clean(item.varietyId))
-      || varieties.find((variety) => normalizedName(variety.name) === normalizedName(item.varietyName || item.name));
+    const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]).filter(([id]) => id));
+    const byName = new Map(varieties.map((variety) => [photoNameKey(variety.name), variety]).filter(([name]) => name));
+    const linked = findLinkedPhotoVariety(byId, byName, item.varietyId, item.varietyName || item.name);
     return clean(linked?.photoUrl) || clean(item.photoUrl);
   }
 
   function crossPhoto(cross = {}, data = {}) {
     const varieties = Array.isArray(data.varieties) ? data.varieties : [];
-    const linked = varieties.find((variety) => clean(variety.id) === clean(cross.linkedVarietyId))
-      || varieties.find((variety) => normalizedName(variety.name) === normalizedName(cross.seedlingName || cross.name));
+    const byId = new Map(varieties.map((variety) => [clean(variety.id), variety]).filter(([id]) => id));
+    const byName = new Map(varieties.map((variety) => [photoNameKey(variety.name), variety]).filter(([name]) => name));
+    const linked = findLinkedPhotoVariety(byId, byName, cross.linkedVarietyId, cross.seedlingName || cross.name);
     return clean(linked?.photoUrl) || clean(cross.seedlingPhotoUrl || cross.photoUrl);
   }
 
