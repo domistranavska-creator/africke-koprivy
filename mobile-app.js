@@ -6930,10 +6930,18 @@ async function downloadVarietyPhoto(id) {
   if (!variety || !image) return;
   let href = "";
   let revokeAfterDownload = false;
+  let downloadedThumbnail = false;
   try {
     if (image.startsWith(SUPABASE_PHOTO_PREFIX)) {
       toast("Stahuji fotku...");
-      const file = await supabasePhotoRefToFile(image, variety.name);
+      let file = await supabasePhotoRefToFile(image, variety.name);
+      if (!file) {
+        const thumbnailRef = thumbPreviewRef(image);
+        if (thumbnailRef && thumbnailRef !== image) {
+          file = await supabasePhotoRefToFile(thumbnailRef, variety.name);
+          downloadedThumbnail = Boolean(file);
+        }
+      }
       if (file) {
         href = URL.createObjectURL(file);
         revokeAfterDownload = true;
@@ -6957,6 +6965,7 @@ async function downloadVarietyPhoto(id) {
     link.click();
     link.remove();
     if (revokeAfterDownload) window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+    if (downloadedThumbnail) toast("Originál chybí, stáhla se dostupná menší fotka.");
   } catch {
     toast("Fotku se nepodaĹ™ilo stĂˇhnout.");
   }
